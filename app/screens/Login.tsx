@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Alert, ActivityIndicator, Image, ImageBackground, Linking } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Alert,
+  ActivityIndicator,
+  Image,
+  ImageBackground,
+  Linking,
+} from "react-native";
 import * as SecureStore from "expo-secure-store";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   GoogleSignin,
   statusCodes,
@@ -13,6 +23,7 @@ import pallete from "../../lib/Colors";
 import { api } from "../../lib/api";
 import PopButton from "../../components/props/PopButton";
 import { useNetworkStatus } from "../../hooks/useNetwork";
+import { useUser } from "../../hooks/useUser";
 
 type Props = {
   route: RouteProp<ParamListBase, "Login">;
@@ -22,24 +33,26 @@ type Props = {
 const BACKEND_LOGIN_URL = "/auth/login";
 
 GoogleSignin.configure({
-  webClientId: "743066184878-es8jqus96o8ip2qlrmd7md7n5o5j8ndv.apps.googleusercontent.com",
+  webClientId:
+    "743066184878-es8jqus96o8ip2qlrmd7md7n5o5j8ndv.apps.googleusercontent.com",
   offlineAccess: true,
 });
 
-const Login = ({ route, navigation }: Props) => {
-  const {isLoggedIn, isLoading, checkLogin} = useAuth();
+const Login = ({ navigation }: Props) => {
+  const { isLoggedIn, isLoading, checkLogin } = useAuth();
   const { showToast } = useToast();
+  const { reload } = useUser();
   const [isLoadingUi, setIsLoadingUi] = useState(false);
-  const {isConnected} = useNetworkStatus()
+  const { isConnected } = useNetworkStatus();
 
   useEffect(() => {
     if (isLoggedIn) {
       navigation.replace("Tabs");
-      checkLogin()
+      checkLogin();
     }
   }, [isLoading, isLoggedIn]);
 
-  const handleGoogleSignIn = async () => {
+const handleGoogleSignIn = async () => {
     try {
       setIsLoadingUi(true);
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
@@ -49,8 +62,9 @@ const Login = ({ route, navigation }: Props) => {
       if (response.type === "cancelled") return;
       const tokens = await GoogleSignin.getTokens();
 
-      if (idToken || tokens.accessToken) {
-        await handleBackendLogin(tokens.accessToken || idToken);
+      const tokenToSend = tokens.accessToken || idToken;
+      if (tokenToSend) {
+        await handleBackendLogin(tokenToSend);
       } else {
         throw new Error("Failed to retrieve Google tokens");
       }
@@ -70,7 +84,7 @@ const Login = ({ route, navigation }: Props) => {
   };
 
   const handleBackendLogin = async (googleAccessToken: string): Promise<void> => {
-     if (!isConnected) {
+    if (!isConnected) {
       showToast({
         title: "Please connect to the Internet.",
       });
@@ -87,13 +101,22 @@ const Login = ({ route, navigation }: Props) => {
         JSON.stringify({ token: data.token, expiry: data.expiry })
       );
 
+      // Cache user info immediately taaki restart ki zaroorat na pade
+      if (data?.user) {
+        await AsyncStorage.setItem("cached_user_profile", JSON.stringify(data.user));
+      }
+
       showToast({
         title: "You're Welcome",
       });
 
+      reload();
       navigation.replace("Tabs");
     } catch (err: any) {
-      Alert.alert("Error", err.response?.data?.message || err.message || "Backend login failed");
+      Alert.alert(
+        "Error",
+        err.response?.data?.message || err.message || "Backend login failed"
+      );
     }
   };
 
@@ -118,10 +141,7 @@ const Login = ({ route, navigation }: Props) => {
               <ActivityIndicator size="small" color={pallete.textwhite} />
             </View>
           ) : (
-            <PopButton
-              styles={styles.googleButton}
-              onPress={handleGoogleSignIn}
-            >
+            <PopButton styles={styles.googleButton} onPress={handleGoogleSignIn}>
               <Svg width={20} height={20} viewBox="0 0 32 32">
                 <G>
                   <Path
@@ -154,14 +174,22 @@ const Login = ({ route, navigation }: Props) => {
             By continuing, you agree to our{" "}
             <Text
               style={styles.linkText}
-              onPress={() => Linking.openURL("https://drive.google.com/file/d/1N4WK0jX7ZDYXMTSgWLc51LQOrQoZ-8hR/view")}
+              onPress={() =>
+                Linking.openURL(
+                  "https://drive.google.com/file/d/1N4WK0jX7ZDYXMTSgWLc51LQOrQoZ-8hR/view"
+                )
+              }
             >
               Terms
             </Text>{" "}
             &{" "}
             <Text
               style={styles.linkText}
-              onPress={() => Linking.openURL("https://drive.google.com/file/d/1bcqXVKT4yyC3PCPlttcxuARzA1IHob2Z/view")}
+              onPress={() =>
+                Linking.openURL(
+                  "https://drive.google.com/file/d/1bcqXVKT4yyC3PCPlttcxuARzA1IHob2Z/view"
+                )
+              }
             >
               Privacy Policy
             </Text>
@@ -191,12 +219,6 @@ const styles = StyleSheet.create({
     width: 620,
     height: 300,
   },
-  brandSubtitle: {
-    marginTop: 12,
-    color: pallete.textgray,
-    fontSize: 15,
-    fontWeight: "500",
-  },
   actionContainer: {
     width: "100%",
   },
@@ -222,7 +244,7 @@ const styles = StyleSheet.create({
     color: "#303030",
   },
   linkText: {
-    color: pallete.textwhite, // or your preferred accent color
+    color: pallete.textwhite,
     textDecorationLine: "underline",
     fontWeight: "600",
   },
@@ -232,11 +254,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     height: 58,
     gap: 10,
-  },
-  processingText: {
-    textAlign: "center",
-    color: pallete.textgray,
-    fontSize: 16,
   },
   footerText: {
     marginTop: 18,

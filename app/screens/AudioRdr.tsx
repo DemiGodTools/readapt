@@ -4,6 +4,7 @@ import React, {
   useState,
   useMemo,
   useCallback,
+  memo,
 } from "react";
 import {
   View,
@@ -17,10 +18,10 @@ import {
   StatusBar,
   Modal,
   Share,
+  ActivityIndicator,
 } from "react-native";
 import Svg, { Path, Line, Circle, Polyline } from "react-native-svg";
 import { useNavigation } from "@react-navigation/native";
-import Slider from "@react-native-community/slider";
 import pallete from "../../lib/Colors";
 import useAuth from "../../hooks/useAuth";
 import { IChapter } from "../../types/Chapter";
@@ -44,6 +45,8 @@ import Carousel from "react-native-reanimated-carousel";
 import { ISeries, ISeriesContent } from "../../types/Series";
 import QuestionCard from "../../components/props/QuestionCard";
 import { IQuestion } from "../../types/Question";
+import SmoothAudioSlider from "../../components/props/SmoothAudioSlider";
+
 const colors = {
   bgMain: "#090314",
   bgCard: "rgba(20, 20, 20, 0.6)",
@@ -56,7 +59,7 @@ const colors = {
 };
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
-// Demo remote audio (swap for book.media once API is live)
+// Demo remote audio
 const DEMO_AUDIO_URL =
   "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
 
@@ -117,12 +120,13 @@ const parseLyrics = (raw?: string): LyricLine[] => {
     .sort((a, b) => a.time - b.time);
 };
 
-const formatTime = (sec: number) => {
-  if (!sec || sec < 0 || !isFinite(sec)) return "0:00";
-  const totalSec = Math.floor(sec);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+const parseDurationToSec = (d: string | number): number => {
+  if (typeof d === "number") return d;
+  if (!d || typeof d !== "string") return 0;
+  const parts = d.split(":").map((p) => parseInt(p, 10) || 0);
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return parseInt(d, 10) || 0;
 };
 
 const parseSpeed = (label: string): number => {
@@ -132,161 +136,168 @@ const parseSpeed = (label: string): number => {
 
 const SPEED_OPTIONS = ["0.75x", "1.0x", "1.25x", "1.5x", "2.0x"];
 
-const PlaybackButtons = ({
-  skipBy,
-  isLoaded,
-  currentTrack,
-  source,
-  playTrack,
-  togglePlay,
-  playBtnWidth,
-  playBtnScale,
-  playBtnBg,
-  animatePlayBtn,
-  isPlaying,
-}: {
-  skipBy: (amount: number) => void;
-  isLoaded: boolean;
-  source: IChapter | null;
-  playTrack: (source: IChapter) => void;
-  currentTrack: any;
-  togglePlay: () => void;
-  playBtnWidth: Animated.AnimatedInterpolation<string | number>;
-  playBtnScale: any;
-  playBtnBg: Animated.AnimatedInterpolation<string | number>;
-  animatePlayBtn: (scale: number) => void;
-  isPlaying: boolean;
-}) => {
-  const seekBtnAnimation = useRef(new Animated.Value(0)).current;
-  const [animateIndex, setAnimateIndex] = useState(0);
+const PlaybackButtons = memo(
+  ({
+    skipBy,
+    isLoaded,
+    currentTrack,
+    source,
+    playTrack,
+    togglePlay,
+    playBtnWidth,
+    playBtnScale,
+    playBtnBg,
+    animatePlayBtn,
+    isPlaying,
+  }: {
+    skipBy: (amount: number) => void;
+    isLoaded: boolean;
+    source: IChapter | null;
+    playTrack: (source: IChapter) => void;
+    currentTrack: any;
+    togglePlay: () => void;
+    playBtnWidth: Animated.AnimatedInterpolation<string | number>;
+    playBtnScale: any;
+    playBtnBg: Animated.AnimatedInterpolation<string | number>;
+    animatePlayBtn: (scale: number) => void;
+    isPlaying: boolean;
+  }) => {
+    const seekBtnAnimation = useRef(new Animated.Value(0)).current;
+    const [animateIndex, setAnimateIndex] = useState(0);
 
-  const animateSeekBtn = (toValue: number) => {
-    Animated.spring(seekBtnAnimation, {
-      toValue,
-      useNativeDriver: false,
-      friction: 7,
-      tension: 120,
-    }).start();
-  };
+    const animateSeekBtn = (toValue: number) => {
+      Animated.spring(seekBtnAnimation, {
+        toValue,
+        useNativeDriver: false,
+        friction: 7,
+        tension: 120,
+      }).start();
+    };
 
-  const seekBtnWidth = seekBtnAnimation.interpolate({
-    inputRange: [0, 1],
-    outputRange: [52, 70],
-  });
+    const seekBtnWidth = seekBtnAnimation.interpolate({
+      inputRange: [0, 1],
+      outputRange: [52, 70],
+    });
 
-  const seekBtnScale = seekBtnAnimation.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0.96],
-  });
+    const seekBtnScale = seekBtnAnimation.interpolate({
+      inputRange: [0, 1],
+      outputRange: [1, 0.96],
+    });
 
-  const seekBtnBg = seekBtnAnimation.interpolate({
-    inputRange: [0, 1],
-    outputRange: [colors.ctlBg, "#B9D7D4"],
-  });
+    const seekBtnBg = seekBtnAnimation.interpolate({
+      inputRange: [0, 1],
+      outputRange: [colors.ctlBg, "#B9D7D4"],
+    });
 
-  return (
-    <View style={styles.playbackButtonsRow}>
-      <Pressable
-        onPress={() => skipBy(-15)}
-        onPressIn={() => {
-          setAnimateIndex(0);
-          animateSeekBtn(1);
-        }}
-        onPressOut={() => animateSeekBtn(0)}
-        disabled={!isLoaded}>
-        <Animated.View
-          style={[
-            styles.mediaBtn,
-            styles.circleSkipBtn,
-            animateIndex === 0
-              ? {
-                  width: seekBtnWidth,
-                  transform: [{ scale: seekBtnScale }],
-                  backgroundColor: seekBtnBg,
+    const handlePlayPress = () => {
+      if (!source) return;
+      if (
+        currentTrack?._id === source._id ||
+        (source.media && currentTrack?.media === source.media)
+      ) {
+        togglePlay();
+      } else {
+        playTrack(source);
+      }
+    };
+
+    return (
+      <View style={styles.playbackButtonsRow}>
+        <Pressable
+          onPress={() => skipBy(-15)}
+          onPressIn={() => {
+            setAnimateIndex(0);
+            animateSeekBtn(1);
+          }}
+          onPressOut={() => animateSeekBtn(0)}
+          disabled={!isLoaded}>
+          <Animated.View
+            style={[
+              styles.mediaBtn,
+              styles.circleSkipBtn,
+              animateIndex === 0
+                ? {
+                    width: seekBtnWidth,
+                    transform: [{ scale: seekBtnScale }],
+                    backgroundColor: seekBtnBg,
+                  }
+                : {
+                    transform: [{ scale: 1 }],
+                    backgroundColor: colors.ctlBg,
+                  },
+            ]}>
+            <Svg width={20} height={20} viewBox="0 0 24 24">
+              <Path
+                d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"
+                fill={isLoaded ? colors.ctlIcon : "rgba(156,163,175,0.3)"}
+              />
+            </Svg>
+          </Animated.View>
+        </Pressable>
+
+        <Pressable
+          onPress={handlePlayPress}
+          onPressIn={() => animatePlayBtn(1)}
+          onPressOut={() => animatePlayBtn(0)}
+          disabled={!isLoaded}>
+          <Animated.View
+            style={[
+              styles.mediaBtn,
+              styles.mainPlayBtn,
+              {
+                width: playBtnWidth,
+                transform: [{ scale: playBtnScale }],
+                backgroundColor: playBtnBg,
+              },
+            ]}>
+            <Svg width={16} height={16} viewBox="0 0 24 24">
+              <Path
+                d={
+                  isPlaying ? "M6 19h4V5H6v14zm8-14v14h4V5h-4z" : "M8 5v14l11-7z"
                 }
-              : {
-                  transform: [{ scale: 1 }],
-                  backgroundColor: colors.ctlBg,
-                },
-          ]}>
-          <Svg width={20} height={20} viewBox="0 0 24 24">
-            <Path
-              d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"
-              fill={isLoaded ? colors.ctlIcon : "rgba(156,163,175,0.3)"}
-            />
-          </Svg>
-        </Animated.View>
-      </Pressable>
+                fill={colors.ctlIcon}
+              />
+            </Svg>
+            <Text style={styles.playBtnText}>{isPlaying ? "Pause" : "Play"}</Text>
+          </Animated.View>
+        </Pressable>
 
-      <Pressable
-        onPress={() => {
-          if (!source) return;
-          if (currentTrack?.media === source?.media) {
-            togglePlay();
-          } else {
-            playTrack(source);
-          }
-        }}
-        onPressIn={() => animatePlayBtn(1)}
-        onPressOut={() => animatePlayBtn(0)}
-        disabled={!isLoaded}>
-        <Animated.View
-          style={[
-            styles.mediaBtn,
-            styles.mainPlayBtn,
-            {
-              width: playBtnWidth,
-              transform: [{ scale: playBtnScale }],
-              backgroundColor: playBtnBg,
-            },
-          ]}>
-          <Svg width={16} height={16} viewBox="0 0 24 24">
-            <Path
-              d={
-                isPlaying ? "M6 19h4V5H6v14zm8-14v14h4V5h-4z" : "M8 5v14l11-7z"
-              }
-              fill={colors.ctlIcon}
-            />
-          </Svg>
-          <Text style={styles.playBtnText}>{isPlaying ? "Pause" : "Play"}</Text>
-        </Animated.View>
-      </Pressable>
-
-      <Pressable
-        style={[styles.mediaBtn, styles.circleSkipBtn]}
-        onPress={() => skipBy(15)}
-        onPressIn={() => {
-          setAnimateIndex(1);
-          animateSeekBtn(1);
-        }}
-        onPressOut={() => animateSeekBtn(0)}
-        disabled={!isLoaded}>
-        <Animated.View
-          style={[
-            styles.mediaBtn,
-            styles.circleSkipBtn,
-            animateIndex === 1
-              ? {
-                  width: seekBtnWidth,
-                  transform: [{ scale: seekBtnScale }],
-                  backgroundColor: seekBtnBg,
-                }
-              : {
-                  transform: [{ scale: 1 }],
-                  backgroundColor: colors.ctlBg,
-                },
-          ]}>
-          <Svg width={20} height={20} viewBox="0 0 24 24">
-            <Path
-              d="M13 6v12l8.5-6L13 6zM4 18l8.5-6L4 6v12z"
-              fill={isLoaded ? colors.ctlIcon : "rgba(156,163,175,0.3)"}
-            />
-          </Svg>
-        </Animated.View>
-      </Pressable>
-    </View>
-  );
-};
+        <Pressable
+          style={[styles.mediaBtn, styles.circleSkipBtn]}
+          onPress={() => skipBy(15)}
+          onPressIn={() => {
+            setAnimateIndex(1);
+            animateSeekBtn(1);
+          }}
+          onPressOut={() => animateSeekBtn(0)}
+          disabled={!isLoaded}>
+          <Animated.View
+            style={[
+              styles.mediaBtn,
+              styles.circleSkipBtn,
+              animateIndex === 1
+                ? {
+                    width: seekBtnWidth,
+                    transform: [{ scale: seekBtnScale }],
+                    backgroundColor: seekBtnBg,
+                  }
+                : {
+                    transform: [{ scale: 1 }],
+                    backgroundColor: colors.ctlBg,
+                  },
+            ]}>
+            <Svg width={20} height={20} viewBox="0 0 24 24">
+              <Path
+                d="M13 6v12l8.5-6L13 6zM4 18l8.5-6L4 6v12z"
+                fill={isLoaded ? colors.ctlIcon : "rgba(156,163,175,0.3)"}
+              />
+            </Svg>
+          </Animated.View>
+        </Pressable>
+      </View>
+    );
+  }
+);
 
 const AudioPlayerScreen = ({ route }: Props) => {
   const navigation = useNavigation();
@@ -299,12 +310,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
   const { isConnected } = useNetworkStatus();
   const [book, setBook] = useState<IChapter | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isSeeking, setIsSeeking] = useState(false);
-  const [seekValue, setSeekValue] = useState(0); // seconds, while dragging
   const [commentedQueId, setCommentedQueId] = useState("");
   const [questions, setQuestions] = useState<ISeriesContent[] | null>(null);
 
-  const chapterId = route.params.bookId;
+  const chapterId = route?.params?.bookId;
   const lyricsScrollRef = useRef<ScrollView>(null);
   const activeLineRef = useRef(0);
   const [showComments, setShowComments] = useState(false);
@@ -312,24 +321,40 @@ const AudioPlayerScreen = ({ route }: Props) => {
   // Play button press animation
   const playBtnAnim = useRef(new Animated.Value(0)).current;
 
-  useEffect(() => {
-    if (user) {
-      const isalreadyLiked = user.likes.find((item) => item._id === chapterId);
-      setIsLiked(isalreadyLiked?._id ? true : false);
-    }
-  }, [user, isConnected]);
+  // Global Audio Context
+  const { player, status, currentTrack, togglePlay, playTrack, seekTo } =
+    useGlobalAudio();
 
+  const isPlaying = status?.playing ?? false;
+  const isLoaded = status?.isLoaded ?? false;
+  const isAudioLoading = Boolean(book?.media) && !status?.isLoaded;
+  const durationSec = status?.duration ?? 0;
+
+  // Check if liked by current user safely
+  const [isLiked, setIsLiked] = useState(false);
   useEffect(() => {
-    if(!book || !user || !book.series) return;
+    if (user && user.likes && chapterId) {
+      const isalreadyLiked = user.likes.some((item: any) => {
+        const id = typeof item === "string" ? item : item?._id;
+        return id === chapterId;
+      });
+      setIsLiked(Boolean(isalreadyLiked));
+    }
+  }, [user, chapterId]);
+
+  // Fetch Questions for series
+  useEffect(() => {
+    if (!book || !book.series) return;
     const fetchQuestions = async () => {
       try {
-        const series: ISeries = book.series;
+        const series: ISeries =
+          typeof book.series === "object" ? (book.series as any) : null;
+        if (!series || !series.chapters) return;
+
         const contents = series.chapters || [];
         const chapterIndex = contents.findIndex((item) => {
-          return item.content?._id === book._id;
+          return (item.content as any)?._id === book._id;
         });
-
-        console.log(series.chapters.map(item => item.contentModel), " content model")
 
         const chapterQues: ISeriesContent[] = [];
         if (chapterIndex !== -1) {
@@ -339,7 +364,6 @@ const AudioPlayerScreen = ({ route }: Props) => {
             chapterQues.push(item);
           }
         }
-
         setQuestions(chapterQues);
       } catch (error) {
         console.error("Error fetching questions:", error);
@@ -347,7 +371,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
     };
 
     fetchQuestions();
-  }, [accessToken, user, isConnected, book]);
+  }, [book?._id]);
 
   const animatePlayBtn = (toValue: number) => {
     Animated.spring(playBtnAnim, {
@@ -373,26 +397,15 @@ const AudioPlayerScreen = ({ route }: Props) => {
     outputRange: [colors.ctlBg, "#B9D7D4"],
   });
 
-  // ── react-native-track-player ────────────────────────────────────
-  // Source updates when book.media is known
-  const { player, status, currentTrack, togglePlay, playTrack, seekTo } =
-    useGlobalAudio();
-  const audioSource = book?.media ?? DEMO_AUDIO_URL;
-
-  const isPlaying = status?.playing ?? false;
-  const isLoaded = status?.isLoaded ?? false;
-  const isAudioLoading = Boolean(audioSource) && !!status && !status.isLoaded;
-  const durationSec = status?.duration ?? 0;
-
   // Timed lyrics from book.lyrics (or demo)
   const transcriptions = useMemo(
     () => parseLyrics(book?.lyrics ?? DEMO_LYRICS),
-    [book?.lyrics],
+    [book?.lyrics]
   );
 
   const activeTranscriptionIndex = useMemo(() => {
     if (!transcriptions.length) return -1;
-    const t = status?.currentTime;
+    const t = status?.currentTime || 0;
     let idx = 0;
     for (let i = 0; i < transcriptions.length; i++) {
       if (transcriptions[i].time <= t) idx = i;
@@ -410,39 +423,68 @@ const AudioPlayerScreen = ({ route }: Props) => {
     lyricsScrollRef.current?.scrollTo({ y, animated: true });
   }, [activeTranscriptionIndex, showLyrics]);
 
-  // Load chapter (mock – wire to your API)
-  const fetchChapter = async () => {
-    if (isConnected) {
-      const chapter = await api.get(`/chapter/${chapterId}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
-      setBook(chapter.data.data);
-    } else {
-      const isDownloaded = await checkIsDownloaded(chapterId);
-      if (!isDownloaded) {
-        showToast({
-          title: "You seems to be offline. Please connect to Internet",
-        });
+  const { showToast } = useToast();
+  const { downloadChapter } = useDownloads();
+
+  // Load chapter with full error handling and offline fallback
+  const fetchChapter = useCallback(async () => {
+    if (!chapterId) return;
+    setIsLoading(true);
+    try {
+      if (isConnected) {
+        const headers: Record<string, string> = {};
+        if (accessToken) {
+          headers.Authorization = `Bearer ${accessToken}`;
+        }
+        const chapter = await api.get(`/chapter/${chapterId}`, { headers });
+        if (chapter.data?.data) {
+          setBook(chapter.data.data);
+        }
+      } else {
+        const isDownloaded = await checkIsDownloaded(chapterId);
+        if (!isDownloaded) {
+          showToast({
+            title: "You seem to be offline. Please connect to Internet",
+          });
+        }
+        const downloaded = await getSingleDownloaded(chapterId);
+        if (downloaded) {
+          setBook(downloaded as any);
+        }
       }
-      const downloaded = await getSingleDownloaded(chapterId);
-      setBook(downloaded);
+    } catch (error) {
+      console.error("Error fetching chapter:", error);
+      try {
+        const downloaded = await getSingleDownloaded(chapterId);
+        if (downloaded) {
+          setBook(downloaded as any);
+        }
+      } catch (_) {}
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
-  };
+  }, [chapterId, accessToken, isConnected, showToast]);
 
   useEffect(() => {
     fetchChapter();
-  }, [accessToken, chapterId, isConnected]);
+  }, [fetchChapter]);
+
+  // Only start playback if track is not already the current active track!
+  useEffect(() => {
+    if (!book || !book._id) return;
+    const targetUrl = book.media || DEMO_AUDIO_URL;
+    if (currentTrack?._id !== book._id && currentTrack?.media !== targetUrl) {
+      playTrack(book);
+    }
+  }, [book?._id, book?.media, currentTrack?._id, currentTrack?.media, playTrack]);
 
   // Keep playback rate in sync when speed label changes
   useEffect(() => {
     const rate = parseSpeed(speed);
     try {
-      if (typeof player.setPlaybackRate === "function") {
+      if (typeof player?.setPlaybackRate === "function") {
         player.setPlaybackRate(rate);
-      } else {
+      } else if (player) {
         player.playbackRate = rate;
       }
     } catch (_) {}
@@ -452,24 +494,23 @@ const AudioPlayerScreen = ({ route }: Props) => {
     (sec: number) => {
       if (!isLoaded || durationSec <= 0) return;
       const clamped = Math.max(0, Math.min(sec, durationSec));
-      player.seekTo(clamped);
+      seekTo(clamped);
     },
-    [isLoaded, durationSec, player],
+    [isLoaded, durationSec, seekTo]
   );
 
-  const skipBy = (deltaSec: number) => {
-    seekToSec(status?.currentTime + deltaSec);
-  };
+  const skipBy = useCallback(
+    (deltaSec: number) => {
+      seekToSec((status?.currentTime || 0) + deltaSec);
+    },
+    [seekToSec, status?.currentTime]
+  );
 
   const cycleSpeed = () => {
     const idx = SPEED_OPTIONS.indexOf(speed);
     const next = SPEED_OPTIONS[(idx + 1) % SPEED_OPTIONS.length];
     setSpeed(next);
   };
-
-  const { showToast } = useToast();
-  const { downloadChapter } = useDownloads();
-  const [isLiked, setIsLiked] = useState(false);
 
   const resetInfo = () => {
     setIsLiked(false);
@@ -482,47 +523,69 @@ const AudioPlayerScreen = ({ route }: Props) => {
   useEffect(() => {
     if (!chapterId) return;
     const getRecentRead = async () => {
-      const readChapters = await AsyncStorage.getItem("recentReads");
-      if (!readChapters) return;
-      const recentReads: IRecentRead[] = JSON.parse(readChapters);
-      const existingRead = recentReads.find(
-        (recentRead) => recentRead.content._id === chapterId,
-      );
-      if (!existingRead) return;
-      const lastOpen = existingRead.readtill;
-      // setLastPlay(parseInt(lastOpen));
-      seekToSec(parseInt(lastOpen));
-      lastSavedPlayRef.current = parseInt(lastOpen);
+      try {
+        const readChapters = await AsyncStorage.getItem("recentReads");
+        if (!readChapters) return;
+        const recentReads: IRecentRead[] = JSON.parse(readChapters);
+        const existingRead = recentReads.find(
+          (recentRead) => recentRead.content?._id === chapterId
+        );
+        if (!existingRead) return;
+        const lastOpen = parseInt(existingRead.readtill, 10);
+        if (!isNaN(lastOpen) && lastOpen > 0) {
+          seekToSec(lastOpen);
+          lastSavedPlayRef.current = lastOpen;
+        }
+      } catch (_) {}
     };
     getRecentRead();
-  }, [chapterId, book]);
+  }, [chapterId, book?._id, seekToSec]);
 
   const updateRecentReads = async () => {
     if (!book) return;
-
-    console.log("updating recent reads for chapter:", chapterId, "current time:", status?.currentTime);
-
-    const currentPageValue = Math.max(0, status?.currentTime);
+    const currentPageValue = Math.max(0, Math.floor(status?.currentTime || 0));
     if (lastSavedPlayRef.current === currentPageValue) return;
+
+    // Hardcoded 00:10 ke bajaye sound/status ki actual duration lijiye
+    const realTotalDuration = Math.max(
+      0,
+      Math.floor(
+        durationSec > 0
+          ? durationSec
+          : (book as any)?.duration
+          ? Number((book as any).duration)
+          : (book as any)?.total
+          ? Number((book as any).total)
+          : 0
+      )
+    );
 
     try {
       let oldRecentReads = await AsyncStorage.getItem("recentReads");
       if (!oldRecentReads) oldRecentReads = "[]";
       const recentReads: IRecentRead[] = JSON.parse(oldRecentReads);
       const newRecentReads = recentReads.filter(
-        (item) => item.content._id !== chapterId,
+        (item) => item.content?._id !== chapterId
       );
       newRecentReads.push({
         content: {
           ...book,
-          comments: Array.isArray(book.comments) ? book.comments.length : 0,
-          category: book.category?.name || book.category?._id || "",
+          comments:
+            typeof book.comments === "number"
+              ? book.comments
+              : Array.isArray(book.comments)
+              ? (book.comments as any).length
+              : 0,
+          category:
+            (book.category as any)?.name ||
+            (book.category as any)?._id ||
+            book.category ||
+            "",
         },
-        readtill: currentPageValue + "",
-        total: book?.total ? book?.total + "" : "00:10",
-        readAt: new Date().toString(),
+        readtill: String(currentPageValue),
+        total: String(realTotalDuration),
+        readAt: new Date().toISOString(),
       });
-      console.log("Saving recent reads:", newRecentReads);
       await AsyncStorage.setItem("recentReads", JSON.stringify(newRecentReads));
       lastSavedPlayRef.current = currentPageValue;
     } catch (error) {
@@ -538,7 +601,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
     return () => {
       unsubscribe();
     };
-  }, [navigation, chapterId, book]);
+  }, [navigation, chapterId, book, status?.currentTime]);
 
   const like = async () => {
     if (!isConnected) {
@@ -547,21 +610,37 @@ const AudioPlayerScreen = ({ route }: Props) => {
       });
       return;
     }
-    setIsLiked(!isLiked);
+    const nextState = !isLiked;
+    setIsLiked(nextState);
+    // Optimistic count update
+    setBook((prev) => {
+      if (!prev) return prev;
+      const current = typeof prev.likes === "number" ? prev.likes : 0;
+      return {
+        ...prev,
+        likes: nextState ? current + 1 : Math.max(0, current - 1),
+      };
+    });
     try {
-      const data = await api.post(
+      await api.post(
         "/chapter/like",
-        {
-          chapterId,
-        },
+        { chapterId },
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
-        },
+        }
       );
     } catch (error) {
-      setIsLiked(!isLiked);
+      setIsLiked(!nextState);
+      setBook((prev) => {
+        if (!prev) return prev;
+        const current = typeof prev.likes === "number" ? prev.likes : 0;
+        return {
+          ...prev,
+          likes: !nextState ? current + 1 : Math.max(0, current - 1),
+        };
+      });
       console.error("Error liking chapter:", error);
     } finally {
       reload();
@@ -602,7 +681,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
     });
   };
 
-      const renderQuestionCard = ({ item }: { item: ISeriesContent }) => {
+  const renderQuestionCard = ({ item }: { item: ISeriesContent }) => {
     if (item.contentModel === "Question" && typeof item.content !== "string") {
       const questionData = item.content as IQuestion;
       return (
@@ -616,13 +695,24 @@ const AudioPlayerScreen = ({ route }: Props) => {
         />
       );
     }
+    return null;
   };
 
-  useEffect(() => {
-    if (audioSource && audioSource !== currentTrack) {
-      playTrack(book as IChapter);
-    }
-  }, [audioSource, book]);
+  // Safe counts
+  const likesCount = useMemo(() => {
+    if (!book) return 0;
+    if (typeof book.likes === "number") return book.likes;
+    if (Array.isArray(book.likes)) return (book.likes as any).length;
+    return 0;
+  }, [book]);
+
+  const commentsCount = useMemo(() => {
+    if (!book) return 0;
+    if (typeof book.comments === "number") return book.comments;
+    if (Array.isArray(book.comments)) return (book.comments as any).length;
+    return 0;
+  }, [book]);
+
   // ─── Control Icon Button ─────────────────────────────────────
   const ControlItem = ({
     children,
@@ -637,13 +727,15 @@ const AudioPlayerScreen = ({ route }: Props) => {
   );
 
   if (!book && !isConnected) {
-    return <View
-      style={[
-        styles.container,
-        { paddingTop: 100, alignItems: "center", justifyContent: "center" },
-      ]}>
-      <Offline />
-    </View>;
+    return (
+      <View
+        style={[
+          styles.container,
+          { paddingTop: 100, alignItems: "center", justifyContent: "center" },
+        ]}>
+        <Offline />
+      </View>
+    );
   }
 
   return (
@@ -658,42 +750,27 @@ const AudioPlayerScreen = ({ route }: Props) => {
           {/* Cover + Overlay Controls */}
           <Pressable onPress={() => setShowFullscreen(true)}>
             <View style={styles.audioImg}>
-              <Image source={{ uri: book?.cover }} style={styles.coverImage} />
+              {book?.cover ? (
+                <Image source={{ uri: book.cover }} style={styles.coverImage} />
+              ) : (
+                <View style={[styles.coverImage, styles.coverPlaceholder]}>
+                  {isLoading && <ActivityIndicator color={colors.accent} />}
+                </View>
+              )}
 
               <View style={styles.mediaControlsOverlay}>
                 <View style={styles.timelineContainer}>
-                  <Slider
-                    style={styles.slider}
-                    minimumValue={0}
-                    maximumValue={durationSec > 0 ? durationSec : 1}
-                    value={status?.currentTime}
+                  <SmoothAudioSlider
+                    currentTime={status?.currentTime || 0}
+                    duration={durationSec}
+                    onSeek={seekToSec}
+                    disabled={isAudioLoading || !isLoaded || durationSec <= 0}
                     minimumTrackTintColor="#007AFF"
                     maximumTrackTintColor="#ffffff71"
                     thumbTintColor="#007AFF"
-                    onSlidingStart={() => {
-                      setIsSeeking(true);
-                      setSeekValue(status?.currentTime);
-                    }}
-                    onValueChange={(value) => {
-                      setSeekValue(value);
-                    }}
-                    onSlidingComplete={(value) => {
-                      setIsSeeking(false);
-                      seekToSec(value);
-                    }}
-                    disabled={isAudioLoading || !isLoaded || durationSec <= 0}
                   />
-
-                  <View style={styles.timelineTimeRow}>
-                    <Text style={styles.timeText}>
-                      {formatTime(isSeeking ? seekValue : status?.currentTime)}
-                    </Text>
-
-                    <Text style={styles.timeText}>
-                      {formatTime(durationSec)}
-                    </Text>
-                  </View>
                 </View>
+
                 <PlaybackButtons
                   skipBy={skipBy}
                   source={book}
@@ -713,14 +790,16 @@ const AudioPlayerScreen = ({ route }: Props) => {
 
           {/* Book Details */}
           <View style={styles.bookDetails}>
-            <Text style={styles.bookTitle}>{book?.title}</Text>
+            <Text style={styles.bookTitle}>{book?.title || "Loading..."}</Text>
 
             <View style={styles.row}>
-              <Text style={styles.bookAuthor}>by {book?.author}</Text>
+              <Text style={styles.bookAuthor}>
+                by {book?.author || "Unknown"}
+              </Text>
               <View style={styles.divider} />
-              <Text style={styles.statItem}>{book?.likes}</Text>
+              <Text style={styles.statItem}>{likesCount} likes</Text>
               <View style={styles.divider} />
-              <Text style={styles.statItem}>{book?.comments.length}</Text>
+              <Text style={styles.statItem}>{commentsCount} comments</Text>
             </View>
 
             {/* Control Stats Bar */}
@@ -732,11 +811,12 @@ const AudioPlayerScreen = ({ route }: Props) => {
                     height={20}
                     viewBox="0 0 24 24"
                     fill={isLiked ? "#eb4040" : "none"}
-                    stroke={colors.textGray}
+                    stroke={isLiked ? "#eb4040" : colors.textGray}
                     strokeWidth="2">
                     <Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
                   </Svg>
                 </ControlItem>
+
                 <ControlItem onPress={() => setShowComments(true)}>
                   <Svg
                     width={20}
@@ -748,6 +828,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
                     <Path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
                   </Svg>
                 </ControlItem>
+
                 <ControlItem onPress={share}>
                   <Svg
                     width={20}
@@ -763,6 +844,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
                     <Line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
                   </Svg>
                 </ControlItem>
+
                 <ControlItem onPress={download}>
                   <Svg
                     width={20}
@@ -795,52 +877,46 @@ const AudioPlayerScreen = ({ route }: Props) => {
           </View>
         </View>
 
-         {
-          questions && questions?.length > 0 &&
-        <View style={styles.pollSection}>
-          <Carousel
-            loop={false}
-            width={SCREEN_WIDTH}
-            height={510}
-            style={{
-              width: SCREEN_WIDTH,
-            }}
-            data={
-              questions
-            }
-            pagingEnabled
-            snapEnabled
-            mode="parallax"
-            onConfigurePanGesture={(gestureChain) =>
-              gestureChain.activeOffsetX([-15, 15]).failOffsetY([-10, 10])
-            }
-            modeConfig={{
-              parallaxScrollingScale: 0.92,
-              parallaxScrollingOffset: 0,
-            }}
-            renderItem={({ item }) => (
-              <View
+        {questions && questions.length > 0 && (
+          <View style={styles.pollSection}>
+            <Carousel
+              loop={false}
+              width={SCREEN_WIDTH}
+              height={510}
               style={{
-                width: (SCREEN_WIDTH / 100) * 85,
-                height: "100%",
-                justifyContent: "center",
-                alignItems: "center",
-                // backgroundColor: "blue"
-              }}>
+                width: SCREEN_WIDTH,
+              }}
+              data={questions}
+              pagingEnabled
+              snapEnabled
+              mode="parallax"
+              onConfigurePanGesture={(gestureChain) =>
+                gestureChain.activeOffsetX([-15, 15]).failOffsetY([-10, 10])
+              }
+              modeConfig={{
+                parallaxScrollingScale: 0.92,
+                parallaxScrollingOffset: 0,
+              }}
+              renderItem={({ item }) => (
                 <View
                   style={{
-                    width: (SCREEN_WIDTH / 100) * 85, // Constrain visual asset to strict card width
+                    width: (SCREEN_WIDTH / 100) * 85,
                     height: "100%",
-                    // backgroundColor: "red"
-                    // padding: SIDE_PADDING,
+                    justifyContent: "center",
+                    alignItems: "center",
                   }}>
-                  {renderQuestionCard({ item })}
+                  <View
+                    style={{
+                      width: (SCREEN_WIDTH / 100) * 85,
+                      height: "100%",
+                    }}>
+                    {renderQuestionCard({ item })}
+                  </View>
                 </View>
-              </View>
-            )}
+              )}
             />
-        </View>
-        }
+          </View>
+        )}
 
         {/* ── Next Chapters ────────────────────────────────────── */}
         <View style={styles.section}>
@@ -849,11 +925,11 @@ const AudioPlayerScreen = ({ route }: Props) => {
           </View>
           {book && (
             <NextChapter
-              book={book}
-              onOpen={(book: IChapter) => {
+              book={book as any}
+              onOpen={(nextBook: any) => {
                 updateRecentReads();
                 resetInfo();
-                setBook(book);
+                setBook(nextBook);
               }}
               viewer="audio"
             />
@@ -899,41 +975,26 @@ const AudioPlayerScreen = ({ route }: Props) => {
           </Pressable>
 
           <View style={styles.fullscreenImage}>
-            <Image source={{ uri: book?.cover }} style={styles.fsCoverImg} />
+            {book?.cover ? (
+              <Image source={{ uri: book.cover }} style={styles.fsCoverImg} />
+            ) : (
+              <View style={[styles.fsCoverImg, styles.coverPlaceholder]} />
+            )}
           </View>
 
           <View style={styles.fullscreenControls}>
             <View style={styles.timelineContainer}>
-              <Slider
-                style={styles.slider}
-                minimumValue={0}
-                maximumValue={durationSec > 0 ? durationSec : 1}
-                value={status?.currentTime}
+              <SmoothAudioSlider
+                currentTime={status?.currentTime || 0}
+                duration={durationSec}
+                onSeek={seekToSec}
+                disabled={isAudioLoading || !isLoaded || durationSec <= 0}
                 minimumTrackTintColor="#007AFF"
                 maximumTrackTintColor="#ffffff71"
                 thumbTintColor="#007AFF"
-                onSlidingStart={() => {
-                  setIsSeeking(true);
-                  setSeekValue(status?.currentTime);
-                }}
-                onValueChange={(value) => {
-                  setSeekValue(value);
-                }}
-                onSlidingComplete={(value) => {
-                  setIsSeeking(false);
-                  seekToSec(value);
-                }}
-                disabled={isAudioLoading || !isLoaded || durationSec <= 0}
               />
-
-              <View style={styles.timelineTimeRow}>
-                <Text style={styles.timeText}>
-                  {formatTime(isSeeking ? seekValue : status?.currentTime)}
-                </Text>
-
-                <Text style={styles.timeText}>{formatTime(durationSec)}</Text>
-              </View>
             </View>
+
             <PlaybackButtons
               skipBy={skipBy}
               source={book}
@@ -947,6 +1008,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
               animatePlayBtn={animatePlayBtn}
               isPlaying={isPlaying}
             />
+
             <View style={styles.fsUtilitiesRow}>
               <Pressable style={styles.speedBtn} onPress={cycleSpeed}>
                 <Text style={styles.speedBtnText}>{speed}</Text>
@@ -1009,7 +1071,6 @@ const AudioPlayerScreen = ({ route }: Props) => {
                   }}
                   key={i}>
                   <Text
-                    key={`${line.time}-${i}`}
                     style={[
                       styles.lyricsLine,
                       i === activeTranscriptionIndex && styles.lyricsLineActive,
@@ -1023,36 +1084,17 @@ const AudioPlayerScreen = ({ route }: Props) => {
 
           <View style={styles.fullscreenControls}>
             <View style={styles.timelineContainer}>
-              <Slider
-                style={styles.slider}
-                minimumValue={0}
-                maximumValue={durationSec > 0 ? durationSec : 1}
-                value={status?.currentTime}
+              <SmoothAudioSlider
+                currentTime={status?.currentTime || 0}
+                duration={durationSec}
+                onSeek={seekToSec}
+                disabled={isAudioLoading || !isLoaded || durationSec <= 0}
                 minimumTrackTintColor="#007AFF"
                 maximumTrackTintColor="#ffffff71"
                 thumbTintColor="#007AFF"
-                onSlidingStart={() => {
-                  setIsSeeking(true);
-                  setSeekValue(status?.currentTime);
-                }}
-                onValueChange={(value) => {
-                  setSeekValue(value);
-                }}
-                onSlidingComplete={(value) => {
-                  setIsSeeking(false);
-                  seekToSec(value);
-                }}
-                disabled={isAudioLoading || !isLoaded || durationSec <= 0}
               />
-
-              <View style={styles.timelineTimeRow}>
-                <Text style={styles.timeText}>
-                  {formatTime(isSeeking ? seekValue : status?.currentTime)}
-                </Text>
-
-                <Text style={styles.timeText}>{formatTime(durationSec)}</Text>
-              </View>
             </View>
+
             <PlaybackButtons
               skipBy={skipBy}
               source={book}
@@ -1066,6 +1108,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
               animatePlayBtn={animatePlayBtn}
               isPlaying={isPlaying}
             />
+
             <View style={styles.fsUtilitiesRow}>
               <Pressable style={styles.speedBtn} onPress={cycleSpeed}>
                 <Text style={styles.speedBtnText}>{speed}</Text>
@@ -1088,6 +1131,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
         </View>
       </Modal>
 
+      {/* ── Table of Contents Modal ───────────────────────────── */}
       <Modal visible={showToc} transparent animationType="fade">
         <Pressable
           style={styles.tocBackdrop}
@@ -1111,7 +1155,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
               <Pressable
                 key={i}
                 style={styles.tocChipCard}
-                onPress={() => seekToSec(Number(ch.duration))}>
+                onPress={() => seekToSec(parseDurationToSec(ch.duration))}>
                 <Text style={styles.chipChapterName}>{ch.name}</Text>
                 <Text style={styles.chipDurationIndex}>{ch.duration}</Text>
               </Pressable>
@@ -1119,12 +1163,15 @@ const AudioPlayerScreen = ({ route }: Props) => {
           </View>
         </View>
       </Modal>
+
       <CommentsDrawer
         visible={showComments}
         reload={fetchChapter}
         onClose={() => setShowComments(false)}
         chapterId={chapterId}
-        initialComments={book?.comments ? book?.comments : []}
+        initialComments={
+          Array.isArray(book?.comments) ? (book?.comments as any) : []
+        }
       />
     </View>
   );
@@ -1158,32 +1205,21 @@ const styles = StyleSheet.create({
     height: "100%",
     resizeMode: "cover",
   },
+  coverPlaceholder: {
+    backgroundColor: "#181424",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   mediaControlsOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "flex-end",
     padding: 20,
     backgroundColor: "rgba(5, 3, 10, 0.75)",
   },
-
   timelineContainer: {
     width: "100%",
     marginBottom: 14,
   },
-  slider: {
-    width: "100%",
-    height: 28,
-  },
-  timelineTimeRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 2,
-  },
-  timeText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: colors.textGray,
-  },
-
   playbackButtonsRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1212,7 +1248,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: colors.ctlIcon,
   },
-
   bookDetails: {
     marginTop: 4,
   },
@@ -1245,7 +1280,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: colors.accent,
   },
-
   controlStatsBar: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1264,33 +1298,10 @@ const styles = StyleSheet.create({
   controlItem: {
     padding: 4,
   },
-
-  goBtn: {
-    width: "100%",
-    padding: 16,
-    backgroundColor: colors.accent,
-    borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    shadowColor: colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 4,
-  },
-  goBtnText: {
-    color: colors.textWhite,
-    fontSize: 14,
-    fontWeight: "700",
-    letterSpacing: 0.3,
-  },
-
   section: {
     marginBottom: 40,
   },
-    pollSection: {
+  pollSection: {
     marginBottom: 20,
     overflow: "hidden",
   },
@@ -1304,78 +1315,6 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     color: "#e5e7eb",
   },
-
-  chapterQueue: {
-    paddingHorizontal: 24,
-    gap: 12,
-  },
-  queueItem: {
-    backgroundColor: colors.bgCard,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    borderRadius: 12,
-    padding: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  queueWrapper: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    flex: 1,
-  },
-  queueThumbContainer: {
-    width: 56,
-    height: 56,
-    position: "relative",
-  },
-  queueThumb: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 8,
-    resizeMode: "cover",
-  },
-  queueCardBadge: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderBottomLeftRadius: 6,
-  },
-  badgeText: {
-    fontSize: 8,
-    fontWeight: "600",
-    color: "#fff",
-    textTransform: "uppercase",
-  },
-  queueInfo: {
-    flex: 1,
-  },
-  queueTitle: {
-    fontFamily: "Playfair Display",
-    fontSize: 15,
-    fontWeight: "600",
-    color: colors.textWhite,
-    marginBottom: 2,
-  },
-  queueAuthor: {
-    fontSize: 11,
-    color: colors.textGray,
-    marginBottom: 4,
-  },
-  pages: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: colors.accent,
-    textTransform: "uppercase",
-    letterSpacing: 0.3,
-  },
-  dragIcon: {
-    paddingLeft: 8,
-  },
-
   fullscreenOverlay: {
     flex: 1,
     backgroundColor: "#000",
@@ -1457,7 +1396,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   lyricsPanelSheet: {
     flex: 1,
     backgroundColor: "#000",
@@ -1479,7 +1417,6 @@ const styles = StyleSheet.create({
   lyricsLineActive: {
     color: "#ffffff",
   },
-
   tocBackdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.5)",

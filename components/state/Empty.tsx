@@ -1,9 +1,12 @@
-import React from 'react'
+import React from 'react';
+import { View, Text } from 'react-native';
 
 const empty = () => {
   return (
-    <View>empty</View>
-  )
-}
+    <View>
+      <Text>empty</Text>
+    </View>
+  );
+};
 
-export default empty
+export default empty;

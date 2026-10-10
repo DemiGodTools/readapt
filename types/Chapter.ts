@@ -4,6 +4,8 @@ export type IChapter = {
   _id: string;
   title: string;
   details?: string;
+  levelNumber?: number;
+  shortDescription?: string;
   media: string; // URL
   type: "pdf" | "audio";
   for: SubscriptionPlan;

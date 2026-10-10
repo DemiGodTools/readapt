@@ -9,7 +9,8 @@ import {
   FlatList,
   ActivityIndicator,
 } from "react-native";
-import React, { useEffect, useState } from "react";
+import axios from "axios";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import Svg, { Path, Circle, Polyline, Line, G } from "react-native-svg";
 import { LinearGradient } from "expo-linear-gradient";
 import { ISeries, ISeriesContent } from "../../types/Series";
@@ -19,6 +20,7 @@ import useAuth from "../../hooks/useAuth";
 import { api } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useNavigation } from "@react-navigation/native";
 
 const { width } = Dimensions.get("window");
 
@@ -34,21 +36,19 @@ import Animated, {
   withTiming,
   runOnJS,
 } from "react-native-reanimated";
-// import {runOnJS} from 'react-native-worklets'
 import pallete from "../../lib/Colors";
 import ContentCard from "../../components/props/ContentCard";
 import { useModal } from "../../hooks/useModal";
 import { IUser } from "../../types/User";
 import { IRecentRead } from "../../types/Storage";
 import { useUser } from "../../hooks/useUser";
-import Carousel from "react-native-reanimated-carousel";
-import QuestionCard from "../../components/props/QuestionCard";
-import { IQuestion } from "../../types/Question";
-import CommentsDrawer from "../../components/props/Comments";
 import Offline from "../../components/state/Offline";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 
 const SHEET_HEIGHT = 320;
+
+// Module-level In-Flight Request Deduplication Map
+const activeSeriesRequests = new Map<string, Promise<any>>();
 
 interface DetailsPanelProps {
   isOpen: boolean;
@@ -89,27 +89,31 @@ const DetailsPanel = ({ isOpen, onClose, data }: DetailsPanelProps) => {
       } else {
         translateY.value = withSpring(0, { damping: 105 });
       }
-    // ✅ Safely dispatch execution back to the JS thread
     });
 
   const animatedStyles = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
   }));
 
-  if (!isOpen) return null;
   type ChapterItem = Extract<ISeriesContent, { contentModel: "Chapter" }>;
 
-  const totalChapters: ChapterItem[] =
-    (data?.chapters?.filter(
-      (item): item is ChapterItem => item.contentModel === "Chapter",
-    ) as ChapterItem[]) ?? [];
+  const { totalChapters, totalPdfChapters, totalAudioChapters } = useMemo(() => {
+    const chapters: ChapterItem[] =
+      (data?.chapters?.filter(
+        (item): item is ChapterItem => item.contentModel === "Chapter"
+      ) as ChapterItem[]) ?? [];
 
-  const totalPdfChapters = totalChapters?.filter(
-    (item) => item.content.type === "pdf",
-  );
-  const totalAudioChapters = totalChapters?.filter(
-    (item) => item.content.type === "audio",
-  );
+    const pdfs = chapters.filter((item) => item.content?.type === "pdf");
+    const audios = chapters.filter((item) => item.content?.type === "audio");
+
+    return {
+      totalChapters: chapters,
+      totalPdfChapters: pdfs,
+      totalAudioChapters: audios,
+    };
+  }, [data?.chapters]);
+
+  if (!isOpen) return null;
 
   return (
     <GestureHandlerRootView style={StyleSheet.absoluteFill}>
@@ -126,21 +130,21 @@ const DetailsPanel = ({ isOpen, onClose, data }: DetailsPanelProps) => {
           {/* Stats Grid Row */}
           <View style={panelStyles.panelSRow}>
             <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{totalChapters?.length}</Text>
+              <Text style={panelStyles.pVal}>{totalChapters.length}</Text>
               <Text style={panelStyles.pLabel}>Chapters</Text>
             </TouchableOpacity>
 
             <View style={panelStyles.pDivider} />
 
             <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{totalPdfChapters?.length}</Text>
+              <Text style={panelStyles.pVal}>{totalPdfChapters.length}</Text>
               <Text style={panelStyles.pLabel}>PDFs</Text>
             </TouchableOpacity>
 
             <View style={panelStyles.pDivider} />
 
             <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{totalAudioChapters?.length}</Text>
+              <Text style={panelStyles.pVal}>{totalAudioChapters.length}</Text>
               <Text style={panelStyles.pLabel}>Audios</Text>
             </TouchableOpacity>
 
@@ -156,7 +160,7 @@ const DetailsPanel = ({ isOpen, onClose, data }: DetailsPanelProps) => {
           <TouchableOpacity activeOpacity={0.9}>
             <Text style={panelStyles.panelDescription}>
               {data?.description ??
-                "This comprehensive series covers everything from the fundamentals of equity to advanced technical analysis. Designed for beginners and intermediate traders, this course provides actionable insights into market trends, risk management strategies, and IPO analysis. Join the community to master the art of trading."}
+                "This comprehensive series covers everything from fundamentals to advanced analysis."}
             </Text>
           </TouchableOpacity>
         </Animated.View>
@@ -244,164 +248,396 @@ interface SeriesOverviewProps {
 }
 
 const SeriesOverview = ({ route }: SeriesOverviewProps) => {
+  const navigation = useNavigation();
   const { accessToken } = useAuth();
   const { showToast } = useToast();
+  const { showModal } = useModal();
+  const { user, reload } = useUser();
+  const { isConnected } = useNetworkStatus();
+
+  const currentSeriesId = route.params?.seriesId;
+
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const { showModal } = useModal();
   const [completeChapters, setCompleteChapters] = useState(0);
-  const { user, reload } = useUser();
-  const [isJoined, setIsJoined] = useState(
-    user?.joinedSeries === route.params?.seriesId,
-  );
-  const {isConnected} = useNetworkStatus()
+  const [isJoined, setIsJoined] = useState(false);
+  const [joinedSeriesTitle, setJoinedSeriesTitle] = useState<string | null>(null);
+  const [recommendedChapter, setRecommendedChapter] = useState<IChapter | null>(null);
 
-  const getSeries = async () => {
-    if (accessToken) {
-      try {
-        const { data } = await api.get(`/series/${route.params?.seriesId}`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
-        const series: ISeries = data.data;
-        setSeriesData(series);
-      } catch (error) {
-        console.error("Error fetching series data in series overview:", error);
-        showToast({ title: "Error" });
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // 1. High-Performance Cache-First + SWR Series Loader
+  const loadSeries = useCallback(async () => {
+    if (!currentSeriesId) return;
+
+    const cacheKey = `cache_series_${currentSeriesId}`;
+
+    // Step A: Instant Cache Hydration (0ms paint)
+    try {
+      const cached = await AsyncStorage.getItem(cacheKey);
+      if (cached && isMountedRef.current) {
+        const parsed: ISeries = JSON.parse(cached);
+        setSeriesData(parsed);
       }
+    } catch {}
+
+    // Step B: Request Deduplication & Background Revalidation
+    if (!accessToken || !isConnected) return;
+
+    if (activeSeriesRequests.has(currentSeriesId)) {
+      try {
+        const data = await activeSeriesRequests.get(currentSeriesId);
+        if (data && isMountedRef.current) {
+          setSeriesData(data);
+        }
+      } catch {}
+      return;
     }
-  };
+
+    const fetchPromise = api
+      .get(`/series/${currentSeriesId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      .then((res) => {
+        const fresh = res?.data?.data;
+        if (fresh) {
+          AsyncStorage.setItem(cacheKey, JSON.stringify(fresh)).catch(() => {});
+          if (isMountedRef.current) {
+            setSeriesData(fresh);
+          }
+        }
+        return fresh;
+      })
+      .catch((err) => {
+        if (!axios.isCancel(err)) {
+          console.warn("Background series sync failed:", err?.message);
+        }
+        return null;
+      })
+      .finally(() => {
+        activeSeriesRequests.delete(currentSeriesId);
+      });
+
+    activeSeriesRequests.set(currentSeriesId, fetchPromise);
+  }, [currentSeriesId, accessToken, isConnected]);
 
   useEffect(() => {
-    if (seriesData) return;
-    getSeries();
-  }, [accessToken, route.params?.seriesId, showToast, isConnected]);
+    loadSeries();
+  }, [loadSeries]);
 
   useEffect(() => {
     setIsJoined(user?.joinedSeries === seriesData?._id);
   }, [user?.joinedSeries, seriesData?._id]);
 
-  const seriesTitle = seriesData?.title;
-  const joinedCount = seriesData?.joinedBy.length || 0;
-  const coverUrl = seriesData?.cover;
+  // 2. Optimized Current Joined Series Title Cache
+  useEffect(() => {
+    let cancel = false;
+    const fetchCurrentJoinedSeries = async () => {
+      if (
+        user?.joinedSeries &&
+        user.joinedSeries !== seriesData?._id &&
+        accessToken &&
+        isConnected
+      ) {
+        try {
+          const cacheTitleKey = `series_title_${user.joinedSeries}`;
+          const cachedTitle = await AsyncStorage.getItem(cacheTitleKey);
+          if (cachedTitle && !cancel) {
+            setJoinedSeriesTitle(cachedTitle);
+            return;
+          }
 
-  const totalChapters = seriesData?.chapters?.filter((item) => item.contentModel === "Chapter").length || 48;
-  const ChapterIdsInSeries = seriesData?.chapters?.map(
-    (item) => item.content._id,
-  );
+          const { data } = await api.get(`/series/${user.joinedSeries}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (data?.data?.title && !cancel) {
+            setJoinedSeriesTitle(data.data.title);
+            AsyncStorage.setItem(cacheTitleKey, data.data.title).catch(() => {});
+          }
+        } catch {}
+      } else {
+        if (!cancel) setJoinedSeriesTitle(null);
+      }
+    };
+
+    fetchCurrentJoinedSeries();
+    return () => {
+      cancel = true;
+    };
+  }, [user?.joinedSeries, seriesData?._id, accessToken, isConnected]);
+
+  // 3. Memoized Chapter Metrics & Progress
+  const chapterItems = useMemo(() => {
+    return (
+      seriesData?.chapters?.filter((item) => item.contentModel === "Chapter") || []
+    );
+  }, [seriesData?.chapters]);
+
+  const totalChapters = chapterItems.length;
+
+  const chapterIdsSet = useMemo(() => {
+    const ids = new Set<string>();
+    chapterItems.forEach((item) => {
+      if (item.content?._id) ids.add(item.content._id);
+    });
+    return ids;
+  }, [chapterItems]);
 
   useEffect(() => {
-    if (!seriesData?.chapters) return;
-    const getJoinedSeriesData = async () => {
-      const readChapters = await AsyncStorage.getItem("recentReads");
-      if (!readChapters) return;
-      const recentReads: IRecentRead[] = JSON.parse(readChapters);
-      const json: IChapter[] = recentReads.map(
-        (recentRead) => recentRead.content,
-      );
-      const readChaptersInSeries = json.filter((readChapter) =>
-        ChapterIdsInSeries?.includes(readChapter._id),
-      );
-      setCompleteChapters(readChaptersInSeries.length);
+    if (chapterIdsSet.size === 0) return;
+    let cancel = false;
+
+    const calcProgress = async () => {
+      try {
+        const readChapters = await AsyncStorage.getItem("recentReads");
+        if (!readChapters || cancel) return;
+        const recentReads: IRecentRead[] = JSON.parse(readChapters);
+        let completed = 0;
+        recentReads.forEach((r) => {
+          if (r.content?._id && chapterIdsSet.has(r.content._id)) {
+            completed++;
+          }
+        });
+        if (!cancel) setCompleteChapters(completed);
+      } catch {}
     };
-    getJoinedSeriesData();
-  }, [seriesData?.chapters, isConnected]);
+
+    calcProgress();
+    return () => {
+      cancel = true;
+    };
+  }, [chapterIdsSet]);
+
+  const joinedCount = seriesData?.joinedBy?.length || 0;
+  const coverUrl = seriesData?.cover;
+
+  const renderFormattedTitle = () => {
+    const raw = seriesData?.title || "";
+    const cleanTitle = raw
+      .replace(/^learn\s+/i, "")
+      .replace(/\s+\d+-\d+$/i, "")
+      .trim();
+
+    if (seriesData?.type === "framework") {
+      return (
+        <Text style={styles.seriesTitle}>
+          <Text style={{ color: pallete.textwhite }}>LEARN </Text>
+          <Text style={{ color: "#38bdf8" }}>{cleanTitle.toUpperCase()} </Text>
+          <Text style={{ color: pallete.textwhite }}>1-{totalChapters}</Text>
+        </Text>
+      );
+    }
+
+    return <Text style={styles.seriesTitle}>{cleanTitle}</Text>;
+  };
 
   const joinSeries = async () => {
-    if(!isConnected) {
-      showToast({title: "You are offline! please Connect to the Internet"})
+    if (!isConnected) {
+      showToast({ title: "You are offline! Please connect to the Internet" });
       return;
     }
     try {
+      setIsJoined(true);
       const data = await api.post(
         "/series/join",
-        {
-          seriesId: seriesData?._id,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
+        { seriesId: seriesData?._id },
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
 
       if (!data.data.success) {
         setIsJoined(false);
-        showToast({ title: "something went wrong" });
+        showToast({ title: "Something went wrong" });
         return;
       }
       reload();
-    } catch (err) {
+    } catch {
       setIsJoined(false);
-      console.error(err);
-      showToast({ title: "something went wrong" });
-    } finally {
-      reload();
-      getSeries();
-      setIsJoined(true);
+      showToast({ title: "Something went wrong" });
     }
-    return;
   };
 
   const exitSeries = async () => {
-     if (!isConnected) {
-      showToast({
-        title: "Please connect to the Internet.",
-      });
-      return;
-    }
-     if(!isConnected) {
-      showToast({title: "You are offline! please Connect to the Internet"})
+    if (!isConnected) {
+      showToast({ title: "You are offline! Please connect to the Internet" });
       return;
     }
     try {
+      setIsJoined(false);
       const data = await api.post(
         "/series/exit",
-        {
-          seriesId: seriesData?._id,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
+        { seriesId: seriesData?._id },
+        { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       if (!data.data.success) {
         setIsJoined(true);
-        showToast({ title: data.data.message || "something went wrong" });
+        showToast({ title: data.data.message || "Something went wrong" });
         return;
       }
       reload();
-    } catch (err) {
-      setIsJoined(false);
-      console.error("exit error", err);
-      showToast({ title: "something went wrong" });
-    } finally {
-      reload();
-      getSeries();
-      setIsJoined(false);
+    } catch {
+      setIsJoined(true);
+      showToast({ title: "Something went wrong" });
     }
-    return;
   };
 
-  if (!seriesData) {
+  const renderContentCard = useCallback(
+    ({ item, index }: { item: any; index: number }) => {
+      const rawContent = item.content;
+      const chapterData: IChapter =
+        typeof rawContent === "object" ? rawContent : item;
+
+      return (
+        <ContentCard
+          key={chapterData?._id || index}
+          book={chapterData}
+          index={index}
+          seriesType={seriesData?.type === "framework" ? "framework" : "normal"}
+        />
+      );
+    },
+    [seriesData?.type]
+  );
+
+  const renderRecommendationCard = useCallback(() => {
+    if (seriesData?.type !== "framework") return null;
+
+    const firstChapter = seriesData?.chapters?.find(
+      (item) => item.contentModel === "Chapter"
+    );
+    const fallbackCover =
+      (firstChapter?.content as IChapter)?.cover || coverUrl;
+
+    const recText =
+      (seriesData as any)?.recommendationText ||
+      "Explore another perspective on Power.";
+    const recCover = recommendedChapter?.cover || fallbackCover;
+    const recTitle =
+      recommendedChapter?.title || "Recommended Reading";
+
+    const rawTarget =
+      recommendedChapter?._id ||
+      (seriesData as any)?.recommendationBookId?._id ||
+      (seriesData as any)?.recommendationBookId;
+
+    const targetChapterId =
+      typeof rawTarget === "object" && rawTarget?._id
+        ? rawTarget._id
+        : rawTarget;
+
     return (
-      <View style={[styles.body,{ paddingTop: 100, alignItems: "center", justifyContent: "center"}]}>
-        <ActivityIndicator />
+      <View style={styles.recommendationSection}>
+        <TouchableOpacity
+          activeOpacity={0.88}
+          style={styles.recommendCard}
+          onPress={() => {
+            const rawRec = (seriesData as any)?.recommendationBookId;
+            const recId =
+              recommendedChapter?._id ||
+              (typeof rawRec === "object" ? rawRec?._id : rawRec);
+
+            const recData =
+              recommendedChapter || (typeof rawRec === "object" ? rawRec : null);
+
+            if (recId) {
+              (navigation as any).navigate("ReadBook", {
+                bookId: String(recId),
+                initialBookData: recData,
+              });
+            } else {
+              showToast({ title: "Content coming soon" });
+            }
+          }}>
+          <View style={styles.recommendBgAmbient}>
+            <Image
+              source={{ uri: recCover }}
+              style={styles.ambientImage}
+              blurRadius={6}
+            />
+            <LinearGradient
+              colors={[
+                "rgba(5, 10, 24, 0.94)",
+                "rgba(7, 18, 38, 0.82)",
+                "rgba(10, 25, 47, 0.65)",
+              ]}
+              start={{ x: 0, y: 0.5 }}
+              end={{ x: 1, y: 0.5 }}
+              style={styles.recommendBgOverlay}
+            />
+          </View>
+
+          <View style={styles.recommendCoverWrap}>
+            <Image
+              source={{ uri: recCover }}
+              style={styles.recommendCover}
+              resizeMode="cover"
+            />
+          </View>
+
+          <View style={styles.recommendInfo}>
+            <Text style={styles.recommendTag}>RECOMMENDATION READING</Text>
+            <Text style={styles.recommendTitle} numberOfLines={1}>
+              {recTitle}
+            </Text>
+            <Text style={styles.recommendDesc} numberOfLines={2}>
+              {recText}
+            </Text>
+          </View>
+
+          <View style={styles.recommendArrow}>
+            <Svg
+              width={20}
+              height={20}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#94a3b8"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round">
+              <Polyline points="9 18 15 12 9 6" />
+            </Svg>
+          </View>
+        </TouchableOpacity>
+      </View>
+    );
+  }, [
+    seriesData?.type,
+    seriesData?.chapters,
+    seriesData?.recommendationText,
+    seriesData?.recommendationBookId,
+    coverUrl,
+    recommendedChapter,
+    navigation,
+    showToast,
+  ]);
+
+  if (!seriesData && !isConnected) {
+    return (
+      <View
+        style={[
+          styles.body,
+          { paddingTop: 100, alignItems: "center", justifyContent: "center" },
+        ]}>
+        <Offline />
       </View>
     );
   }
 
-  const renderContentCard = ({ item }: { item: any }) => {
-    const chapterData = item.content as IChapter;
-    return <ContentCard key={chapterData._id} book={chapterData} />;
-  };
-
-    if ((!user || !seriesData ) && !isConnected) {
-    return <View style={[styles.body,{ paddingTop: 100, alignItems: "center", justifyContent: "center"}]}>
-      <Offline />
-    </View>;
+  if (!seriesData) {
+    return (
+      <View
+        style={[
+          styles.body,
+          { paddingTop: 100, alignItems: "center", justifyContent: "center" },
+        ]}>
+        <ActivityIndicator color={pallete.accent} />
+      </View>
+    );
   }
 
   return (
@@ -421,12 +657,12 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
         </View>
 
         <View style={styles.seriesInfo}>
-          <Text style={styles.seriesTitle}>{seriesTitle}</Text>
+          {renderFormattedTitle()}
+
           <Text style={styles.seriesAuthor}>
-            {seriesData?.chapters[0].content.author}
+            by {seriesData?.author || (seriesData?.chapters?.[0]?.content as IChapter)?.author || "READAPT"}
           </Text>
 
-          {/* Scalable Badge using PopButton */}
           <PopButton
             styles={styles.joinedBadge}
             activeStyles={styles.joinedBadgeActive}>
@@ -435,7 +671,7 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
               height="14"
               viewBox="0 0 24 24"
               fill="none"
-              stroke={pallete.accent}
+              stroke={seriesData?.type === "framework" ? "#38bdf8" : pallete.accent}
               strokeWidth="2">
               <Path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
               <Circle cx="9" cy="7" r="4" />
@@ -449,26 +685,43 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
           </PopButton>
         </View>
 
-        {/* Dynamic Progress Box Framework Layout Section */}
         <PopButton styles={styles.progressBox}>
           <Text style={styles.progressText}>
-            {completeChapters} of {totalChapters} chapters complete
+            {completeChapters} of {totalChapters}{" "}
+            <Text
+              style={{
+                color:
+                  seriesData?.type === "framework"
+                    ? "#38bdf8"
+                    : pallete.textwhite,
+                fontWeight: "700",
+              }}>
+              {seriesData?.type === "framework" ? "levels" : "chapters"}
+            </Text>{" "}
+            complete
           </Text>
 
           <View style={styles.progressBarContainer}>
-            {/* Progress Bar Track Layer */}
             <View style={styles.pBarTrack}>
               <View
                 style={[
                   styles.pBarFill,
-                  { width: `${(completeChapters / totalChapters) * 100}%` },
+                  {
+                    width: `${
+                      totalChapters > 0
+                        ? (completeChapters / totalChapters) * 100
+                        : 0
+                    }%`,
+                    backgroundColor:
+                      seriesData?.type === "framework"
+                        ? "#38bdf8"
+                        : pallete.accent,
+                  },
                 ]}
               />
             </View>
 
-            {/* Inline Micro Interaction Actions Control Stack */}
             <View style={styles.actionIcons}>
-              {/* Action 2: Meta Info Description Sheet Trigger */}
               <PopButton
                 styles={styles.actBtn}
                 onPress={() => {
@@ -489,7 +742,6 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
                 </Svg>
               </PopButton>
 
-              {/* Action 3: Join Confirmation Overlay Trigger */}
               {user?.joinedSeries === seriesData?._id ? (
                 <PopButton
                   styles={[styles.actBtn, styles.exitBtn]}
@@ -499,16 +751,17 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
                       onConfirm: exitSeries,
                     })
                   }>
-                  <Svg fill="none" width="18" height="18" viewBox="0 0 16 16" >
-                    <G id="SVGRepo_bgCarrier" strokeWidth="0"></G>
+                  <Svg fill="none" width="18" height="18" viewBox="0 0 16 16">
+                    <G id="SVGRepo_bgCarrier" strokeWidth="0" />
                     <G
                       id="SVGRepo_tracerCarrier"
                       strokeLinecap="round"
-                      strokeLinejoin="round"></G>
+                      strokeLinejoin="round"
+                    />
                     <G id="SVGRepo_iconCarrier">
                       <G fill={pallete.false}>
-                        <Path d="M1 8a6 6 0 018.514-5.45.75.75 0 01-.629 1.363 4.5 4.5 0 100 8.175.75.75 0 11.63 1.361A6 6 0 011 8z"></Path>
-                        <Path d="M11.245 4.695a.75.75 0 00-.05 1.06l1.36 1.495H6.75a.75.75 0 000 1.5h5.805l-1.36 1.495a.75.75 0 001.11 1.01l2.5-2.75a.748.748 0 00-.002-1.012l-2.498-2.748a.75.75 0 00-1.06-.05z"></Path>
+                        <Path d="M1 8a6 6 0 018.514-5.45.75.75 0 01-.629 1.363 4.5 4.5 0 100 8.175.75.75 0 11.63 1.361A6 6 0 011 8z" />
+                        <Path d="M11.245 4.695a.75.75 0 00-.05 1.06l1.36 1.495H6.75a.75.75 0 000 1.5h5.805l-1.36 1.495a.75.75 0 001.11 1.01l2.5-2.75a.748.748 0 00-.002-1.012l-2.498-2.748a.75.75 0 00-1.06-.05z" />
                       </G>
                     </G>
                   </Svg>
@@ -516,12 +769,16 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
               ) : (
                 <PopButton
                   styles={[styles.actBtn, styles.joinBtn]}
-                  onPress={() =>
+                  onPress={() => {
+                    const confirmMsg = joinedSeriesTitle
+                      ? `Joining this series will automatically remove you from "${joinedSeriesTitle}". Do you want to proceed?`
+                      : "Are you sure you want to join this series?";
+
                     showModal({
-                      title: "Are you sure to join this series?",
+                      title: confirmMsg,
                       onConfirm: joinSeries,
-                    })
-                  }>
+                    });
+                  }}>
                   <Svg
                     width="14"
                     height="14"
@@ -541,17 +798,12 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
           </View>
         </PopButton>
 
-        {/* Grid Iteration Viewport Mapping Blocks Context */}
         <View style={styles.gridSection}>
           <View style={styles.booksGrid}>
             <FlatList
-              data={
-                seriesData?.chapters?.filter(
-                  (item) => item.contentModel === "Chapter",
-                ) || []
-              }
+              data={chapterItems}
               renderItem={renderContentCard}
-              keyExtractor={(item) => item.content._id}
+              keyExtractor={(item, idx) => item?.content?._id || idx.toString()}
               numColumns={2}
               scrollEnabled={false}
               columnWrapperStyle={{
@@ -561,10 +813,12 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
               contentContainerStyle={{
                 paddingHorizontal: 0,
               }}
+              ListFooterComponent={renderRecommendationCard}
             />
           </View>
         </View>
       </ScrollView>
+
       <DetailsPanel
         isOpen={isDetailOpen}
         onClose={() => {
@@ -572,7 +826,9 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
         }}
         data={{
           chapters: seriesData?.chapters,
-          published: new Date(seriesData.createdAt).toLocaleDateString(),
+          published: (seriesData as any)?.createdAt
+            ? new Date((seriesData as any).createdAt).toLocaleDateString()
+            : "",
           description: seriesData?.description,
         }}
       />
@@ -704,33 +960,87 @@ const styles = StyleSheet.create({
     justifyContent: "space-around",
     gap: 16,
   },
-  // Sub-content layout components metrics configurations
-  contentCardFallback: {
-    width: (Dimensions.get("window").width - pallete.paddingside * 2 - 16) / 2,
-    backgroundColor: "rgba(255, 255, 255, 0.03)",
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
-  },
-  cardImage: {
+  recommendationSection: {
     width: "100%",
-    height: 140,
-    borderRadius: 8,
-    marginBottom: 8,
-    backgroundColor: "#222",
+    paddingHorizontal: 15,
+    marginTop: 10,
+    marginBottom: 40,
   },
-  cardTitle: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: pallete.textwhite,
-    marginBottom: 4,
+  recommendCard: {
+    position: "relative",
+    width: "100%",
+    backgroundColor: "#0b1120",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.7,
+    shadowRadius: 16,
+    elevation: 8,
   },
-  cardMeta: {
-    fontSize: 10,
-    color: pallete.accent,
+  recommendBgAmbient: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: "hidden",
+  },
+  ambientImage: {
+    width: "100%",
+    height: "100%",
+    opacity: 0.42,
+    transform: [{ scale: 1.1 }],
+  },
+  recommendBgOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  recommendCoverWrap: {
+    width: 70,
+    height: 70,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "#111",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.15)",
+    zIndex: 2,
+  },
+  recommendCover: {
+    width: "100%",
+    height: "100%",
+  },
+  recommendInfo: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: "center",
+    zIndex: 2,
+  },
+  recommendTag: {
+    fontSize: 9,
     textTransform: "uppercase",
     fontWeight: "700",
+    letterSpacing: 0.6,
+    color: "#38bdf8",
+    marginBottom: 3,
+  },
+  recommendTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#ffffff",
+    marginBottom: 3,
+  },
+  recommendDesc: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: "#cbd5e1",
+  },
+  recommendArrow: {
+    zIndex: 2,
+    justifyContent: "center",
+    alignItems: "center",
   },
 });
 

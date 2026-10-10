@@ -1,265 +1,325 @@
-import React, { useRef } from "react";
+import React, { memo, useEffect } from "react";
 import {
   Image,
   Text,
   View,
   StyleSheet,
   Pressable,
-  Animated,
   Dimensions,
 } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { useNavigation } from "@react-navigation/native";
 import { RootStackParamList } from "../nav/MainNavigation";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import pallete, { assetPallete } from "../../lib/Colors"; // ← Import palette
-const width = Dimensions.get("window").width;
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSpring,
+  Easing,
+} from "react-native-reanimated";
+import pallete from "../../lib/Colors";
+
+const { width } = Dimensions.get("window");
 
 type Props = {
   id: string;
   cover: string;
   title: string;
-  readtill: string;
-  total: string;
+  readtill: any;
+  total: any;
   type: string;
   author: string;
-  icon?: React.ReactNode;
   learWidth?: number;
 };
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
-const Contentprogress = ({
-  id,
-  cover,
-  title,
-  readtill,
-  total,
-  type,
-  author,
-  learWidth,
-  icon,
-}: Props) => {
-  const navigation = useNavigation<NavigationProp>();
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-
-  const handlePressIn = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 0.96,
-      useNativeDriver: true,
-      speed: 20,
-    }).start();
-  };
-
-  const handlePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      useNativeDriver: true,
-      speed: 20,
-    }).start();
-  };
-
-  const handlePress = () => {
-    if(type === "pdf") {
-      navigation.navigate("ReadBook", { bookId: id });
-    } else if(type === "audio") {
-      navigation.navigate("AudioRdr", { bookId : id });
-    }
-  };
-
-  const formatTime = (sec: number) => {
-  if (!sec || sec < 0 || !isFinite(sec)) return "0:00";
-  const totalSec = Math.floor(sec);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+const toSeconds = (val: any): number => {
+  if (val === undefined || val === null) return 0;
+  if (typeof val === "number") {
+    return val > 10000 ? Math.floor(val / 1000) : Math.floor(val);
+  }
+  const str = String(val).trim();
+  if (str === "00:10" || str === "10") return 0;
+  if (str.includes(":")) {
+    const parts = str.split(":").map((p) => parseFloat(p) || 0);
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+  const n = parseFloat(str);
+  if (isNaN(n) || n <= 0) return 0;
+  return n > 10000 ? Math.floor(n / 1000) : Math.floor(n);
 };
 
-  const progressPercentage =
-    total && readtill ? (parseFloat(readtill) / parseFloat(total)) * 100 : 20;
+const formatClock = (sec: number): string => {
+  if (!sec || sec <= 0 || isNaN(sec)) return "00:00";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
 
-  return (
-    <Pressable
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
-      onPress={handlePress}
-      style={styles.listItem}>
-      <Animated.View
-        style={[styles.container, { width: learWidth ? learWidth : width / 100 * 80 ,  transform: [{ scale: scaleAnim }] }]}>
-        <View style={styles.itemContent}>
-          {/* Thumbnail */}
-          <View style={styles.thumbWrapper}>
-            <Image source={{ uri: cover }} style={styles.listThumb} />
+  if (h > 0) {
+    return `${h}:${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+  }
+  return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+};
 
-            <View
-              style={[
-                styles.thumbBadge,
-                {
-                  backgroundColor:
-                    type === "pdf" ? assetPallete[0] : assetPallete[1],
-                },
-              ]}>
-              <Text style={styles.badgeText}>
-                {type === "pdf" ? "BOOK" : "AUDIO"}
-              </Text>
-            </View>
-          </View>
+const Contentprogress: React.FC<Props> = memo(
+  ({ id, cover, title, readtill, total, type, author, learWidth }) => {
+    const navigation = useNavigation<NavigationProp>();
 
-          {/* Info */}
-          <View style={styles.listInfo}>
-            <Text style={styles.listTitle} numberOfLines={2}>
-              {title}
-            </Text>
-            <Text style={styles.listAuthor} numberOfLines={1}>
-              {author}
-            </Text>
+    const scaleAnim = useSharedValue(1);
+    const progressFillAnim = useSharedValue(0);
 
-            <View style={styles.progressTextContainer}>
-              <Text style={styles.progressRead}>{type === "pdf" ? readtill: formatTime(parseFloat(readtill))}</Text>
-              <Text style={styles.progressTotal}>
-                {" / "}
-                {formatTime(parseFloat(readtill + 100))} {type === "pdf" ? "pages" : "min"}
-              </Text>
-            </View>
+    const isAudio = String(type).toLowerCase().includes("audio");
+    const accentColor = isAudio ? "#38bdf8" : "#22c55e";
 
-            <View style={styles.progressTrack}>
+    let currentSec = 0;
+    let totalSec = 0;
+    let displayCurrent = "1";
+    let displayTotal = "1";
+    let progressPct = 0;
+    let targetPage = 1;
+
+    if (isAudio) {
+      currentSec = toSeconds(readtill);
+      totalSec = toSeconds(total);
+      if (totalSec > 0 && totalSec < currentSec) totalSec = currentSec;
+
+      displayCurrent = formatClock(currentSec);
+      displayTotal = totalSec > 0 ? formatClock(totalSec) : "--:--";
+      progressPct =
+        totalSec > 0
+          ? Math.min(100, Math.max(0, (currentSec / totalSec) * 100))
+          : 0;
+    } else {
+      targetPage = Math.max(1, parseInt(String(readtill), 10) || 1);
+      const totPage = Math.max(targetPage, parseInt(String(total), 10) || 1);
+
+      displayCurrent = String(targetPage);
+      displayTotal = String(totPage);
+      progressPct =
+        totPage > 0
+          ? Math.min(100, Math.max(0, (targetPage / totPage) * 100))
+          : 0;
+    }
+
+    // Smooth UI Thread progress interpolation
+    useEffect(() => {
+      progressFillAnim.value = withTiming(progressPct, {
+        duration: 350,
+        easing: Easing.out(Easing.cubic),
+      });
+    }, [progressPct]);
+
+    const animatedFillStyle = useAnimatedStyle(() => ({
+      width: `${progressFillAnim.value}%`,
+    }));
+
+    const animatedCardStyle = useAnimatedStyle(() => ({
+      transform: [{ scale: scaleAnim.value }],
+    }));
+
+    const handlePressIn = () => {
+      scaleAnim.value = withSpring(0.975, { damping: 15, stiffness: 300 });
+    };
+
+    const handlePressOut = () => {
+      scaleAnim.value = withSpring(1, { damping: 15, stiffness: 300 });
+    };
+
+    const handlePress = () => {
+      if (isAudio) {
+        (navigation as any).navigate("AudioRdr", {
+          bookId: id,
+          seekTime: currentSec,
+        });
+      } else {
+        (navigation as any).navigate("ReadBook", {
+          bookId: id,
+          page: targetPage,
+          initialPage: targetPage,
+          startPage: targetPage,
+        });
+      }
+    };
+
+    return (
+      <Pressable
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={handlePress}
+        style={styles.listItem}>
+        <Animated.View
+          style={[
+            styles.container,
+            { width: learWidth ? learWidth : (width / 100) * 85 },
+            animatedCardStyle,
+          ]}>
+          <View style={styles.itemContent}>
+            {/* Thumbnail */}
+            <View style={styles.thumbWrapper}>
+              <Image source={{ uri: cover }} style={styles.listThumb} />
               <View
                 style={[
-                  styles.progressFill,
-                  {
-                    width: `${progressPercentage}%`,
-                    backgroundColor:
-                      type === "pdf" ? assetPallete[0] : assetPallete[1],
-                  },
-                ]}
-              />
+                  styles.thumbBadge,
+                  { backgroundColor: accentColor },
+                ]}>
+                <Text style={styles.badgeText}>
+                  {isAudio ? "AUDIO" : "BOOK"}
+                </Text>
+              </View>
+            </View>
+
+            {/* Info */}
+            <View style={styles.listInfo}>
+              <Text style={styles.listTitle} numberOfLines={1}>
+                {title}
+              </Text>
+
+              <Text style={styles.listAuthor} numberOfLines={1}>
+                {author || "READAPT"}
+              </Text>
+
+              {/* Progress Count */}
+              <View style={styles.progressTextContainer}>
+                {isAudio ? (
+                  <>
+                    <Text style={styles.progressRead}>{displayCurrent}</Text>
+                    <Text style={styles.progressTotal}>
+                      {` / ${displayTotal} mins`}
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.progressRead}>{displayCurrent}</Text>
+                    <Text style={styles.progressTotal}>
+                      {` / ${displayTotal} pages`}
+                    </Text>
+                  </>
+                )}
+              </View>
+
+              {/* Smooth Animated Progress Track */}
+              <View style={styles.progressTrack}>
+                <Animated.View
+                  style={[
+                    styles.progressFill,
+                    { backgroundColor: accentColor },
+                    animatedFillStyle,
+                  ]}
+                />
+              </View>
             </View>
           </View>
-        </View>
 
-        {/* Chevron */}
-        
-        <Svg
-          width={20}
-          height={20}
-          viewBox="0 0 16 16"
-          fill={pallete.textwhite}>
-          <Path
-            fillRule="evenodd"
-            clipRule="evenodd"
-            d="M10.853333333333333 7.6466666666666665a0.5 0.5 0 0 1 0 0.7066666666666667l-5 5a0.5 0.5 0 0 1 -0.7066666666666667 -0.7066666666666667L9.793333333333333 8 5.1466666666666665 3.3533333333333335a0.5 0.5 0 0 1 0.7066666666666667 -0.7066666666666667l5 5Z"
-          />
-        </Svg>
-      </Animated.View>
-    </Pressable>
-  );
-};
+          {/* Chevron */}
+          <Svg
+            width={18}
+            height={18}
+            viewBox="0 0 16 16"
+            fill="rgba(255,255,255,0.4)">
+            <Path
+              fillRule="evenodd"
+              clipRule="evenodd"
+              d="M10.853 7.647a.5.5 0 0 1 0 .706l-5 5a.5.5 0 0 1-.706-.706L9.793 8 5.147 3.353a.5.5 0 0 1 .706-.706l5 5Z"
+            />
+          </Svg>
+        </Animated.View>
+      </Pressable>
+    );
+  }
+);
 
 const styles = StyleSheet.create({
   listItem: {
-    marginBottom: 12,
+    marginBottom: 10,
+    width: "100%",
+    alignItems: "center",
   },
-
   container: {
     backgroundColor: pallete.bgcard,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-    borderRadius: 12,
+    borderColor: "rgba(255,255,255,0.08)",
+    borderRadius: 14,
     padding: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-
   itemContent: {
     flexDirection: "row",
     alignItems: "center",
     flex: 1,
-    gap: 16,
+    marginRight: 8,
   },
-
   thumbWrapper: {
     position: "relative",
-    width: 60,
-    height: 60,
-    flexShrink: 0,
+    width: 52,
+    height: 64,
+    borderRadius: 8,
+    overflow: "hidden",
+    marginRight: 14,
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
-
   listThumb: {
     width: "100%",
     height: "100%",
-    borderRadius: 8,
     resizeMode: "cover",
   },
-
   thumbBadge: {
     position: "absolute",
-    bottom: -4,
-    right: -4,
-    backgroundColor: pallete.accent,
-    paddingHorizontal: 6,
+    bottom: 0,
+    left: 0,
+    right: 0,
     paddingVertical: 2,
-    borderRadius: 4,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.5,
-    shadowRadius: 4,
-    elevation: 5,
+    alignItems: "center",
   },
-
   badgeText: {
-    fontSize: 8,
-    fontWeight: "700",
-    color: pallete.textwhite,
-    textTransform: "uppercase",
+    fontSize: 7.5,
+    fontWeight: "800",
+    color: "#000",
+    letterSpacing: 0.5,
   },
-
   listInfo: {
     flex: 1,
+    justifyContent: "center",
   },
-
   listTitle: {
     fontFamily: "Playfair Display",
     fontSize: 14,
-    fontWeight: "600",
-    marginBottom: 4,
+    fontWeight: "700",
     color: pallete.textwhite,
+    marginBottom: 2,
   },
-
   listAuthor: {
-    fontSize: 10,
+    fontSize: 11,
     color: pallete.textgray,
     marginBottom: 6,
   },
-
   progressTextContainer: {
     flexDirection: "row",
     alignItems: "center",
     marginBottom: 6,
   },
-
   progressRead: {
-    fontSize: 10,
+    fontSize: 11,
     color: pallete.textwhite,
     fontWeight: "700",
   },
-
   progressTotal: {
-    fontSize: 10,
-    color: pallete.textgray,
+    fontSize: 11,
+    color: "rgba(255,255,255,0.45)",
     fontWeight: "500",
   },
-
   progressTrack: {
-    height: 6,
-    backgroundColor: "rgba(255,255,255,0.1)",
+    height: 4.5,
+    backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 3,
     overflow: "hidden",
   },
-
   progressFill: {
     height: "100%",
-    backgroundColor: pallete.accent,
     borderRadius: 3,
   },
 });

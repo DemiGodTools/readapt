@@ -16,9 +16,8 @@ import Animated, {
   useAnimatedStyle,
   withSpring,
   withTiming,
-  runOnJS
+  runOnJS,
 } from "react-native-reanimated";
-// import { runOnJS } from "react-native-worklets";
 import { useModal } from "../../hooks/useModal";
 import pallete from "../../lib/Colors";
 
@@ -38,12 +37,20 @@ const Modal = () => {
     }
   }, [modal]);
 
+  const onDismiss = (callback?: () => void) => {
+    if (callback) {
+      callback();
+    }
+    hideModal();
+  };
+
   const closeModal = (callback?: () => void) => {
     translateY.value = withTiming(SHEET_HEIGHT, {}, () => {
-      if (callback) runOnJS(callback)();
-      runOnJS(hideModal)();
+      runOnJS(onDismiss)(callback);
     });
   };
+
+  const cancelCallback = modal?.onCancel;
 
   const dragGesture = Gesture.Pan()
     .onChange((event) => {
@@ -53,7 +60,7 @@ const Modal = () => {
     })
     .onEnd((event) => {
       if (event.translationY > 80 || event.velocityY > 500) {
-        closeModal(modal?.onCancel);
+        runOnJS(closeModal)(cancelCallback);
       } else {
         translateY.value = withSpring(0, { damping: 45 });
       }
@@ -67,7 +74,7 @@ const Modal = () => {
 
   return (
     <GestureHandlerRootView style={StyleSheet.absoluteFill}>
-      {/* Backdrop overlay to mimic bottom sheet depth */}
+      {/* Backdrop overlay */}
       <TouchableOpacity
         style={styles.backdrop}
         activeOpacity={1}
@@ -174,7 +181,8 @@ const styles = StyleSheet.create({
   btnContinueText: {
     fontSize: 14,
     fontWeight: "600",
-    color: pallete.bgmain, // High contrast layout color match
+    color: pallete.bgmain,
   },
 });
-export default Modal;
+
+export default Modal;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        

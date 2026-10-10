@@ -1,35 +1,32 @@
-import { useState, useEffect } from 'react';
-import * as Network from 'expo-network';
+import { useState, useEffect } from "react";
+import * as Network from "expo-network";
 
 export const useNetworkStatus = () => {
-  const [status, setStatus] = useState({
-    isConnected: true,
-  });
+  const [isConnected, setIsConnected] = useState<boolean>(true);
 
   useEffect(() => {
-    let subscription: ReturnType<typeof Network.addNetworkStateListener>;
+    let isMounted = true;
+    let subscription: { remove: () => void } | null = null;
 
-    const checkNetwork = async () => {
-      // Get initial state
-      const state = await Network.getNetworkStateAsync();
-      setStatus({
-        isConnected: !!state.isConnected,
-      });
+    Network.getNetworkStateAsync()
+      .then((state) => {
+        if (isMounted) {
+          setIsConnected(Boolean(state.isConnected && state.isInternetReachable !== false));
+        }
+      })
+      .catch(() => {});
 
-      // Listen for network changes
-      subscription = Network.addNetworkStateListener((state) => {
-        setStatus({
-          isConnected: !!state.isConnected,
-        });
-      });
-    };
-
-    checkNetwork();
+    subscription = Network.addNetworkStateListener((state) => {
+      if (isMounted) {
+        setIsConnected(Boolean(state.isConnected && state.isInternetReachable !== false));
+      }
+    });
 
     return () => {
+      isMounted = false;
       if (subscription) subscription.remove();
     };
   }, []);
 
-  return status;
+  return { isConnected };
 };

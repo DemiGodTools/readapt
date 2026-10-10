@@ -1,5 +1,15 @@
-import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Dimensions } from "react-native";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Dimensions,
+  LayoutAnimation,
+  Platform,
+  UIManager,
+  Vibration,
+} from "react-native";
 import pallete from "../../lib/Colors";
 import useAuth from "../../hooks/useAuth";
 import Carousel from "react-native-reanimated-carousel";
@@ -10,19 +20,28 @@ import { api } from "../../lib/api";
 import ChapterCardSkelly from "../../components/props/ChapterCardSkelly";
 import SeriesCardSkelly from "../../components/props/SeriesCardSkelly";
 import { ISeries } from "../../types/Series";
-import { IRecentRead } from "../../types/Storage";
 import { IChapter } from "../../types/Chapter";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useUser } from "../../hooks/useUser";
-import { useToast } from "../../hooks/useToast";
 import PopButton from "../../components/props/PopButton";
-import ContentProgressSkelly from "../../components/props/ProgressCardSkelly";
 import Contentprogress from "../../components/props/ContentProgress";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import Offline from "../../components/state/Offline";
+
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const { width } = Dimensions.get("window");
+const CARD_GAP = 5;
+const SIDE_PADDING = 22;
+const CARD_WIDTH = (width - SIDE_PADDING * 2 - CARD_GAP) / 2;
 
 const AvailableIcon = () => (
   <Svg width={18} height={18} viewBox="0 0 24 24">
@@ -35,61 +54,12 @@ const AvailableIcon = () => (
 
 const SeriesIcon = () => (
   <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-    <Line
-      x1="8"
-      y1="6"
-      x2="21"
-      y2="6"
-      stroke="#01796F"
-      strokeWidth={2.5}
-      strokeLinecap="round"
-    />
-    <Line
-      x1="8"
-      y1="12"
-      x2="21"
-      y2="12"
-      stroke="#01796F"
-      strokeWidth={2.5}
-      strokeLinecap="round"
-    />
-    <Line
-      x1="8"
-      y1="18"
-      x2="21"
-      y2="18"
-      stroke="#01796F"
-      strokeWidth={2.5}
-      strokeLinecap="round"
-    />
-
-    <Line
-      x1="3"
-      y1="6"
-      x2="3.01"
-      y2="6"
-      stroke="#01796F"
-      strokeWidth={2.5}
-      strokeLinecap="round"
-    />
-    <Line
-      x1="3"
-      y1="12"
-      x2="3.01"
-      y2="12"
-      stroke="#01796F"
-      strokeWidth={2.5}
-      strokeLinecap="round"
-    />
-    <Line
-      x1="3"
-      y1="18"
-      x2="3.01"
-      y2="18"
-      stroke="#01796F"
-      strokeWidth={2.5}
-      strokeLinecap="round"
-    />
+    <Line x1="8" y1="6" x2="21" y2="6" stroke="#01796F" strokeWidth={2.5} strokeLinecap="round" />
+    <Line x1="8" y1="12" x2="21" y2="12" stroke="#01796F" strokeWidth={2.5} strokeLinecap="round" />
+    <Line x1="8" y1="18" x2="21" y2="18" stroke="#01796F" strokeWidth={2.5} strokeLinecap="round" />
+    <Line x1="3" y1="6" x2="3.01" y2="6" stroke="#01796F" strokeWidth={2.5} strokeLinecap="round" />
+    <Line x1="3" y1="12" x2="3.01" y2="12" stroke="#01796F" strokeWidth={2.5} strokeLinecap="round" />
+    <Line x1="3" y1="18" x2="3.01" y2="18" stroke="#01796F" strokeWidth={2.5} strokeLinecap="round" />
   </Svg>
 );
 
@@ -108,56 +78,10 @@ const TrendingIcon = () => (
   </Svg>
 );
 
-const YourFeedIcon = () => {
-  return (
-    <Svg viewBox="0 0 640 640" width={18} height={18} fill="#60a5fa">
-      <Path d="M128 128C128 92.7 156.7 64 192 64L448 64C483.3 64 512 92.7 512 128L512 545.1C512 570.7 483.5 585.9 462.2 571.7L320 476.8L177.8 571.7C156.5 585.9 128 570.6 128 545.1L128 128zM192 112C183.2 112 176 119.2 176 128L176 515.2L293.4 437C309.5 426.3 330.5 426.3 346.6 437L464 515.2L464 128C464 119.2 456.8 112 448 112L192 112z" />
-    </Svg>
-  );
-};
-
-const AllStuffIcon = () => {
-  return (
-    <Svg viewBox="-0.5 -0.5 16 16" fill="#3b82f6" width={20} height={20}>
-      <Path
-        d="M2.2230625 13.153875V2.2230625c0 -0.8326875 0.6750625 -1.5076875 1.5076875 -1.5076875h8.593875c0.2498125 0 0.4523125 0.2025 0.4523125 0.4523125v13.1169375"
-        stroke="#000"
-        stroke-linecap="round"
-        stroke-width="1"></Path>
-      <Path
-        d="M5.238437500000001 3.73075h4.523125"
-        stroke="currentColor"
-        stroke-linecap="round"
-        stroke-width="1"></Path>
-      <Path
-        d="M3.353875 9.7615625h9.4230625"
-        stroke="currentColor"
-        stroke-linecap="round"
-        stroke-width="1"></Path>
-      <Path
-        d="M3.353875 12.023062499999998h9.4230625"
-        stroke="currentColor"
-        stroke-linecap="round"
-        stroke-width="1"></Path>
-      <Path
-        d="M3.353875 14.284625h9.4230625"
-        stroke="#000"
-        stroke-linecap="round"
-        stroke-width="1"></Path>
-    </Svg>
-  );
-};
-
-const { width } = Dimensions.get("window");
-
-const CARD_GAP = 5;
-const SIDE_PADDING = 22;
-
-// 2 cards visible
-const CARD_WIDTH = (width - SIDE_PADDING * 2 - CARD_GAP) / 2;
-
-const renderContentCard = ({ item }: { item: any }) => (
-  <ContentCard book={item} />
+const YourFeedIcon = () => (
+  <Svg viewBox="0 0 640 640" width={18} height={18} fill="#60a5fa">
+    <Path d="M128 128C128 92.7 156.7 64 192 64L448 64C483.3 64 512 92.7 512 128L512 545.1C512 570.7 483.5 585.9 462.2 571.7L320 476.8L177.8 571.7C156.5 585.9 128 570.6 128 545.1L128 128zM192 112C183.2 112 176 119.2 176 128L176 515.2L293.4 437C309.5 426.3 330.5 426.3 346.6 437L464 515.2L464 128C464 119.2 456.8 112 448 112L192 112z" />
+  </Svg>
 );
 
 function ContentSlider({ data }: { data: any[] }) {
@@ -166,9 +90,7 @@ function ContentSlider({ data }: { data: any[] }) {
       loop={false}
       width={CARD_WIDTH + CARD_GAP}
       height={300}
-      style={{
-        width,
-      }}
+      style={{ width }}
       data={data}
       pagingEnabled
       snapEnabled
@@ -180,23 +102,21 @@ function ContentSlider({ data }: { data: any[] }) {
         parallaxScrollingScale: 0.92,
         parallaxScrollingOffset: 0,
       }}
-      renderItem={({ item }) => (
+      renderItem={({ item, index }) => (
         <View
           style={{
             width: CARD_WIDTH + CARD_GAP,
             height: "100%",
             justifyContent: "center",
             alignItems: "center",
-            // backgroundColor: "blue"
           }}>
-          <View
-            style={{
-              width: CARD_WIDTH, // Constrain visual asset to strict card width
-              height: "100%",
-              // backgroundColor: "red"
-              // padding: SIDE_PADDING,
-            }}>
-            {renderContentCard({ item })}
+          <View style={{ width: CARD_WIDTH, height: "100%" }}>
+            <ContentCard
+              book={item}
+              index={index}
+              seriesType="standalone"
+              isLiked={Boolean(item.isLiked)}
+            />
           </View>
         </View>
       )}
@@ -204,17 +124,13 @@ function ContentSlider({ data }: { data: any[] }) {
   );
 }
 
-const renderSkellyCard = () => <ChapterCardSkelly />;
-
 function SkellyCrousel() {
   return (
     <Carousel
       loop={false}
       width={CARD_WIDTH + CARD_GAP}
       height={260}
-      style={{
-        width,
-      }}
+      style={{ width }}
       data={[1, 2, 3, 4]}
       pagingEnabled
       snapEnabled
@@ -227,12 +143,8 @@ function SkellyCrousel() {
         parallaxScrollingOffset: 0,
       }}
       renderItem={() => (
-        <View
-          style={{
-            width: CARD_WIDTH,
-            marginLeft: SIDE_PADDING,
-          }}>
-          {renderSkellyCard()}
+        <View style={{ width: CARD_WIDTH, marginLeft: SIDE_PADDING }}>
+          <ChapterCardSkelly />
         </View>
       )}
     />
@@ -240,69 +152,166 @@ function SkellyCrousel() {
 }
 
 const HomeScreen = () => {
-  const {accessToken, isLoading: isAuthLoading} = useAuth();
+  const { accessToken } = useAuth();
   const [feedData, setFeedData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
-  const { user, loadingUser } = useUser();
+  const { user, reload } = useUser();
   const [completeChapters, setCompleteChapters] = useState(0);
-  const { showToast } = useToast();
-  const [continueReading, setContinueReading] = useState<IRecentRead[] | null>(
-    null,
-  );
-  const [isContinueLoading, setIsContinueLoading] = useState(true);
-  const navigation =
-    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [continueReading, setContinueReading] = useState<any[] | null>(null);
+  const hasVibratedAtEnd = useRef(false);
 
-  // const CHAPTER_LIMIT = 15;
-
-  const [chapters, setChapters] = useState<any[]>([]);
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const [loadingChapters, setLoadingChapters] = useState(false);
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { isConnected } = useNetworkStatus();
 
-  useEffect(() => {
-    setFeedData(null);
-    setSeriesData(null);
-    setContinueReading(null);
-    setCompleteChapters(0);
-    setChapters([]);
-    setPage(1);
-    setHasMore(true);
-    setLoading(true);
-    setIsContinueLoading(true);
-  }, [isConnected]);
+  // 1. Liked IDs Set
+  const likedIdsSet = useMemo(() => {
+    const ids = new Set<string>();
+    const userLikes =
+      (user as any)?.likedChapters ||
+      (user as any)?.liked ||
+      (user as any)?.likes ||
+      [];
+    userLikes.forEach((item: any) => {
+      const id = typeof item === "string" ? item : item?._id;
+      if (id) ids.add(String(id));
+    });
+    return ids;
+  }, [user]);
 
+  // Global series chapters filter
+  const seriesChapterIdsSet = useMemo(() => {
+    const ids = new Set<string>();
+    const allSeriesList: any[] = [...(feedData?.series || [])];
+    if (seriesData) allSeriesList.push(seriesData);
+
+    allSeriesList.forEach((s) => {
+      if (Array.isArray(s.chapters)) {
+        s.chapters.forEach((ch: any) => {
+          const chId = ch?.content?._id || ch?.content || ch?._id;
+          if (chId) ids.add(String(chId));
+        });
+      }
+    });
+    return ids;
+  }, [feedData?.series, seriesData]);
+
+  const isStrictlyStandalone = useCallback(
+    (item: any): boolean => {
+      if (!item || !item._id) return false;
+      if (seriesChapterIdsSet.has(String(item._id))) return false;
+      if (Array.isArray(item.chapters) && item.chapters.length > 0) return false;
+      if (item.contentModel && item.contentModel !== "Chapter") return false;
+      if (typeof item.series === "string" && item.series.trim() !== "") return false;
+      if (item.series && typeof item.series === "object") {
+        if (item.series._id) return false;
+        if (Object.keys(item.series).length > 0) return false;
+      }
+      if (item.seriesId && String(item.seriesId).trim() !== "") return false;
+      if (item.parentSeries && String(item.parentSeries).trim() !== "") return false;
+      if (item.isSeriesContent || item.isSeriesChapter || item.isSeries) return false;
+      return true;
+    },
+    [seriesChapterIdsSet]
+  );
+
+  const loadRecentReads = useCallback(async () => {
+    try {
+      const readChapters = await AsyncStorage.getItem("recentReads");
+      if (!readChapters) {
+        setContinueReading(null);
+        return;
+      }
+
+      const recentReads: any[] = JSON.parse(readChapters);
+      const sorted = recentReads.sort((a, b) => {
+        const timeA = a.readAt ? new Date(a.readAt).getTime() : 0;
+        const timeB = b.readAt ? new Date(b.readAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
+      const validReads = sorted
+        .filter((item) => item?.content?._id)
+        .slice(0, 3)
+        .map((item) => ({
+          ...item,
+          readtill:
+            item.readtill ??
+            item.progress ??
+            item.currentTime ??
+            item.position ??
+            "0",
+          total:
+            item.content?.duration ||
+            item.content?.totalDuration ||
+            item.content?.total ||
+            item.total ||
+            item.duration ||
+            "0",
+        }));
+
+      LayoutAnimation.configureNext({
+        duration: 220,
+        create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+        update: { type: LayoutAnimation.Types.spring, springDamping: 0.85 },
+        delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+      });
+
+      setContinueReading(validReads.length > 0 ? validReads : null);
+
+      if (seriesData?.chapters) {
+        const chapterIdsInSeries = seriesData.chapters.map(
+          (item: any) => item.content?._id || item.content
+        );
+        const readChaptersInSeries = recentReads.filter((readChapter) =>
+          chapterIdsInSeries.includes(readChapter.content._id)
+        );
+        setCompleteChapters(readChaptersInSeries.length);
+      }
+    } catch {
+      setContinueReading(null);
+    }
+  }, [seriesData?.chapters]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadRecentReads();
+      reload().catch(() => {});
+    }, [loadRecentReads, reload])
+  );
+
+  // Native Instant Load: Cache Read
+  useEffect(() => {
+    AsyncStorage.getItem("cached_feed_data")
+      .then((raw) => {
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          setFeedData(parsed);
+          setLoading(false);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Network Fetch with Cache update
   useEffect(() => {
     const fetchFeed = async () => {
       if (!accessToken) return;
-        console.log("data fetched 1 ")
-
       try {
-        const { data } = await api.get("/feed", {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
+        const res = await api.get("/feed", {
+          headers: { Authorization: `Bearer ${accessToken}` },
         });
-
-        if (!data.data) throw new Error("fetch failed");
-        console.log("data fetched")
-
-        if (data.success) {
-          setFeedData(data.data);
+        const payload = res?.data?.data ?? res?.data;
+        if (payload) {
+          setFeedData(payload);
+          AsyncStorage.setItem("cached_feed_data", JSON.stringify(payload)).catch(() => {});
         }
-
-        fetchChapters(1);
-      } catch (err) {
-        console.error("Failed to fetch feed:", err);
+      } catch (err: any) {
+        console.error("Feed API Error Detail:", err?.message);
       } finally {
-        setTimeout(() => {
-          setLoading(false);
-        }, 1000);
+        setLoading(false);
       }
     };
-
     fetchFeed();
   }, [accessToken, isConnected]);
 
@@ -311,391 +320,358 @@ const HomeScreen = () => {
       if (user && user?.joinedSeries && accessToken) {
         try {
           const data = await api.get(`/series/${user.joinedSeries}`, {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-            },
+            headers: { Authorization: `Bearer ${accessToken}` },
           });
-          setSeriesData(data.data.data);
+          setSeriesData(data?.data?.data || null);
         } catch (error) {
-          console.error("Error fetching series data in homepage:", error);
-          showToast({ title: "Error" });
+          console.error("Error fetching joined series:", error);
         }
-      } else if (!user?.joinedSeries) {
-        setIsContinueLoading(false);
       }
     };
     getSeries();
-  }, [user, loadingUser, accessToken, isConnected]);
+  }, [user, accessToken, isConnected]);
 
-  useEffect(() => {
-    const getJoinedSeriesData = async () => {
-      const readChapters = await AsyncStorage.getItem("recentReads");
-      if (!readChapters) {
-        setIsContinueLoading(false);
-        return;
+  // Section 1: Available
+  const availableStandalone = useMemo(() => {
+    return (feedData?.available || [])
+      .filter(isStrictlyStandalone)
+      .map((item: any) => ({
+        ...item,
+        isLiked: likedIdsSet.has(item._id),
+      }));
+  }, [feedData?.available, isStrictlyStandalone, likedIdsSet]);
+
+  // Section 2: Trending Now (Strictly Max 5 Cards)
+  const trendingStandaloneFive = useMemo(() => {
+    return (feedData?.trending || [])
+      .filter(isStrictlyStandalone)
+      .slice(0, 5)
+      .map((item: any) => ({
+        ...item,
+        isLiked: likedIdsSet.has(item._id),
+      }));
+  }, [feedData?.trending, isStrictlyStandalone, likedIdsSet]);
+
+  // Section 3: Series Section (Max 5 Series with Min 2 Framework Priority)
+  const prioritizedSeriesFive = useMemo(() => {
+    const rawSeries: ISeries[] = feedData?.series || [];
+    if (!rawSeries.length) return [];
+
+    const frameworks = rawSeries.filter((s) => s.type === "framework");
+    const regulars = rawSeries.filter((s) => s.type !== "framework");
+
+    const selected: ISeries[] = [];
+
+    // Min 2 Framework guarantee (agar available hain)
+    frameworks.slice(0, 2).forEach((f) => selected.push(f));
+
+    // Remaining slots filled with regulars/frameworks up to max 5
+    const remainingPool = [...frameworks.slice(2), ...regulars];
+    for (const item of remainingPool) {
+      if (selected.length >= 5) break;
+      if (!selected.some((s) => s._id === item._id)) {
+        selected.push(item);
       }
-      const recentReads: IRecentRead[] = JSON.parse(readChapters);
-      const json: IChapter[] = recentReads.map(
-        (recentRead) => recentRead.content,
-      );
-      setContinueReading(recentReads.slice(0, 3));
-      if (!seriesData?.cover || !user?.email) {
-        const ChapterIdsInSeries = seriesData?.chapters?.map(
-          (item) => item.content._id,
-        );
-        const readChaptersInSeries = json.filter((readChapter) =>
-          ChapterIdsInSeries?.includes(readChapter._id),
-        );
-        setCompleteChapters(readChaptersInSeries.length);
-      }
-      setIsContinueLoading(false);
-    };
-    getJoinedSeriesData();
-  }, [seriesData?.chapters, user, loadingUser, isConnected]);
+    }
 
-  const fetchChapters = async (pageNumber: number) => {
-    if (!accessToken || loadingChapters || !hasMore) return;
+    return selected.slice(0, 5);
+  }, [feedData?.series]);
 
-    try {
-      setLoadingChapters(true);
+  // Section 4: Your Feed (Intelligent Sorting based on Category & Sub-Category, Max 4)
+  const feedPersonalizedFour = useMemo(() => {
+    const pool = (feedData?.personalized || feedData?.available || []).filter(isStrictlyStandalone);
+    const userCategories = new Set(
+      ((user as any)?.preferredCategories || (user as any)?.interests || []).map((c: any) =>
+        String(typeof c === "string" ? c : c?._id || c?.name).toLowerCase()
+      )
+    );
 
-      const { data } = await api.get(`/chapter/chunk?page=${pageNumber}`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      });
+    const ranked = [...pool].sort((a, b) => {
+      const aCat = String(a?.category?.name || a?.category || "").toLowerCase();
+      const aSub = String(a?.subCategory?.name || a?.subCategory || "").toLowerCase();
+      const bCat = String(b?.category?.name || b?.category || "").toLowerCase();
+      const bSub = String(b?.subCategory?.name || b?.subCategory || "").toLowerCase();
 
-      if (data.success) {
-        setChapters((prev: any[]) =>
-          pageNumber === 1
-            ? data.data.chapters
-            : [...prev, ...data.data.chapters],
-        );
+      const aScore = (userCategories.has(aCat) ? 2 : 0) + (userCategories.has(aSub) ? 1 : 0);
+      const bScore = (userCategories.has(bCat) ? 2 : 0) + (userCategories.has(bSub) ? 1 : 0);
+      return bScore - aScore;
+    });
 
-        setHasMore(data.data.hasMore);
-        setPage(pageNumber);
-      }
-    } catch (err) {
-      console.error("Failed to fetch chapters:", err);
-    } finally {
-      setLoadingChapters(false);
+    return ranked.slice(0, 4).map((item: any) => ({
+      ...item,
+      isLiked: likedIdsSet.has(item._id),
+    }));
+  }, [feedData?.personalized, feedData?.available, isStrictlyStandalone, user, likedIdsSet]);
+
+  // Section 5: Feed Series Slider (Max 4 Series)
+  const feedSeriesFour = useMemo(() => {
+    return (feedData?.series || []).slice(0, 4);
+  }, [feedData?.series]);
+
+  // End of scroll haptic feedback
+  const handleScroll = (event: any) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 30;
+
+    if (isCloseToBottom && !hasVibratedAtEnd.current) {
+      hasVibratedAtEnd.current = true;
+      Vibration.vibrate(40);
+    } else if (!isCloseToBottom && hasVibratedAtEnd.current) {
+      hasVibratedAtEnd.current = false;
     }
   };
 
-  const loadMore = () => {
-    if (!loadingChapters && hasMore) {
-      fetchChapters(page + 1);
-    }
-  };
+  const renderSeries = ({ item }: { item: ISeries }) => {
+    const firstChapter = item.chapters?.find((ch) => ch.contentModel === "Chapter");
+    const seriesAuthor = item.author || (firstChapter?.content as IChapter)?.author || "READAPT";
 
-  // console.log(feedData?.series, "series")
-
-  const renderSeries = ({ item }: { item: ISeries }) => (
-    <SeriesCard
-      id={item._id}
-      title={item.title}
-      author={"Admin Author"}
-      cover={item.cover}
-      chapterCount={item.chapters?.filter(item => item.contentModel === "Chapter").length || 0}
-    />
-  );
-
-  const renderAllStuff = ({ item }: { item: any }) => (
-    <View style={styles.gridContainer}>
-      <FlatList
-        data={feedData?.personalized || []}
-        renderItem={renderContentCard}
-        keyExtractor={(item) => item._id}
-        numColumns={2}
-        scrollEnabled={false}
-        columnWrapperStyle={{
-          justifyContent: "space-between",
-          paddingHorizontal: SIDE_PADDING - 2,
-        }}
-        contentContainerStyle={{
-          paddingHorizontal: 24,
-        }}
+    return (
+      <SeriesCard
+        id={item._id}
+        title={item.title}
+        author={seriesAuthor}
+        cover={item.cover}
+        type={item.type}
+        chapterCount={
+          item.chapters?.filter((ch) => ch.contentModel === "Chapter").length || 0
+        }
       />
-    </View>
-  );
+    );
+  };
 
-  const renderSkellySeries = () => <SeriesCardSkelly />;
-
-  console.log(!seriesData, !feedData, !isConnected,  " connection locig ")
-  console.log((!seriesData || !feedData) && !isConnected)
-
-  if ((!seriesData || !feedData) && !isConnected) {
-    return <View style={styles.container}>
-      <Offline />
-    </View>;
+  if (!seriesData && !feedData && !isConnected) {
+    return (
+      <View style={styles.container}>
+        <Offline />
+      </View>
+    );
   }
 
   return (
     <View style={styles.container}>
-      <FlatList
-        data={chapters}
-        renderItem={renderAllStuff}
-        keyExtractor={(item) => item._id}
-        onEndReached={loadMore}
-        onEndReachedThreshold={0.5}
+      <ScrollView
         showsVerticalScrollIndicator={false}
-        ListHeaderComponent={
-          <>
-            {/* Hero Section */}
-            <View style={styles.hero}>
-              <Text style={styles.heroTitle}>
-                {"Good to see you again.".toUpperCase()}
-              </Text>
-              <Text style={styles.heroSubtitle}>
-                Discover stories that matter. Continue where you left off.
-              </Text>
-            </View>
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
+        contentContainerStyle={{ paddingBottom: 60 }}
+      >
+        {/* Hero Section */}
+        <View style={styles.hero}>
+          <Text style={styles.heroTitle}>
+            {"Good to see you again.".toUpperCase()}
+          </Text>
+          <Text style={styles.heroSubtitle}>
+            Discover stories that matter. Continue where you left off.
+          </Text>
+        </View>
 
-            {user?.joinedSeries && seriesData && completeChapters !== null && (
-              <>
-                <View style={styles.section}>
-                  <PopButton
-                    onPress={() => {
-                      navigation.navigate("SeriesOverview", {
-                        seriesId: user?.joinedSeries || "",
-                      });
-                    }}>
-                    <View style={styles.progressCard}>
-                      <View style={styles.progressContent}>
-                        <Text style={styles.progressTitle}>
-                          {seriesData.title}
-                        </Text>
+        {/* Joined Series Overview Progress */}
+        {user?.joinedSeries && seriesData && (
+          <View style={styles.section}>
+            <PopButton
+              onPress={() => {
+                navigation.navigate("SeriesOverview", {
+                  seriesId: user?.joinedSeries || "",
+                });
+              }}>
+              <View style={styles.progressCard}>
+                <View style={styles.progressContent}>
+                  <Text style={styles.progressTitle} numberOfLines={1} ellipsizeMode="tail">
+                    {seriesData.title}
+                  </Text>
 
-                        <Text style={styles.progressMeta}>
-                          Chapter {completeChapters} •{" "}
-                          <Text style={styles.accentText}>
-                            {(
-                              (completeChapters /
+                  <Text style={styles.progressMeta}>
+                    {seriesData?.type === "framework" ? "Level" : "Chapter"}{" "}
+                    {completeChapters} •{" "}
+                    <Text
+                      style={[
+                        styles.accentText,
+                        seriesData?.type === "framework" && { color: "#38bdf8" },
+                      ]}>
+                      {(
+                        (completeChapters /
+                          Math.max(
+                            1,
+                            seriesData?.chapters?.filter(
+                              (item) => item.contentModel === "Chapter"
+                            ).length || 1
+                          )) *
+                        100
+                      ).toFixed(0)}
+                      % Complete
+                    </Text>
+                  </Text>
+
+                  <View style={styles.progressTrack}>
+                    <View
+                      style={[
+                        styles.progressFill,
+                        {
+                          width: `${Math.min(
+                            100,
+                            (completeChapters /
+                              Math.max(
+                                1,
                                 seriesData?.chapters?.filter(
-                                  (item) => item.contentModel === "Chapter",
-                                ).length) *
+                                  (item) => item.contentModel === "Chapter"
+                                ).length || 1
+                              )) *
                               100
-                            ).toFixed(0)}
-                            % Complete
-                          </Text>
-                        </Text>
-
-                        {/* Progress Track */}
-                        <View style={styles.progressTrack}>
-                          <View
-                            style={[
-                              styles.progressFill,
-                              {
-                                width:
-                                  width *
-                                  (completeChapters /
-                                    seriesData?.chapters?.filter(
-                                      (item) => item.contentModel === "Chapter",
-                                    ).length),
-                              },
-                            ]}
-                          />
-                        </View>
-                      </View>
-
-                      {/* Chevron Right Icon */}
-                      <Svg
-                        width={20}
-                        height={20}
-                        viewBox="0 0 16 16"
-                        fill="none">
-                        <Path
-                          fillRule="evenodd"
-                          clipRule="evenodd"
-                          d="M10.853333333333333 7.6466666666666665a0.5 0.5 0 0 1 0 0.7066666666666667l-5 5a0.5 0.5 0 0 1 -0.7066666666666667 -0.7066666666666667L9.793333333333333 8 5.1466666666666665 3.3533333333333335a0.5 0.5 0 0 1 0.7066666666666667 -0.7066666666666667l5 5Z"
-                          fill={pallete.textwhite}
-                        />
-                      </Svg>
-                    </View>
-                  </PopButton>
-                </View>
-              </>
-            )}
-
-            {/* continue learnign */}
-            {continueReading && (
-              <SectionHeader
-                title="Continue Learning"
-                icon={<ContinueIcon />}
-              />
-            )}
-            {isContinueLoading && (
-              <View style={{ paddingHorizontal: 20 }}>
-                <ContentProgressSkelly />
-                <ContentProgressSkelly />
-                <ContentProgressSkelly />
-              </View>
-            )}
-            {continueReading && (
-              <View
-                style={{
-                  alignItems: "center",
-                  justifyContent: "center",
-                  paddingBottom: 20,
-                }}>
-                {continueReading?.map((item) => (
-                  <View key={item.content._id}>
-                  <Contentprogress
-                  
-                    id={item.content._id}
-                    cover={item.content.cover}
-                    title={item.content.title}
-                    readtill={item.readtill}
-                    total={item.total}
-                    type={item.content.type}
-                    author={item.content.author}
-                    learWidth={(width / 100) * 85}
+                          )}%`,
+                          backgroundColor:
+                            seriesData?.type === "framework"
+                              ? "#38bdf8"
+                              : pallete.accent,
+                        },
+                      ]}
                     />
-                    </View>
-                ))}
+                  </View>
+                </View>
+
+                <Svg width={20} height={20} viewBox="0 0 16 16" fill="none">
+                  <Path
+                    fillRule="evenodd"
+                    clipRule="evenodd"
+                    d="M10.853 7.647a.5.5 0 0 1 0 .706l-5 5a.5.5 0 0 1-.706-.706L9.793 8 5.147 3.353a.5.5 0 0 1 .706-.706l5 5Z"
+                    fill={pallete.textwhite}
+                  />
+                </Svg>
+              </View>
+            </PopButton>
+          </View>
+        )}
+
+        {/* Continue Learning */}
+        {continueReading && continueReading.length > 0 && (
+          <SectionHeader title="Continue Learning" icon={<ContinueIcon />} />
+        )}
+
+        {continueReading && continueReading.length > 0 && (
+          <View style={styles.continueSectionContainer}>
+            {continueReading.map((item) => (
+              <Contentprogress
+                key={item.content._id}
+                id={item.content._id}
+                cover={item.content.cover}
+                title={item.content.title}
+                readtill={item.readtill}
+                total={item.total}
+                type={item.content.type}
+                author={item.content.author}
+                learWidth={(width / 100) * 85}
+              />
+            ))}
+          </View>
+        )}
+
+        {/* Available For You */}
+        <SectionHeader title="Available for you" icon={<AvailableIcon />} />
+        {loading ? (
+          <SkellyCrousel />
+        ) : (
+          <ContentSlider data={availableStandalone} />
+        )}
+
+        {/* Series Section (Max 5, min 2 Framework) */}
+        <SectionHeader title="Series" icon={<SeriesIcon />} />
+        {loading ? (
+          <Carousel
+            loop={false}
+            width={280 + 16}
+            height={260}
+            style={{ ...styles.horizontalList, width }}
+            data={[1, 2, 3, 4]}
+            pagingEnabled
+            snapEnabled
+            mode="parallax"
+            modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
+            renderItem={() => (
+              <View style={{ width: 280, marginLeft: SIDE_PADDING }}>
+                <SeriesCardSkelly />
               </View>
             )}
-
-            {/* Available For You */}
-            <SectionHeader title="Available for you" icon={<AvailableIcon />} />
-            {loading ? (
-              <SkellyCrousel />
-            ) : (
-              <ContentSlider data={feedData?.available || []} />
+          />
+        ) : (
+          <Carousel
+            loop={false}
+            width={280 + 16}
+            height={260}
+            style={{ ...styles.horizontalList, width }}
+            data={prioritizedSeriesFive}
+            pagingEnabled
+            snapEnabled
+            mode="parallax"
+            modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
+            renderItem={({ item }: { item: any }) => (
+              <View style={{ width: "100%", marginHorizontal: 0 }}>
+                {renderSeries({ item: item as ISeries })}
+              </View>
             )}
+          />
+        )}
 
-            {/* Series */}
-            <SectionHeader title="Series" icon={<SeriesIcon />} />
-            {loading ? (
-              <Carousel
-                loop={false}
-                width={280 + 16}
-                height={260}
-                style={{
-                  ...styles.horizontalList,
-                  width,
-                }}
-                data={[1,2,3,4]}
-                pagingEnabled
-                snapEnabled
-                onConfigurePanGesture={(gestureChain) =>
-                  gestureChain.activeOffsetX([-15, 15]).failOffsetY([-10, -10])
-                }
-                mode="parallax"
-                modeConfig={{
-                  parallaxScrollingScale: 0.96,
-                  parallaxScrollingOffset: 0,
-                }}
-                renderItem={() => (
-                  <View
-                    style={{
-                      width: 280,
-                      marginLeft: SIDE_PADDING,
-                    }}>
-                    {renderSkellySeries()}
-                  </View>
-                )}
-              />
-            ) : (
-              <Carousel
-                loop={false}
-                width={280 + 16}
-                height={260}
-                style={{
-                  ...styles.horizontalList,
-                  width,
-                }}
-                data={feedData?.series || []}
-                pagingEnabled
-                snapEnabled
-                onConfigurePanGesture={(gestureChain) =>
-                  gestureChain.activeOffsetX([-10, 10]).failOffsetY([-20, 20])
-                }
-                mode="parallax"
-                modeConfig={{
-                  parallaxScrollingScale: 0.96,
-                  parallaxScrollingOffset: 0,
-                }}
-                renderItem={({ item }) => (
-                  <View
-                    style={{
-                      width: 280,
-                      marginLeft: SIDE_PADDING,
-                    }}>
-                    {renderSeries({ item })}
-                  </View>
-                )}
-              />
-            )}
+        {/* Trending Now (Max 5 Cards) */}
+        <SectionHeader title="Trending Now" icon={<TrendingIcon />} />
+        {loading ? (
+          <SkellyCrousel />
+        ) : (
+          <ContentSlider data={trendingStandaloneFive} />
+        )}
 
-            {/* Your Feed */}
-            <SectionHeader title="Your Feed" icon={<YourFeedIcon />} />
+        {/* Your Feed: Exactly Max 4 Content Cards (Dynamic Category/Subcategory Intelligence) */}
+        <SectionHeader title="Your Feed" icon={<YourFeedIcon />} />
+        <View style={styles.gridSectionWrap}>
+          {loading ? (
             <View style={styles.gridContainer}>
-              {
-                loading ? 
-                <FlatList
-                data={[1,2,3,4,5,6]}
-                renderItem={() => <ChapterCardSkelly />}
-                keyExtractor={(item) => item + ""}
-                numColumns={2}
-                scrollEnabled={false}
-                columnWrapperStyle={{
-                  justifyContent: "space-between",
-                  paddingHorizontal: SIDE_PADDING - 2,
-                }}
-                contentContainerStyle={{
-                  paddingHorizontal: 24,
-                }}
-              /> :
-              <FlatList
-              data={feedData?.personalized || []}
-              renderItem={renderContentCard}
-              keyExtractor={(item) => item._id}
-              numColumns={2}
-              scrollEnabled={false}
-              columnWrapperStyle={{
-                justifyContent: "space-between",
-                paddingHorizontal: SIDE_PADDING - 2,
-              }}
-              contentContainerStyle={{
-                paddingHorizontal: 24,
-              }}
-              />
-            }
+              {[1, 2, 3, 4].map((k) => (
+                <View key={k} style={styles.gridCardWrapper}>
+                  <ChapterCardSkelly />
+                </View>
+              ))}
             </View>
+          ) : (
+            <View style={styles.gridContainer}>
+              {feedPersonalizedFour.map((item: any, idx: number) => (
+                <View key={item._id || idx} style={styles.gridCardWrapper}>
+                  <ContentCard
+                    book={item}
+                    index={idx}
+                    seriesType="standalone"
+                    isLiked={Boolean(item.isLiked)}
+                  />
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
 
-            {/* Trending */}
-            <SectionHeader title="Trending Now" icon={<TrendingIcon />} />
-            {loading ?
-            <SkellyCrousel />
-            : <ContentSlider data={feedData?.trending || []} />
-          }
+        {/* Feed Series Slider: Exactly Max 4 Series inside Feed */}
+        {feedSeriesFour && feedSeriesFour.length > 0 && (
+          <View style={{ marginTop: 12 }}>
+            <Carousel
+              loop={false}
+              width={280 + 16}
+              height={260}
+              style={{ ...styles.horizontalList, width }}
+              data={feedSeriesFour}
+              pagingEnabled
+              snapEnabled
+              mode="parallax"
+              modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
+              renderItem={({ item }: { item: any }) => (
+                <View style={{ width: "100%", marginHorizontal: 0 }}>
+                  {renderSeries({ item: item as ISeries })}
+                </View>
+              )}
+            />
+          </View>
+        )}
 
-            {/* All Stuff */}
-            <SectionHeader title="All Stuff" icon={<AllStuffIcon />} />
-          </>
-        }
-        ListFooterComponent={
-          loadingChapters ? (
-             <FlatList
-                data={[1,2]}
-                renderItem={() => <ChapterCardSkelly />}
-                keyExtractor={(item) => item + ""}
-                numColumns={2}
-                scrollEnabled={false}
-                columnWrapperStyle={{
-                  justifyContent: "space-between",
-                  paddingHorizontal: SIDE_PADDING - 2,
-                }}
-                contentContainerStyle={{
-                  paddingHorizontal: 24,
-                }}
-              />
-          ) : !hasMore ? (
-            <Text>noting to show</Text>
-          ) : null
-        }
-      />
+        {/* End of Feed Screen Indicator */}
+        <View style={styles.endOfFeedContainer}>
+          <Text style={styles.endOfFeedText}>You're all caught up!</Text>
+        </View>
+      </ScrollView>
     </View>
   );
 };
@@ -727,7 +703,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     marginTop: 24,
   },
-
   heroTitle: {
     fontFamily: "Bebas Neue",
     fontSize: 32,
@@ -735,7 +710,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#fff",
   },
-
   heroSubtitle: {
     marginTop: 10,
     fontSize: 15,
@@ -745,44 +719,19 @@ const styles = StyleSheet.create({
   },
   sectionHeader: {
     paddingHorizontal: 24,
-    marginTop: 18,
+    marginTop: 22,
     marginBottom: 14,
   },
-
   title: {
     fontSize: 13,
     fontWeight: "700",
     letterSpacing: 1,
     color: "#F5F5F5",
   },
-  headerText: {
-    fontSize: 16,
-    fontWeight: "600",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    color: "#e5e7eb",
-  },
   horizontalList: {
     paddingLeft: 24,
     paddingRight: 16,
     paddingBottom: 10,
-  },
-  gridContainer: {
-    // paddingHorizontal: 10,
-  },
-  columnWrapper: {
-    justifyContent: "space-between",
-    marginBottom: 20,
-  },
-  center: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: pallete.bgmain,
-  },
-  loadingText: {
-    color: pallete.textwhite,
-    fontSize: 16,
   },
   left: {
     flexDirection: "row",
@@ -803,10 +752,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    overflow: "hidden",
   },
   progressContent: {
     flex: 1,
-    marginRight: 16,
+    marginRight: 12,
+    minWidth: 0,
   },
   progressTitle: {
     fontSize: 20,
@@ -834,6 +785,35 @@ const styles = StyleSheet.create({
     height: "100%",
     backgroundColor: pallete.accent,
     borderRadius: 10,
+  },
+  continueSectionContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingBottom: 16,
+  },
+  gridSectionWrap: {
+    paddingHorizontal: SIDE_PADDING,
+  },
+  gridContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+  },
+  gridCardWrapper: {
+    width: CARD_WIDTH,
+    marginBottom: 16,
+  },
+  endOfFeedContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 36,
+  },
+  endOfFeedText: {
+    color: "#6b7280",
+    fontSize: 12,
+    fontWeight: "600",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
   },
 });
 

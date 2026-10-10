@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { View, Text, Image, StyleSheet, FlatList } from "react-native";
 import Svg, { Line } from "react-native-svg";
 import { IChapter } from "../../types/Chapter";
@@ -31,7 +31,7 @@ type BookPopulated = {
   _id: string;
   title: string;
   details?: string;
-  media: string; // URL
+  media: string;
   type: "pdf" | "audio";
   for: SubscriptionPlan;
   isTrending: boolean;
@@ -47,14 +47,8 @@ type BookPopulated = {
     createdAt: string;
   }[];
   cover: string;
-  category: {
-    _id: string;
-    name: string;
-    image: string;
-    createdAt: Date;
-    updatedAt: Date;
-  };
-  series?: string;
+  category: any;
+  series?: any;
   likes: number;
   author: string;
   total: number;
@@ -83,16 +77,24 @@ const NextChapter = ({
   const { showToast } = useToast();
   const { accessToken } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
-  const { isConnected } = useNetworkStatus()
-  const [nextChapters, setNextChapters] = useState<BookPopulated[] | null>(null);
+  const { isConnected } = useNetworkStatus();
+  const [nextChapters, setNextChapters] = useState<BookPopulated[]>([]);
+
+  const bookId = book?._id;
+  const categoryId = useMemo(() => {
+    if (!book?.category) return null;
+    return typeof book.category === "object" ? book.category._id : book.category;
+  }, [book?.category]);
 
   const renderContentCard = ({ item }: { item: BookPopulated }) => {
+    if (!item || !item._id) return null;
+
     return (
       <PopButton
         styles={styles.queueItem}
         scale={0.95}
         onPress={() => {
-          if ((user?.subscription?.plan ?? 0) >= item.for) {
+          if ((user?.subscription?.plan ?? 0) >= (item.for ?? 0)) {
             if (item.type === viewer) {
               onOpen(item);
             } else {
@@ -111,7 +113,7 @@ const NextChapter = ({
           <View style={styles.queueThumbContainer}>
             <Image
               source={{
-                uri: item.cover,
+                uri: item.cover || "https://via.placeholder.com/150",
               }}
               style={styles.queueThumb}
             />
@@ -130,11 +132,11 @@ const NextChapter = ({
           </View>
           <View style={styles.queueInfo}>
             <Text style={styles.queueTitle} numberOfLines={1}>
-              {item.title}
+              {item.title || "Untitled Chapter"}
             </Text>
-            <Text style={styles.queueAuthor}>{item.author}</Text>
+            <Text style={styles.queueAuthor}>{item.author || "Unknown"}</Text>
             <Text style={styles.pages}>
-              {item.total} {item.type === "pdf" ? "pages" : "min"}
+              {item.total || 0} {item.type === "pdf" ? "pages" : "min"}
             </Text>
           </View>
         </View>
@@ -155,54 +157,69 @@ const NextChapter = ({
   };
 
   useEffect(() => {
-    if (!user || !accessToken) return;
-    const fetchChapter = async () => {
+    let isMounted = true;
+    if (!bookId || !accessToken) return;
+
+    const loadChapters = async () => {
+      setIsLoading(true);
       try {
-        const chapters = await api.get(
-          `/chapter/by-category/${book.category._id}`,
-          {
+        // Agar series data available hai
+        if (book.series && book.series.chapters) {
+          const rawChapters: ISeriesContent[] = book.series.chapters;
+          const parsedChapters: BookPopulated[] = [];
+
+          for (const item of rawChapters) {
+            if (item.contentModel === "Chapter" && item.content) {
+              const ch = item.content as any;
+              const chId = typeof ch === "string" ? ch : ch._id;
+              if (chId && chId !== bookId && typeof ch === "object") {
+                parsedChapters.push(ch);
+              }
+            }
+          }
+
+          if (isMounted) {
+            setNextChapters(parsedChapters);
+            setIsLoading(false);
+          }
+          return;
+        }
+
+        // Agar series nahi hai, category se fetch karo
+        if (categoryId && isConnected) {
+          const res = await api.get(`/chapter/by-category/${categoryId}`, {
             headers: { Authorization: `Bearer ${accessToken}` },
-          },
-        );
-        setNextChapters(chapters.data.data.chapters.filter((item: IChapter) => item._id !== book._id));
+          });
+
+          if (res?.data?.data?.chapters && isMounted) {
+            const filtered = res.data.data.chapters.filter(
+              (item: IChapter) => item._id && item._id !== bookId
+            );
+            setNextChapters(filtered);
+          }
+        }
       } catch (error) {
-        console.error("Error fetching chapters data in NextChpaters:", error);
-        showToast({ title: "Error" });
+        console.warn("Failed to load next chapters gracefully:", error);
       } finally {
-        setIsLoading(false);
-      }
-    };
-    const getSeries = async () => {
-      if(!book.series) return
-      try {
-        const chapters: ISeriesContent[] = book.series?.chapters;
-        const next =
-          chapters
-            .filter((item) => item.contentModel === "Chapter" && item.content._id !== book._id)
-            .map((item) => item.content) || null;
-        setNextChapters(next);
-      } catch (error) {
-        console.error("Error fetching series data in NextChpaters:", error);
-        showToast({ title: "Error" });
-      }
-      finally {
-        setIsLoading(false);
+        if (isMounted) {
+          setIsLoading(false);
+        }
       }
     };
 
-    if (book.series) {
-      getSeries();
-    } else {
-      fetchChapter();
-    }
-  }, [accessToken, book, isConnected]);
+    loadChapters();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [bookId, categoryId, accessToken, isConnected]);
 
   return (
     <View>
       {isLoading ? (
         <FlatList
           data={[1, 2, 3, 4]}
-          keyExtractor={(item) => item + ""}
+          keyExtractor={(item) => String(item)}
           renderItem={() => <NextChapterCardSkelly />}
           numColumns={1}
           scrollEnabled={false}
@@ -254,7 +271,7 @@ const styles = StyleSheet.create({
     borderColor: "transparent",
     borderWidth: 2,
     borderRadius: 8,
-    overflow: "hidden"
+    overflow: "hidden",
   },
   queueThumb: {
     width: "100%",

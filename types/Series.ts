@@ -9,12 +9,15 @@ export type ISeriesContent =
 export interface ISeries {
   _id: string;
   title: string;
+  author?: string;
   description: string;
   joinedBy: string[];
-  chapters: ISeriesContent[]; //automatically populated from api
+  chapters: ISeriesContent[]; // automatically populated from api
   for: SubscriptionPlan;
   cover: string;
   category: string;
-  createdAt: Date;
+  type?: 'normal' | 'framework';
+  recommendationBookId?: any;  
+  recommendationText?: string; 
   updatedAt: Date;
 }

@@ -116,8 +116,6 @@ const ProfileScreen = () => {
         } catch (error) {
           console.error("Error fetching series data in profile:", error);
         }
-      } else if (!user?.joinedSeries) {
-        setIsContinueLoading(false);
       }
     };
     getSeries();

@@ -52,7 +52,8 @@ export const downloadChapter = async (
   try {
     // 1. Create a local file path
     const fileExtension = chapter.media.split('.').pop() || 'mp3';
-    const localUri = `${FileSystem.documentDirectory}${chapter._id}.${fileExtension}`;
+    const documentDir = (FileSystem as any).documentDirectory || '';
+    const localUri = `${documentDir}${chapter._id}.${fileExtension}`;
 
     // 2. Setup download resumable to track progress
     const downloadResumable = FileSystem.createDownloadResumable(

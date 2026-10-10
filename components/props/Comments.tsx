@@ -282,7 +282,8 @@ const CommentsDrawer = ({
   if (!visible) return null;
 
   return (
-    <GestureHandlerRootView style={StyleSheet.absoluteFill}>
+    <GestureHandlerRootView
+      style={[styles.rootContainer, { zIndex: 9999, elevation: 9999 }]}>
       {/* Backdrop */}
       <Animated.View style={[styles.backdrop, backdropStyle]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
@@ -396,9 +397,16 @@ const formatCount = (n: number) => {
 
 // ─── Styles ───────────────────────────────────────────────────
 const styles = StyleSheet.create({
+  rootContainer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+  },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#000",
+    zIndex: 1,
+    elevation: 1,
   },
   drawer: {
     position: "absolute",
@@ -414,6 +422,7 @@ const styles = StyleSheet.create({
     borderTopColor: "rgba(255,255,255,0.08)",
     overflow: "hidden",
     zIndex: 10000,
+    elevation: 10000,
   },
   dragHandleArea: {
     height: 30,
