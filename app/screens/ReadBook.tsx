@@ -19,12 +19,12 @@ import {
   BackHandler,
   PanResponder,
   ScrollView,
+  DeviceEventEmitter,
 } from "react-native";
 import Svg, { Path, Line, Circle, Polyline } from "react-native-svg";
 import {
   Gesture,
   GestureDetector,
-  GestureHandlerRootView,
 } from "react-native-gesture-handler";
 import Reanimated, {
   useSharedValue,
@@ -70,6 +70,28 @@ const CARD_HORIZONTAL_MARGIN =
 const SHEET_HEIGHT = 400;
 const TOC_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 350);
 
+const ramPdfUriMap = new Map<string, string>(); // chapterId -> local file:// URI
+const ramBookMetaMap = new Map<string, any>(); // chapterId -> BookPopulated
+const ramUrlMap = new Map<string, string>(); // chapterId -> normalized MongoDB URL
+const ramRealPagesMap = new Map<string, number>(); // chapterId -> True PDF Page Count
+const ramLastPageMap = new Map<string, number>(); // chapterId -> Last Read Page (Global Resume)
+const activeDownloadJobs = new Map<string, Promise<string | null>>();
+
+// Normalize URL so temporary query tokens don't break cache, while real MongoDB URL changes are caught
+const normalizeMediaUrl = (url?: string | null): string => {
+  if (!url || typeof url !== "string") return "";
+  return url.trim();
+};
+
+const getFastHash = (str: string): string => {
+  let h = 0;
+  const clean = normalizeMediaUrl(str);
+  for (let i = 0; i < clean.length; i++) {
+    h = (Math.imul(31, h) + clean.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h).toString(36);
+};
+
 type AnnotationTool = "marker" | "highlighter";
 
 type AnnotationPoint = {
@@ -106,6 +128,7 @@ type Props = {
       page?: number;
       initialPage?: number;
       startPage?: number;
+      initialBookData?: any;
     };
   };
   navigation: any;
@@ -154,18 +177,48 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return shuffled;
 };
 
-const isStrictlyStandaloneBook = (item: any): boolean => {
-  if (!item || !item._id) return false;
-  if (item.contentModel && item.contentModel !== "Chapter") return false;
-  if (item.series) {
-    if (typeof item.series === "string" && item.series.trim() !== "") return false;
-    if (typeof item.series === "object") {
-      if (item.series._id) return false;
-      if (Object.keys(item.series).length > 0) return false;
-    }
+// Strict standalone validator + exclusion set check
+const isStrictlyStandaloneBook = (
+  item: any,
+  excludedSeriesChapterIds?: Set<string>
+): boolean => {
+  if (!item) return false;
+  const actualItem =
+    typeof item.content === "object" && item.content !== null
+      ? item.content
+      : item;
+
+  const itemId = String(actualItem?._id || item?._id || "").trim();
+  if (!itemId) return false;
+
+  if (excludedSeriesChapterIds && excludedSeriesChapterIds.has(itemId)) {
+    return false;
   }
-  if (item.seriesId && String(item.seriesId).trim() !== "") return false;
-  if (item.isSeriesContent || item.isSeriesChapter) return false;
+
+  if (item.contentModel && item.contentModel !== "Chapter") return false;
+  if (actualItem.contentModel && actualItem.contentModel !== "Chapter") return false;
+
+  const checkSeriesProp = (obj: any) => {
+    if (!obj) return false;
+    if (Array.isArray(obj.chapters) && obj.chapters.length > 0) return true;
+    if (obj.series) {
+      if (typeof obj.series === "string" && obj.series.trim() !== "") return true;
+      if (typeof obj.series === "object") {
+        if (obj.series._id) return true;
+        if (Object.keys(obj.series).length > 0) return true;
+      }
+    }
+    if (obj.seriesId && String(obj.seriesId).trim() !== "") return true;
+    if (obj.parentSeries && String(obj.parentSeries).trim() !== "") return true;
+    if (obj.isSeriesContent || obj.isSeriesChapter || obj.isSeries) return true;
+    if (obj.seriesType === "framework" || obj.seriesType === "normal") return true;
+    return false;
+  };
+
+  if (checkSeriesProp(item) || checkSeriesProp(actualItem)) {
+    return false;
+  }
+
   return true;
 };
 
@@ -396,19 +449,16 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const isSnappingRef = useRef(false);
 
   const pdfRef = useRef<any>(null);
+  const activeChapterId = String(route.params?.bookId || "").trim();
 
-  const activeChapterId = route.params?.bookId || "";
-
-  // Navigation param se target page uthayenge
-  const incomingPage = Math.max(
-    1,
-    Number(
-      (route.params as any)?.initialPage ||
-      (route.params as any)?.page ||
-      (route.params as any)?.startPage ||
-      1
-    )
-  );
+  const incomingPage = useMemo(() => {
+    const raw =
+      (route.params as any)?.initialPage ??
+      (route.params as any)?.page ??
+      (route.params as any)?.startPage ??
+      1;
+    return Math.max(1, parseInt(String(raw), 10) || 1);
+  }, [route.params]);
 
   const currentPageRef = useRef<number>(incomingPage);
   const [currentPage, setCurrentPage] = useState<number>(incomingPage);
@@ -419,7 +469,23 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const { downloadChapter } = useDownloads();
   const { removeAllTracks } = useGlobalAudio();
 
-  const [book, setBook] = useState<BookPopulated | null>(null);
+  const initialBookParam = (route.params as any)?.initialBookData || null;
+
+  // 0ms Instant State Initialization from RAM Cache
+  const [book, setBook] = useState<BookPopulated | null>(() => {
+    if (activeChapterId && ramBookMetaMap.has(activeChapterId)) {
+      return ramBookMetaMap.get(activeChapterId);
+    }
+    return initialBookParam;
+  });
+
+  const [pdfPath, setPdfPath] = useState<string | null>(() => {
+    if (activeChapterId && ramPdfUriMap.has(activeChapterId)) {
+      return ramPdfUriMap.get(activeChapterId) || null;
+    }
+    return null;
+  });
+
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
@@ -427,8 +493,36 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const [showDetailsPanel, setShowDetailsPanel] = useState(false);
   const [isTocOpen, setIsTocOpen] = useState(false);
   const [isLocked, setIsLocked] = useState(true);
-  const [pdfPath, setPdfPath] = useState<string | null>(null);
-  const [totalPages, setTotalPages] = useState<number>(0);
+  const [resumeBanner, setResumeBanner] = useState<{ visible: boolean; page: number }>({
+    visible: false,
+    page: 1,
+  });
+  const resumeBannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [totalPages, setTotalPages] = useState<number>(() => {
+    if (activeChapterId && ramRealPagesMap.has(activeChapterId)) {
+      return ramRealPagesMap.get(activeChapterId) || 0;
+    }
+    return 0;
+  });
+
+  const totalPagesRef = useRef<number>(totalPages);
+  useEffect(() => {
+    totalPagesRef.current = totalPages;
+  }, [totalPages]);
+
+  const totalCountResolved =
+    totalPages > 0
+      ? totalPages
+      : activeChapterId && ramRealPagesMap.has(activeChapterId)
+      ? ramRealPagesMap.get(activeChapterId)!
+      : 0;
+
+  const pageCountLabel =
+    totalCountResolved > 0
+      ? `${currentPage} / ${totalCountResolved}`
+      : `Page ${currentPage}`;
+
   const [showPdfControls, setShowPdfControls] = useState(true);
   const { isConnected } = useNetworkStatus();
   const [commentedQueId, setCommentedQueId] = useState("");
@@ -454,6 +548,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     title: string;
     description: string;
     confirmText: string;
+    cancelText?: string;
     onConfirm: () => void;
   }>({
     visible: false,
@@ -473,13 +568,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     PLAYER_CONTAINER_PADDING +
     PDF_FRAME_MARGIN_TOP +
     cardHeight / 2;
-
-  const totalCountResolved =
-    totalPages > 0 ? totalPages : book?.total && book.total > 0 ? book.total : 0;
-  const pageCountLabel =
-    totalCountResolved > 0
-      ? `${currentPage} / ${totalCountResolved}`
-      : `Page ${currentPage}`;
 
   useEffect(() => {
     AsyncStorage.getItem("pdf_canvas_theme")
@@ -654,6 +742,87 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     [isAnnotating, selectedTool, selectedColor, fullHeight]
   );
 
+ // Instant & Accurate Recent Reads Updater (No Math.max stale-page bug!)
+  const saveRecentReadProgress = useCallback(
+    async (pageToSave?: number, knownTotal?: number) => {
+      const targetPage = Math.max(1, pageToSave ?? currentPageRef.current);
+      if (!activeChapterId || !book) return;
+
+      try {
+        // Persist true page count if provided by PDF engine
+        if (knownTotal && knownTotal > 0) {
+          ramRealPagesMap.set(activeChapterId, knownTotal);
+          totalPagesRef.current = knownTotal;
+          AsyncStorage.setItem(
+            `pdf_real_pages_${activeChapterId}`,
+            String(knownTotal)
+          ).catch(() => {});
+        }
+
+        const raw = await AsyncStorage.getItem("recentReads");
+        const recentReads: IRecentRead[] = raw ? JSON.parse(raw) : [];
+
+        const existingItem = recentReads.find(
+          (item) => item?.content?._id === activeChapterId
+        );
+        const existingTotal = existingItem
+          ? parseInt(String(existingItem.total || 0), 10)
+          : 0;
+
+        // STRICT PRIORITY: Real PDF Engine Count > Cached Real Count > Existing Valid Total > DB Total
+        const verifiedEngineTotal =
+          (knownTotal && knownTotal > 0 ? knownTotal : 0) ||
+          (totalPagesRef.current > 0 ? totalPagesRef.current : 0) ||
+          ramRealPagesMap.get(activeChapterId) ||
+          0;
+
+        let resolvedTotal = verifiedEngineTotal;
+        if (resolvedTotal <= 0) {
+          resolvedTotal =
+            existingTotal > 0
+              ? existingTotal
+              : book?.total && Number(book.total) > 0
+              ? Number(book.total)
+              : targetPage;
+        }
+
+        // Ensure total is never smaller than current page
+        if (resolvedTotal < targetPage) {
+          resolvedTotal = targetPage;
+        }
+
+        const updatedBookContent = {
+          ...book,
+          _id: activeChapterId,
+          total: resolvedTotal, // Overwrite stale DB total inside content object too!
+          comments: Array.isArray(book.comments)
+            ? book.comments.length
+            : typeof book.comments === "number"
+            ? book.comments
+            : 0,
+          category: book.category?.name || book.category?._id || "",
+        };
+
+        const filtered = recentReads.filter(
+          (item) => item?.content?._id !== activeChapterId
+        );
+
+        filtered.unshift({
+          content: updatedBookContent,
+          readtill: String(targetPage),
+          total: String(resolvedTotal),
+          readAt: new Date().toString(),
+        });
+
+        await AsyncStorage.setItem("recentReads", JSON.stringify(filtered));
+        DeviceEventEmitter.emit("RECENT_READS_UPDATED", filtered);
+      } catch (error) {
+        console.error("Error updating recent reads:", error);
+      }
+    },
+    [activeChapterId, book]
+  );
+
   const handleBackAction = useCallback(() => {
     if (customModal.visible) {
       setCustomModal((prev) => ({ ...prev, visible: false }));
@@ -684,6 +853,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       });
       return true;
     }
+    void saveRecentReadProgress();
     if (navigation.canGoBack()) {
       navigation.goBack();
       return true;
@@ -697,6 +867,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     showComments,
     isLocked,
     navigation,
+    saveRecentReadProgress,
   ]);
 
   useEffect(() => {
@@ -707,9 +878,307 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     return () => subscription.remove();
   }, [handleBackAction]);
 
-  const resetScreenState = useCallback(() => {
-    setPdfPath(null);
-    setTotalPages(0);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", () => {
+      void saveRecentReadProgress();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [navigation, saveRecentReadProgress]);
+
+  // ============================================================================
+  // NATIVE KOTLIN/SWIFT-STYLE PDF ENGINE:
+  // 1. Mounts cached local file in 0ms (Zero Spinner on repeat opens)
+  // 2. Downloads once and persists permanently to disk
+  // 3. Invalidates ONLY when MongoDB media URL genuinely changes
+  // ============================================================================
+  const downloadPdfToDisk = useCallback(
+    async (chapterId: string, remoteUrl: string): Promise<string | null> => {
+      const cleanUrl = normalizeMediaUrl(remoteUrl);
+      if (!chapterId || !cleanUrl) return null;
+
+      if (cleanUrl.startsWith("file://") || cleanUrl.startsWith("content://")) {
+        ramPdfUriMap.set(chapterId, cleanUrl);
+        return cleanUrl;
+      }
+
+      const targetDir = FileSystem.documentDirectory;
+      if (!targetDir) return cleanUrl;
+
+      const urlHash = getFastHash(cleanUrl);
+      const localFileUri = `${targetDir}fastpdf_${chapterId}_${urlHash}.pdf`;
+      const storageUriKey = `fast_pdf_uri_${chapterId}`;
+      const storageUrlKey = `fast_pdf_url_${chapterId}`;
+
+      try {
+        // 1. Check if this exact hashed file already exists on disk
+        const info = await FileSystem.getInfoAsync(localFileUri);
+        if (info.exists && (info.size ?? 0) > 512) {
+          ramPdfUriMap.set(chapterId, info.uri);
+          ramUrlMap.set(chapterId, cleanUrl);
+          AsyncStorage.multiSet([
+            [storageUriKey, info.uri],
+            [storageUrlKey, cleanUrl],
+          ]).catch(() => {});
+          return info.uri;
+        }
+
+        // 2. Deduplicate concurrent downloads for the same file
+        let job = activeDownloadJobs.get(localFileUri);
+        if (!job) {
+          job = FileSystem.downloadAsync(cleanUrl, localFileUri)
+            .then(async (res) => {
+              if (res?.uri) {
+                const verify = await FileSystem.getInfoAsync(res.uri);
+                // Accept any valid downloaded file (> 512 bytes) regardless of 200/206/302 status
+                if (verify.exists && (verify.size ?? 0) > 512) {
+                  // Delete old file if URL was updated in MongoDB
+                  const prevUri = await AsyncStorage.getItem(storageUriKey);
+                  if (prevUri && prevUri !== verify.uri) {
+                    FileSystem.deleteAsync(prevUri, { idempotent: true }).catch(() => {});
+                  }
+                  // Also delete legacy doc_ file if present
+                  FileSystem.deleteAsync(`${targetDir}doc_${chapterId}.pdf`, {
+                    idempotent: true,
+                  }).catch(() => {});
+
+                  ramPdfUriMap.set(chapterId, verify.uri);
+                  ramUrlMap.set(chapterId, cleanUrl);
+                  await AsyncStorage.multiSet([
+                    [storageUriKey, verify.uri],
+                    [storageUrlKey, cleanUrl],
+                  ]);
+                  return verify.uri;
+                }
+              }
+              await FileSystem.deleteAsync(localFileUri, { idempotent: true }).catch(() => {});
+              return null;
+            })
+            .catch(async () => {
+              await FileSystem.deleteAsync(localFileUri, { idempotent: true }).catch(() => {});
+              return null;
+            })
+            .finally(() => {
+              activeDownloadJobs.delete(localFileUri);
+            });
+
+          activeDownloadJobs.set(localFileUri, job);
+        }
+
+        return await job;
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
+
+  // Instant Chapter Hydrator + Silent Background Revalidator
+  const loadChapterAndPdfFast = useCallback(
+    async (targetId: string, isCancelledRef?: { current: boolean }) => {
+      if (!targetId || targetId === "undefined") return;
+
+      const storageUriKey = `fast_pdf_uri_${targetId}`;
+      const storageUrlKey = `fast_pdf_url_${targetId}`;
+      const cachedChKey = `cached_ch_${targetId}`;
+      const realPagesKey = `pdf_real_pages_${targetId}`;
+
+      let mountedLocalUri: string | null = ramPdfUriMap.get(targetId) || null;
+      let storedMediaUrl: string | null = ramUrlMap.get(targetId) || null;
+
+      // PHASE 1: 0ms Instant Local Disk Hydration
+      try {
+        if (mountedLocalUri) {
+          setPdfPath(mountedLocalUri);
+        }
+
+        const [[, diskUri], [, diskUrl], [, cachedChRaw], [, savedRealPages]] =
+          await AsyncStorage.multiGet([
+            storageUriKey,
+            storageUrlKey,
+            cachedChKey,
+            realPagesKey,
+          ]);
+
+        if (savedRealPages && Number(savedRealPages) > 0) {
+          const trueCount = Number(savedRealPages);
+          ramRealPagesMap.set(targetId, trueCount);
+          if (!isCancelledRef?.current) {
+            setTotalPages(trueCount);
+          }
+        }
+
+        if (cachedChRaw) {
+          const parsedCh = JSON.parse(cachedChRaw);
+          ramBookMetaMap.set(targetId, parsedCh);
+          if (!isCancelledRef?.current) {
+            setBook((prev) => ({ ...(prev || {}), ...parsedCh }));
+          }
+          if (!storedMediaUrl && parsedCh.media) {
+            storedMediaUrl = normalizeMediaUrl(parsedCh.media);
+          }
+        }
+
+        if (!mountedLocalUri && diskUri) {
+          const info = await FileSystem.getInfoAsync(diskUri);
+          if (info.exists && (info.size ?? 0) > 512) {
+            mountedLocalUri = info.uri;
+            ramPdfUriMap.set(targetId, info.uri);
+            if (diskUrl) {
+              storedMediaUrl = diskUrl;
+              ramUrlMap.set(targetId, diskUrl);
+            }
+            if (!isCancelledRef?.current) {
+              setPdfPath(info.uri);
+            }
+          }
+        }
+
+        // Check offline explicit downloads if still not found
+        if (!mountedLocalUri) {
+          const downloaded = await getSingleDownloaded(targetId);
+          if (downloaded) {
+            if (!isCancelledRef?.current) {
+              setBook((prev) => prev || (downloaded as unknown as BookPopulated));
+            }
+            const dlUri = (downloaded as any).localUri || downloaded.media;
+            if (dlUri && dlUri.startsWith("file://")) {
+              const dlInfo = await FileSystem.getInfoAsync(dlUri);
+              if (dlInfo.exists && (dlInfo.size ?? 0) > 512) {
+                mountedLocalUri = dlInfo.uri;
+                ramPdfUriMap.set(targetId, dlInfo.uri);
+                if (!isCancelledRef?.current) setPdfPath(dlInfo.uri);
+              }
+            }
+          }
+        }
+
+        // If first time ever opening & we have initial param media, start downloading immediately
+        const initialMedia = normalizeMediaUrl(
+          initialBookParam?.media || initialBookParam?.content?.media
+        );
+        if (!mountedLocalUri && (storedMediaUrl || initialMedia)) {
+          const targetUrlToFetch = storedMediaUrl || initialMedia;
+          downloadPdfToDisk(targetId, targetUrlToFetch).then((localUri) => {
+            if (localUri && !isCancelledRef?.current) {
+              setPdfPath((cur) => cur || localUri);
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("Fast disk hydration warning:", e);
+      }
+
+      if (!isConnected) return;
+
+      // PHASE 2: Silent Background Sync with MongoDB
+      try {
+        const token = accessToken;
+        const chapter = await api.get(`/chapter/${targetId}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+
+        if (chapter?.data?.data) {
+          const freshData: BookPopulated = chapter.data.data;
+          const freshMediaUrl = normalizeMediaUrl(freshData.media);
+          const urlChangedInDb =
+            Boolean(storedMediaUrl && freshMediaUrl && storedMediaUrl !== freshMediaUrl);
+
+          // If MongoDB media URL changed, wipe the old PDF's page count immediately!
+          if (urlChangedInDb) {
+            ramRealPagesMap.delete(targetId);
+            await AsyncStorage.removeItem(realPagesKey).catch(() => {});
+            if (!isCancelledRef?.current) {
+              setTotalPages(0);
+            }
+          }
+
+          const verifiedCount = ramRealPagesMap.get(targetId) || 0;
+          const mergedBook = {
+            ...freshData,
+            total: verifiedCount > 0 ? verifiedCount : freshData.total,
+          };
+          ramBookMetaMap.set(targetId, mergedBook);
+
+          if (!isCancelledRef?.current) {
+            setBook((prev) => {
+              return { ...mergedBook, likes: freshData.likes ?? prev?.likes ?? 0 };
+            });
+          }
+
+          AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
+
+          if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
+            const newLocalUri = await downloadPdfToDisk(targetId, freshMediaUrl);
+            if (!isCancelledRef?.current) {
+              if (newLocalUri) {
+                setPdfPath(newLocalUri);
+              } else if (!mountedLocalUri) {
+                setPdfPath(freshMediaUrl);
+              }
+            }
+          }
+
+          // Keep cached_feed_data & recentReads in sync with fresh MongoDB media so cards never pass stale URLs again
+          try {
+            const rawReads = await AsyncStorage.getItem("recentReads");
+            if (rawReads) {
+              const list: IRecentRead[] = JSON.parse(rawReads);
+              const idx = list.findIndex((r) => r?.content?._id === targetId);
+              if (idx !== -1) {
+                list[idx].content = {
+                  ...list[idx].content,
+                  ...freshData,
+                  comments: Array.isArray(freshData.comments)
+                    ? freshData.comments.length
+                    : 0,
+                  category: freshData.category?.name || freshData.category?._id || "",
+                };
+                if (freshData.total) {
+                  list[idx].total = String(freshData.total);
+                }
+                await AsyncStorage.setItem("recentReads", JSON.stringify(list));
+              }
+            }
+          } catch {}
+
+          if (freshData.series) {
+            const seriesId =
+              typeof freshData.series === "object"
+                ? freshData.series._id
+                : freshData.series;
+
+            if (seriesId) {
+              try {
+                const sRes = await api.get(`/series/${seriesId}`, {
+                  headers: token ? { Authorization: `Bearer ${token}` } : {},
+                });
+                if (sRes?.data?.data && !isCancelledRef?.current) {
+                  setSeriesData(sRes.data.data);
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn("Background chapter sync warning:", err?.message);
+      }
+    },
+    [accessToken, isConnected, initialBookParam, downloadPdfToDisk]
+  );
+
+  useEffect(() => {
+    if (!activeChapterId) return;
+    const isCancelledRef = { current: false };
+
+    const ramUri = ramPdfUriMap.get(activeChapterId) || null;
+    const ramMeta = ramBookMetaMap.get(activeChapterId) || initialBookParam || null;
+    const verifiedPages = ramRealPagesMap.get(activeChapterId) || 0;
+
+    setPdfPath(ramUri);
+    setBook(ramMeta);
+    setTotalPages(verifiedPages);
     setCurrentPage(incomingPage);
     currentPageRef.current = incomingPage;
     setQuestions(null);
@@ -723,75 +1192,19 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     currentScrollYRef.current = MORPH_DISTANCE;
     scrollY.setValue(MORPH_DISTANCE);
     borderDriver.setValue(MORPH_DISTANCE);
-  }, [scrollY, borderDriver, incomingPage]);
 
-  const fetchChapter = async (targetId: string) => {
-    if (!targetId || targetId === "undefined") return;
+    loadChapterAndPdfFast(activeChapterId, isCancelledRef);
 
-    try {
-      const cached = await AsyncStorage.getItem(`cached_ch_${targetId}`);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        setBook(parsed);
-        if (parsed.total) setTotalPages(parsed.total);
-      } else {
-        const downloaded = await getSingleDownloaded(targetId);
-        if (downloaded) {
-          setBook(downloaded as unknown as BookPopulated);
-        }
-      }
-    } catch {}
-
-    if (!isConnected || !accessToken) return;
-
-    try {
-      const chapter = await api.get(`/chapter/${targetId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (chapter?.data?.data) {
-        const freshData: BookPopulated = chapter.data.data;
-        setBook((prev) => {
-          const effectiveLikes =
-            prev && typeof prev.likes === "number" ? prev.likes : freshData.likes;
-          return { ...freshData, likes: effectiveLikes };
-        });
-        if (freshData.total) setTotalPages(freshData.total);
-        await AsyncStorage.setItem(`cached_ch_${targetId}`, JSON.stringify(freshData));
-
-        if (freshData.series) {
-          const seriesId =
-            typeof freshData.series === "object"
-              ? freshData.series._id
-              : freshData.series;
-
-          if (seriesId) {
-            try {
-              const sRes = await api.get(`/series/${seriesId}`, {
-                headers: { Authorization: `Bearer ${accessToken}` },
-              });
-              if (sRes?.data?.data) {
-                setSeriesData(sRes.data.data);
-              }
-            } catch {}
-          }
-        }
-      }
-    } catch (err: any) {
-      console.warn("Background chapter sync error:", err?.message);
-    }
-  };
-
-  useEffect(() => {
-    if (activeChapterId) {
-      resetScreenState();
-      fetchChapter(activeChapterId);
-    }
-  }, [activeChapterId, accessToken, isConnected]);
+    return () => {
+      isCancelledRef.current = true;
+    };
+  }, [activeChapterId]);
 
   useEffect(() => {
     removeAllTracks();
   }, []);
 
+  // --- STRICT STANDALONE RELATED CONTENT RESOLVER (100% Zero Series Leak) ---
   useEffect(() => {
     if (!book || book.series || !accessToken) {
       setRelatedStandaloneBooks([]);
@@ -802,12 +1215,82 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
     const resolveRelatedBooks = async () => {
       try {
+        const excludedSeriesChapterIds = new Set<string>();
+
+        const collectSeriesChapterIds = (seriesList: any[]) => {
+          if (!Array.isArray(seriesList)) return;
+          seriesList.forEach((s) => {
+            if (!s) return;
+            const recId =
+              typeof s.recommendationBookId === "object"
+                ? s.recommendationBookId?._id
+                : s.recommendationBookId;
+            if (recId) excludedSeriesChapterIds.add(String(recId).trim());
+
+            if (Array.isArray(s.chapters)) {
+              s.chapters.forEach((ch: any) => {
+                const chId =
+                  (typeof ch?.content === "object" && ch?.content?._id) ||
+                  (typeof ch?.content === "string" && ch?.content) ||
+                  ch?._id;
+                if (chId) excludedSeriesChapterIds.add(String(chId).trim());
+              });
+            }
+          });
+        };
+
+        let feedAvailableStandalone: any[] = [];
+        try {
+          const cachedFeedRaw = await AsyncStorage.getItem("cached_feed_data");
+          if (cachedFeedRaw) {
+            const cachedFeed = JSON.parse(cachedFeedRaw);
+            if (cachedFeed?.series) {
+              collectSeriesChapterIds(cachedFeed.series);
+            }
+            if (Array.isArray(cachedFeed?.available)) {
+              feedAvailableStandalone = [
+                ...feedAvailableStandalone,
+                ...cachedFeed.available,
+              ];
+            }
+            if (Array.isArray(cachedFeed?.trending)) {
+              feedAvailableStandalone = [
+                ...feedAvailableStandalone,
+                ...cachedFeed.trending,
+              ];
+            }
+            if (Array.isArray(cachedFeed?.personalized)) {
+              feedAvailableStandalone = [
+                ...feedAvailableStandalone,
+                ...cachedFeed.personalized,
+              ];
+            }
+          }
+        } catch {}
+
+        try {
+          const allKeys = await AsyncStorage.getAllKeys();
+          const seriesKeys = allKeys.filter((k) => k.startsWith("cache_series_"));
+          if (seriesKeys.length > 0) {
+            const seriesPairs = await AsyncStorage.multiGet(seriesKeys);
+            const parsedSeries = seriesPairs
+              .map(([_, val]) => (val ? JSON.parse(val) : null))
+              .filter(Boolean);
+            collectSeriesChapterIds(parsedSeries);
+          }
+        } catch {}
+
+        if (excludedSeriesChapterIds.has(String(book._id).trim())) {
+          if (isMounted) setRelatedStandaloneBooks([]);
+          return;
+        }
+
         const catId =
           typeof book.category === "object"
             ? book.category?._id
             : book.category;
 
-        let rawPool: any[] = [];
+        let rawPool: any[] = [...feedAvailableStandalone];
 
         if (catId && isConnected) {
           try {
@@ -820,34 +1303,48 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           } catch {}
         }
 
-        try {
-          const storedReads = await AsyncStorage.getItem("recentReads");
-          if (storedReads) {
-            const parsed: IRecentRead[] = JSON.parse(storedReads);
-            const contentItems = parsed.map((item) => item.content);
-            rawPool = [...rawPool, ...contentItems];
-          }
-        } catch {}
-
-        if (rawPool.length < 5 && isConnected) {
+        if (rawPool.length < 6 && isConnected) {
           try {
-            const feedRes = await api.get("/chapter/trending", {
+            const feedRes = await api.get("/feed", {
               headers: { Authorization: `Bearer ${accessToken}` },
             });
-            if (feedRes?.data?.data && Array.isArray(feedRes.data.data)) {
-              rawPool = [...rawPool, ...feedRes.data.data];
+            const payload = feedRes?.data?.data ?? feedRes?.data;
+            if (payload) {
+              if (Array.isArray(payload.series)) {
+                collectSeriesChapterIds(payload.series);
+              }
+              if (Array.isArray(payload.available)) {
+                rawPool = [...rawPool, ...payload.available];
+              }
+              if (Array.isArray(payload.trending)) {
+                rawPool = [...rawPool, ...payload.trending];
+              }
             }
           } catch {}
         }
 
+        if (excludedSeriesChapterIds.has(String(book._id).trim())) {
+          if (isMounted) setRelatedStandaloneBooks([]);
+          return;
+        }
+
         const strictlyStandalone = rawPool.filter((item: any) => {
-          if (!isStrictlyStandaloneBook(item)) return false;
-          return String(item._id) !== String(book._id);
+          if (!isStrictlyStandaloneBook(item, excludedSeriesChapterIds)) {
+            return false;
+          }
+          const itemId = String(item?.content?._id || item?._id || "").trim();
+          return itemId !== String(book._id).trim();
         });
 
         const uniqueMap = new Map<string, any>();
         strictlyStandalone.forEach((item) => {
-          uniqueMap.set(String(item._id), item);
+          const actual =
+            typeof item.content === "object" && item.content !== null
+              ? item.content
+              : item;
+          if (actual?._id) {
+            uniqueMap.set(String(actual._id), actual);
+          }
         });
         const deduplicatedPool = Array.from(uniqueMap.values());
 
@@ -885,10 +1382,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           ];
         }
 
-        const finalDisplay = shuffleArray(finalFour);
-
         if (isMounted) {
-          setRelatedStandaloneBooks(finalDisplay);
+          setRelatedStandaloneBooks(finalFour);
         }
       } catch (err) {
         if (isMounted) setRelatedStandaloneBooks([]);
@@ -932,74 +1427,46 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   }, [user?.likes, activeChapterId]);
 
   useEffect(() => {
-    if (!book?.media) return;
-    let isCancelled = false;
-
-    const loadPdf = async () => {
-      try {
-        const targetDir = FileSystem.documentDirectory;
-        const safeId = book._id || activeChapterId || "chapter_doc";
-        const path = `${targetDir}doc_${safeId}.pdf`;
-
-        const fileInfo = await FileSystem.getInfoAsync(path);
-        if (fileInfo.exists && (fileInfo.size ?? 0) > 0) {
-          if (!isCancelled) setPdfPath(fileInfo.uri);
-          return;
-        }
-
-        if (!isCancelled) {
-          setPdfPath(book.media);
-        }
-
-        if (isConnected) {
-          FileSystem.downloadAsync(book.media, path)
-            .then((res) => {
-              if (!isCancelled && res.uri) {
-                setPdfPath(res.uri);
-              }
-            })
-            .catch(() => {});
-        }
-      } catch (err: any) {
-        if (!isCancelled && book.media) {
-          setPdfPath(book.media);
-        }
-      }
-    };
-
-    loadPdf();
-    return () => {
-      isCancelled = true;
-    };
-  }, [book?._id, book?.media, activeChapterId, isConnected]);
+    // Prevent stale PDF totals from persisting across different media
+    setTotalPages(0);
+  }, [book?.media]);
 
   const pdfSource: Source | null = useMemo(() => {
-    if (!pdfPath) return null;
+    if (!pdfPath || book?.type === "audio") return null;
+    const isLocalFile = pdfPath.startsWith("file://");
     return {
       uri: pdfPath,
-      cache: true,
+      cache: !isLocalFile,
     };
-  }, [pdfPath]);
+  }, [pdfPath, book?.type]);
 
   const onPageChangedHandler = useCallback(
-    (newPage: number) => {
+    (newPage: number, numberOfPages?: number) => {
       if (newPage <= 0) return;
+      if (numberOfPages && numberOfPages > 0) {
+        setTotalPages(numberOfPages);
+      }
       currentPageRef.current = newPage;
       setCurrentPage(newPage);
+      void saveRecentReadProgress(newPage, numberOfPages);
     },
-    []
+    [saveRecentReadProgress]
   );
 
-  const goToPage = useCallback((targetPage: number) => {
-    if (targetPage < 1) return;
-    currentPageRef.current = targetPage;
-    setCurrentPage(targetPage);
-    try {
-      pdfRef.current?.setPage(targetPage);
-    } catch (e) {
-      console.warn("goToPage error:", e);
-    }
-  }, []);
+  const goToPage = useCallback(
+    (targetPage: number) => {
+      if (targetPage < 1) return;
+      currentPageRef.current = targetPage;
+      setCurrentPage(targetPage);
+      void saveRecentReadProgress(targetPage);
+      try {
+        pdfRef.current?.setPage(targetPage);
+      } catch (e) {
+        console.warn("goToPage error:", e);
+      }
+    },
+    [saveRecentReadProgress]
+  );
 
   const handleScroll = Animated.event(
     [{ nativeEvent: { contentOffset: { y: scrollY } } }],
@@ -1063,6 +1530,40 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (isSnappingRef.current) return;
     snapToNearestState(e.nativeEvent.contentOffset.y);
   };
+
+  useEffect(() => {
+    if (incomingPage > 1) return;
+
+    let cancelled = false;
+    const checkSavedProgress = async () => {
+      try {
+        const raw = await AsyncStorage.getItem("recentReads");
+        if (!raw || cancelled) return;
+        const list = JSON.parse(raw);
+        const entry = (Array.isArray(list) ? list : []).find(
+          (item: any) => String(item?.content?._id) === String(activeChapterId)
+        );
+        const savedPage = parseInt(String(entry?.readtill || "0"), 10);
+        if (!cancelled && Number.isFinite(savedPage) && savedPage > 1) {
+          setResumeBanner({ visible: true, page: savedPage });
+          if (resumeBannerTimer.current) {
+            clearTimeout(resumeBannerTimer.current);
+          }
+          resumeBannerTimer.current = setTimeout(() => {
+            setResumeBanner((prev) => ({ ...prev, visible: false }));
+          }, 40000);
+        }
+      } catch {}
+    };
+    checkSavedProgress();
+    return () => {
+      cancelled = true;
+      if (resumeBannerTimer.current) {
+        clearTimeout(resumeBannerTimer.current);
+        resumeBannerTimer.current = null;
+      }
+    };
+  }, [activeChapterId, incomingPage]);
 
   const openToc = () => setIsTocOpen(true);
   const closeToc = () => setIsTocOpen(false);
@@ -1129,47 +1630,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     inputRange: [0, 1],
     outputRange: [0, CARD_RADIUS],
   });
-
-  const lastSavedPageRef = useRef<number | null>(null);
-
-  const updateRecentReads = async () => {
-    if (currentPage < 1 || !book) return;
-    const currentPageValue = Math.max(1, currentPage);
-    if (lastSavedPageRef.current === currentPageValue) return;
-
-    try {
-      let oldRecentReads = await AsyncStorage.getItem("recentReads");
-      const recentReads: IRecentRead[] = oldRecentReads
-        ? JSON.parse(oldRecentReads)
-        : [];
-      const newRecentReads = recentReads.filter(
-        (item) => item.content._id !== activeChapterId
-      );
-      newRecentReads.push({
-        content: {
-          ...book,
-          comments: Array.isArray(book.comments) ? book.comments.length : 0,
-          category: book.category?.name || book.category?._id || "",
-        },
-        readtill: String(currentPageValue),
-        total: book?.total ? String(book.total) : "5",
-        readAt: new Date().toString(),
-      });
-      await AsyncStorage.setItem("recentReads", JSON.stringify(newRecentReads));
-      lastSavedPageRef.current = currentPageValue;
-    } catch (error) {
-      console.error("Error updating recent reads:", error);
-    }
-  };
-
-  useEffect(() => {
-    const unsubscribe = navigation.addListener("beforeRemove", () => {
-      void updateRecentReads();
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, [navigation, activeChapterId, book, currentPage]);
 
   const like = async () => {
     if (!book) return;
@@ -1242,10 +1702,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       setDownloadProgress(0);
 
       const targetDir = FileSystem.documentDirectory;
-      const downloadPath = `${targetDir}doc_${book._id}.pdf`;
+      const cleanUrl = normalizeMediaUrl(book.media);
+      const urlHash = getFastHash(cleanUrl);
+      const downloadPath = `${targetDir}fastpdf_${book._id}_${urlHash}.pdf`;
 
       const downloadResumable = FileSystem.createDownloadResumable(
-        book.media,
+        cleanUrl,
         downloadPath,
         {},
         (downloadProgressData) => {
@@ -1258,6 +1720,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       const result = await downloadResumable.downloadAsync();
       if (result?.uri) {
+        ramPdfUriMap.set(book._id, result.uri);
+        ramUrlMap.set(book._id, cleanUrl);
+        await AsyncStorage.multiSet([
+          [`fast_pdf_uri_${book._id}`, result.uri],
+          [`fast_pdf_url_${book._id}`, cleanUrl],
+        ]);
+        setPdfPath(result.uri);
         downloadChapter(book as any);
         setIsDownloading(false);
         setIsDownloadedRecently(true);
@@ -1304,8 +1773,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   }, [accessToken, user, isConnected, book, seriesData]);
 
   const renderQuestionCard = ({ item }: { item: ISeriesContent }) => {
+    if (!item || !item.content) return null;
     if (item.contentModel === "Question" && typeof item.content !== "string") {
       const questionData = item.content as IQuestion;
+      if (!questionData) return null;
       return (
         <QuestionCard
           onCommentClick={() => {
@@ -1363,8 +1834,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const displayAuthor =
     book?.author && book.author.trim() !== "" ? book.author : "Readapt Creator";
 
-  const isSeriesContent = Boolean(book?.series);
-  const showStandaloneRelated = !isSeriesContent && relatedStandaloneBooks.length > 0;
+  const isSeriesContent = Boolean(book?.series || seriesData);
+  const showStandaloneRelated =
+    !isSeriesContent && relatedStandaloneBooks.length > 0;
 
   const resolvedSeriesBook = useMemo(() => {
     if (!book) return null;
@@ -1385,7 +1857,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               : pallete.bgmain,
         },
       ]}>
-      {/* Morphing Master Reader Canvas - Always visible underneath overlays */}
+      {/* Morphing Master Reader Canvas */}
       <Animated.View
         pointerEvents={
           showComments || showDetailsPanel || isTocOpen
@@ -1419,34 +1891,47 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           {pdfSource ? (
             <View style={{ width: SCREEN_WIDTH, height: fullHeight }}>
               <Pdf
-  ref={pdfRef}
-  source={pdfSource}
-  horizontal={true}
-  enablePaging={true}
-  fitPolicy={0}
-  enableAntialiasing={true}
-  enableAnnotationRendering={false}
-  onPageChanged={onPageChangedHandler}
-  onLoadComplete={(numberOfPages) => {
-    setTotalPages(numberOfPages);
-    // Sirf document load hone par initial target page par jump karega
-    if (currentPageRef.current > 1) {
-      pdfRef.current?.setPage(currentPageRef.current);
-    }
-  }}
-  onPageSingleTap={() => {
-    if (!isAnnotating && !isTocOpen && !showDetailsPanel) {
-      setShowPdfControls((prev) => !prev);
-    }
-  }}
-  onScaleChanged={(currentScale) => {
-    if (!isAnnotating) {
-      setShowPdfControls(currentScale <= 1.05);
-    }
-  }}
-  style={[styles.singlePdfView, { backgroundColor: currentBgColor }]}
-  onError={(err) => console.log("Master PDF render error:", err)}
-/>
+                key={pdfSource.uri}
+                ref={pdfRef}
+                source={pdfSource}
+                page={incomingPage}
+                horizontal={true}
+                enablePaging={true}
+                fitPolicy={0}
+                enableAntialiasing={true}
+                enableAnnotationRendering={false}
+                onPageChanged={onPageChangedHandler}
+               onLoadComplete={(numberOfPages) => {
+                  if (numberOfPages > 0) {
+                    ramRealPagesMap.set(activeChapterId, numberOfPages);
+                    totalPagesRef.current = numberOfPages;
+                    setTotalPages(numberOfPages);
+                    AsyncStorage.setItem(
+                      `pdf_real_pages_${activeChapterId}`,
+                      String(numberOfPages)
+                    ).catch(() => {});
+                  }
+                  if (currentPageRef.current > 1) {
+                    pdfRef.current?.setPage(currentPageRef.current);
+                  }
+                  void saveRecentReadProgress(
+                    currentPageRef.current,
+                    numberOfPages
+                  );
+                }}
+                onPageSingleTap={() => {
+                  if (!isAnnotating && !isTocOpen && !showDetailsPanel) {
+                    setShowPdfControls((prev) => !prev);
+                  }
+                }}
+                onScaleChanged={(currentScale) => {
+                  if (!isAnnotating) {
+                    setShowPdfControls(currentScale <= 1.05);
+                  }
+                }}
+                style={[styles.singlePdfView, { backgroundColor: currentBgColor }]}
+                onError={(err) => console.log("Master PDF render error:", err)}
+              />
 
               {!isLocked && (
                 <View
@@ -1474,14 +1959,14 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           )}
 
           {isLocked && !showComments && !showDetailsPanel && !isTocOpen && (
-            <TouchableOpacity
-              style={styles.expandOverlay}
-              activeOpacity={0.8}
-              onPress={() => {
-                setIsLocked(false);
-                scrollRef.current?.scrollTo({ y: 0, animated: true });
-              }}>
-              <View style={styles.expandBadge}>
+            <View style={styles.expandOverlay} pointerEvents="box-none">
+              <TouchableOpacity
+                style={styles.expandBadge}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setIsLocked(false);
+                  scrollRef.current?.scrollTo({ y: 0, animated: true });
+                }}>
                 <Svg
                   width={14}
                   height={14}
@@ -1495,8 +1980,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                   <Line x1="3" y1="21" x2="10" y2="14" />
                 </Svg>
                 <Text style={styles.expandBadgeText}>Tap to Read</Text>
-              </View>
-            </TouchableOpacity>
+              </TouchableOpacity>
+            </View>
           )}
         </Animated.View>
       </Animated.View>
@@ -1534,12 +2019,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             <View style={styles.row}>
               <Text style={styles.bookAuthor}>{displayAuthor}</Text>
               <View style={styles.divider} />
-              <Text style={styles.statItem}>
-                {book?.likes || 0} likes
-              </Text>
+              <Text style={styles.statItem}>{book?.likes || 0} likes</Text>
               <View style={styles.divider} />
               <Text style={styles.statItem}>
-                {book?.comments?.length || 0} comments
+                {Array.isArray(book?.comments)
+                  ? book?.comments.length
+                  : typeof book?.comments === "number"
+                  ? book.comments
+                  : 0}{" "}
+                comments
               </Text>
             </View>
 
@@ -1559,7 +2047,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                   <ControlButton icon="share" />
                 </PopButton>
 
-                {/* Circular In-place Download Indicator */}
                 <PopButton onPress={download}>
                   {isDownloading ? (
                     <View style={styles.circularProgressWrapper}>
@@ -1587,7 +2074,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                     </View>
                   ) : isDownloadedRecently ? (
                     <View style={styles.circularProgressWrapper}>
-                      <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#00D2B4" strokeWidth="2.5">
+                      <Svg
+                        width={22}
+                        height={22}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="#00D2B4"
+                        strokeWidth="2.5">
                         <Polyline points="20 6 9 17 4 12" />
                       </Svg>
                     </View>
@@ -1639,7 +2132,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           </View>
         )}
 
-        {/* Section: Series (Next Chapters Queue) vs Standalone (Related 4 Cards) */}
+        {/* Section: Series (Next Chapters Queue) vs Strictly Standalone (Related 4 Cards) */}
         {isSeriesContent ? (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
@@ -1651,8 +2144,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 onOpen={(nextBook: any) => {
                   const nextId = nextBook?._id;
                   if (!nextId) return;
-                  void updateRecentReads();
-                  navigation.push("ReadBook", { bookId: nextId });
+                  void saveRecentReadProgress();
+                  navigation.push("ReadBook", {
+                    bookId: String(nextId),
+                    initialBookData: nextBook,
+                  });
                 }}
                 viewer="pdf"
               />
@@ -1670,14 +2166,19 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                   style={styles.relatedGridCardWrapper}
                   activeOpacity={0.88}
                   onPress={() => {
-                    void updateRecentReads();
-                    navigation.push("ReadBook", { bookId: relBook._id });
+                    void saveRecentReadProgress();
+                    navigation.push("ReadBook", {
+                      bookId: String(relBook._id),
+                      initialBookData: relBook,
+                    });
                   }}>
-                  <ContentCard
-                    book={relBook}
-                    index={-1}
-                    seriesType={"standalone" as any}
-                  />
+                  <View pointerEvents="none">
+                    <ContentCard
+                      book={relBook}
+                      index={-1}
+                      seriesType={"standalone" as any}
+                    />
+                  </View>
                 </TouchableOpacity>
               ))}
             </View>
@@ -1819,138 +2320,132 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       {/* Annotation Mode Overlays */}
       {!isLocked && isAnnotating && (
         <View pointerEvents="box-none" style={[StyleSheet.absoluteFillObject, { zIndex: 600 }]}>
-         <View style={[styles.annotationTopBar, { paddingTop: insets.top + 10 }]}>
-  {/* Undo Action */}
-  <TouchableOpacity
-    style={styles.annotTopAction}
-    onPress={handleUndo}
-    activeOpacity={0.7}>
-    <Svg
-      width={18}
-      height={18}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#ffffff"
-      strokeWidth="2.2">
-      <Polyline points="1 4 1 10 7 10" />
-      <Path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-    </Svg>
-  </TouchableOpacity>
+          <View style={[styles.annotationTopBar, { paddingTop: insets.top + 10 }]}>
+            <TouchableOpacity
+              style={styles.annotTopAction}
+              onPress={handleUndo}
+              activeOpacity={0.7}>
+              <Svg
+                width={18}
+                height={18}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#ffffff"
+                strokeWidth="2.2">
+                <Polyline points="1 4 1 10 7 10" />
+                <Path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </Svg>
+            </TouchableOpacity>
 
-  {/* Clear Action (Trash Icon) */}
-  <TouchableOpacity
-    style={styles.annotTopAction}
-    onPress={handleClear}
-    activeOpacity={0.7}>
-    <Svg
-      width={18}
-      height={18}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#ff6b6b"
-      strokeWidth="2">
-      <Polyline points="3 6 5 6 21 6" />
-      <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    </Svg>
-  </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.annotTopAction}
+              onPress={handleClear}
+              activeOpacity={0.7}>
+              <Svg
+                width={18}
+                height={18}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#ff6b6b"
+                strokeWidth="2">
+                <Polyline points="3 6 5 6 21 6" />
+                <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </Svg>
+            </TouchableOpacity>
 
-  {/* Save Action (Disk/Check Icon with Tick Feedback) */}
-  <TouchableOpacity
-    style={[
-      styles.annotTopAction,
-      styles.annotSaveAction,
-      isSavedRecently && styles.annotSaveActionSuccess,
-    ]}
-    onPress={saveAnnotations}
-    activeOpacity={0.7}>
-    {isSavedRecently ? (
-      <Svg
-        width={18}
-        height={18}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="#00D2B4"
-        strokeWidth="3">
-        <Polyline points="20 6 9 17 4 12" />
-      </Svg>
-    ) : (
-      <Svg
-        width={18}
-        height={18}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="#00D2B4"
-        strokeWidth="2">
-        <Path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-        <Polyline points="17 21 17 13 7 13 7 21" />
-        <Polyline points="7 3 7 8 15 8" />
-      </Svg>
-    )}
-  </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.annotTopAction,
+                styles.annotSaveAction,
+                isSavedRecently && styles.annotSaveActionSuccess,
+              ]}
+              onPress={saveAnnotations}
+              activeOpacity={0.7}>
+              {isSavedRecently ? (
+                <Svg
+                  width={18}
+                  height={18}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D2B4"
+                  strokeWidth="3">
+                  <Polyline points="20 6 9 17 4 12" />
+                </Svg>
+              ) : (
+                <Svg
+                  width={18}
+                  height={18}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#00D2B4"
+                  strokeWidth="2">
+                  <Path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                  <Polyline points="17 21 17 13 7 13 7 21" />
+                  <Polyline points="7 3 7 8 15 8" />
+                </Svg>
+              )}
+            </TouchableOpacity>
 
-  {/* Close / Exit Action */}
-  <TouchableOpacity
-    style={[styles.annotTopAction, { marginLeft: 8 }]}
-    onPress={handleExitAnnotationMode}
-    activeOpacity={0.7}>
-    <Svg
-      width={18}
-      height={18}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#ffffff"
-      strokeWidth="2.5">
-      <Line x1="18" y1="6" x2="6" y2="18" />
-      <Line x1="6" y1="6" x2="18" y2="18" />
-    </Svg>
-  </TouchableOpacity>
-</View>
+            <TouchableOpacity
+              style={[styles.annotTopAction, { marginLeft: 8 }]}
+              onPress={handleExitAnnotationMode}
+              activeOpacity={0.7}>
+              <Svg
+                width={18}
+                height={18}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#ffffff"
+                strokeWidth="2.5">
+                <Line x1="18" y1="6" x2="6" y2="18" />
+                <Line x1="6" y1="6" x2="18" y2="18" />
+              </Svg>
+            </TouchableOpacity>
+          </View>
 
           <View
             style={[
               styles.annotationBottomBar,
               { paddingBottom: insets.bottom + 8 },
             ]}>
-           <View style={styles.annotToolsGroup}>
-  {/* Marker Pen Icon */}
-  <TouchableOpacity
-    style={[
-      styles.toolChip,
-      selectedTool === "marker" && styles.toolChipActive,
-    ]}
-    onPress={() => setSelectedTool("marker")}
-    activeOpacity={0.8}>
-    <Svg
-      width={18}
-      height={18}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={selectedTool === "marker" ? "#ffffff" : "#a0a5b5"}
-      strokeWidth="2">
-      <Path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
-    </Svg>
-  </TouchableOpacity>
+            <View style={styles.annotToolsGroup}>
+              <TouchableOpacity
+                style={[
+                  styles.toolChip,
+                  selectedTool === "marker" && styles.toolChipActive,
+                ]}
+                onPress={() => setSelectedTool("marker")}
+                activeOpacity={0.8}>
+                <Svg
+                  width={18}
+                  height={18}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={selectedTool === "marker" ? "#ffffff" : "#a0a5b5"}
+                  strokeWidth="2">
+                  <Path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </Svg>
+              </TouchableOpacity>
 
-  {/* Highlighter Icon */}
-  <TouchableOpacity
-    style={[
-      styles.toolChip,
-      selectedTool === "highlighter" && styles.toolChipActive,
-    ]}
-    onPress={() => setSelectedTool("highlighter")}
-    activeOpacity={0.8}>
-    <Svg
-      width={18}
-      height={18}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={selectedTool === "highlighter" ? "#ffffff" : "#a0a5b5"}
-      strokeWidth="2">
-      <Path d="M9 11l-6 6v3h3l6-6" />
-      <Path d="M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
-    </Svg>
-  </TouchableOpacity>
-</View>
+              <TouchableOpacity
+                style={[
+                  styles.toolChip,
+                  selectedTool === "highlighter" && styles.toolChipActive,
+                ]}
+                onPress={() => setSelectedTool("highlighter")}
+                activeOpacity={0.8}>
+                <Svg
+                  width={18}
+                  height={18}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={selectedTool === "highlighter" ? "#ffffff" : "#a0a5b5"}
+                  strokeWidth="2">
+                  <Path d="M9 11l-6 6v3h3l6-6" />
+                  <Path d="M22 12l-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
+                </Svg>
+              </TouchableOpacity>
+            </View>
 
             <View style={styles.annotDivider} />
 
@@ -1989,7 +2484,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 style={styles.modalCancelBtn}
                 onPress={() => setCustomModal((prev) => ({ ...prev, visible: false }))}
                 activeOpacity={0.8}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>{customModal.cancelText || "Cancel"}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -2020,17 +2515,55 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       <CommentsDrawer
         visible={showComments}
-        reload={() => fetchChapter(activeChapterId)}
+        reload={() => loadChapterAndPdfFast(activeChapterId)}
         onClose={() => {
           setShowComments(false);
           setCommentedQueId("");
         }}
         chapterId={commentedQueId ? commentedQueId : activeChapterId}
         initialComments={
-          (commentedQueId ? [] : book?.comments ? book?.comments : []) as any
+          (commentedQueId ? [] : Array.isArray(book?.comments) ? book?.comments : []) as any
         }
         isQuestion={!!commentedQueId}
       />
+
+      {resumeBanner.visible && (
+        <View style={styles.resumeBanner}>
+          <Text style={styles.resumeBannerText}>Continue from page {resumeBanner.page}?</Text>
+
+          <TouchableOpacity
+            onPress={() => {
+              goToPage(resumeBanner.page);
+              setResumeBanner({ visible: false, page: 1 });
+              if (resumeBannerTimer.current) {
+                clearTimeout(resumeBannerTimer.current);
+                resumeBannerTimer.current = null;
+              }
+            }}
+            style={styles.resumeBannerIconBtn}
+            activeOpacity={0.8}>
+            <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5">
+              <Polyline points="20 6 9 17 4 12" />
+            </Svg>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setResumeBanner({ visible: false, page: 1 });
+              if (resumeBannerTimer.current) {
+                clearTimeout(resumeBannerTimer.current);
+                resumeBannerTimer.current = null;
+              }
+            }}
+            style={styles.resumeBannerIconBtn}
+            activeOpacity={0.8}>
+            <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2.5">
+              <Line x1="18" y1="6" x2="6" y2="18" />
+              <Line x1="6" y1="6" x2="18" y2="18" />
+            </Svg>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 };
@@ -2606,6 +3139,39 @@ const styles = StyleSheet.create({
     color: "#e5e7eb",
     fontSize: 13,
     fontWeight: "600",
+  },
+  resumeBanner: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(15, 15, 17, 0.98)",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.14)",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 24,
+    zIndex: 9999,
+    elevation: 12,
+  },
+  resumeBannerText: {
+    flex: 1,
+    color: "#ffffff",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  resumeBannerIconBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
   },
   modalConfirmBtn: {
     paddingVertical: 9,

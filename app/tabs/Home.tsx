@@ -9,6 +9,7 @@ import {
   Platform,
   UIManager,
   Vibration,
+  DeviceEventEmitter,
 } from "react-native";
 import pallete from "../../lib/Colors";
 import useAuth from "../../hooks/useAuth";
@@ -85,6 +86,8 @@ const YourFeedIcon = () => (
 );
 
 function ContentSlider({ data }: { data: any[] }) {
+  if (!data || data.length === 0) return null;
+
   return (
     <Carousel
       loop={false}
@@ -102,24 +105,27 @@ function ContentSlider({ data }: { data: any[] }) {
         parallaxScrollingScale: 0.92,
         parallaxScrollingOffset: 0,
       }}
-      renderItem={({ item, index }) => (
-        <View
-          style={{
-            width: CARD_WIDTH + CARD_GAP,
-            height: "100%",
-            justifyContent: "center",
-            alignItems: "center",
-          }}>
-          <View style={{ width: CARD_WIDTH, height: "100%" }}>
-            <ContentCard
-              book={item}
-              index={index}
-              seriesType="standalone"
-              isLiked={Boolean(item.isLiked)}
-            />
+      renderItem={({ item, index }) => {
+        if (!item) return <View style={{ width: CARD_WIDTH }} />;
+        return (
+          <View
+            style={{
+              width: CARD_WIDTH + CARD_GAP,
+              height: "100%",
+              justifyContent: "center",
+              alignItems: "center",
+            }}>
+            <View style={{ width: CARD_WIDTH, height: "100%" }}>
+              <ContentCard
+                book={item}
+                index={index}
+                seriesType="standalone"
+                isLiked={Boolean(item.isLiked)}
+              />
+            </View>
           </View>
-        </View>
-      )}
+        );
+      }}
     />
   );
 }
@@ -225,36 +231,72 @@ const HomeScreen = () => {
 
       const recentReads: any[] = JSON.parse(readChapters);
       const sorted = recentReads.sort((a, b) => {
-        const timeA = a.readAt ? new Date(a.readAt).getTime() : 0;
-        const timeB = b.readAt ? new Date(b.readAt).getTime() : 0;
+        const timeA = a?.readAt ? new Date(a.readAt).getTime() : 0;
+        const timeB = b?.readAt ? new Date(b.readAt).getTime() : 0;
         return timeB - timeA;
       });
 
-      const validReads = sorted
-        .filter((item) => item?.content?._id)
-        .slice(0, 3)
-        .map((item) => ({
-          ...item,
-          readtill:
-            item.readtill ??
-            item.progress ??
-            item.currentTime ??
-            item.position ??
-            "0",
-          total:
-            item.content?.duration ||
-            item.content?.totalDuration ||
-            item.content?.total ||
-            item.total ||
-            item.duration ||
-            "0",
-        }));
+      const validReads = await Promise.all(
+        sorted
+          .filter((item) => item?.content?._id)
+          .slice(0, 3)
+          .map(async (item) => {
+            const chapterId = String(item.content._id);
+            const isAudioItem = String(item?.content?.type || "")
+              .toLowerCase()
+              .includes("audio");
+
+            let resolvedTotal: any = "0";
+
+            if (isAudioItem) {
+              // Audio priority: viewer-saved total/duration first, then content metadata
+              resolvedTotal =
+                (item.total && Number(item.total) > 0 ? item.total : null) ??
+                (item.duration && Number(item.duration) > 0 ? item.duration : null) ??
+                item.content?.duration ??
+                item.content?.totalDuration ??
+                item.content?.total ??
+                "0";
+            } else {
+              // PDF priority: 1) Verified PDF Engine page count from storage, 2) item.total saved by ReadBook, 3) fallback content.total
+              const verifiedEnginePages = await AsyncStorage.getItem(
+                `pdf_real_pages_${chapterId}`
+              );
+              if (verifiedEnginePages && Number(verifiedEnginePages) > 0) {
+                resolvedTotal = verifiedEnginePages;
+              } else if (item.total && Number(item.total) > 0) {
+                resolvedTotal = String(item.total);
+              } else if (item.content?.total && Number(item.content.total) > 0) {
+                resolvedTotal = String(item.content.total);
+              } else {
+                resolvedTotal = String(item.readtill || "1");
+              }
+            }
+
+            return {
+              ...item,
+              readtill:
+                item.readtill ??
+                item.progress ??
+                item.currentTime ??
+                item.position ??
+                (isAudioItem ? "0" : "1"),
+              total: resolvedTotal,
+            };
+          })
+      );
 
       LayoutAnimation.configureNext({
         duration: 220,
-        create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+        create: {
+          type: LayoutAnimation.Types.easeInEaseOut,
+          property: LayoutAnimation.Properties.opacity,
+        },
         update: { type: LayoutAnimation.Types.spring, springDamping: 0.85 },
-        delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+        delete: {
+          type: LayoutAnimation.Types.easeInEaseOut,
+          property: LayoutAnimation.Properties.opacity,
+        },
       });
 
       setContinueReading(validReads.length > 0 ? validReads : null);
@@ -264,7 +306,7 @@ const HomeScreen = () => {
           (item: any) => item.content?._id || item.content
         );
         const readChaptersInSeries = recentReads.filter((readChapter) =>
-          chapterIdsInSeries.includes(readChapter.content._id)
+          chapterIdsInSeries.includes(readChapter?.content?._id)
         );
         setCompleteChapters(readChaptersInSeries.length);
       }
@@ -279,6 +321,14 @@ const HomeScreen = () => {
       reload().catch(() => {});
     }, [loadRecentReads, reload])
   );
+
+  // Instant listener when ReadBook or AudioRdr updates progress
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("RECENT_READS_UPDATED", () => {
+      loadRecentReads();
+    });
+    return () => sub.remove();
+  }, [loadRecentReads]);
 
   // Native Instant Load: Cache Read
   useEffect(() => {
@@ -362,10 +412,8 @@ const HomeScreen = () => {
 
     const selected: ISeries[] = [];
 
-    // Min 2 Framework guarantee (agar available hain)
     frameworks.slice(0, 2).forEach((f) => selected.push(f));
 
-    // Remaining slots filled with regulars/frameworks up to max 5
     const remainingPool = [...frameworks.slice(2), ...regulars];
     for (const item of remainingPool) {
       if (selected.length >= 5) break;
@@ -408,7 +456,6 @@ const HomeScreen = () => {
     return (feedData?.series || []).slice(0, 4);
   }, [feedData?.series]);
 
-  // End of scroll haptic feedback
   const handleScroll = (event: any) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
     const isCloseToBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - 30;
@@ -422,7 +469,8 @@ const HomeScreen = () => {
   };
 
   const renderSeries = ({ item }: { item: ISeries }) => {
-    const firstChapter = item.chapters?.find((ch) => ch.contentModel === "Chapter");
+    if (!item) return null;
+    const firstChapter = item.chapters?.find((ch) => ch?.contentModel === "Chapter");
     const seriesAuthor = item.author || (firstChapter?.content as IChapter)?.author || "READAPT";
 
     return (
@@ -433,7 +481,7 @@ const HomeScreen = () => {
         cover={item.cover}
         type={item.type}
         chapterCount={
-          item.chapters?.filter((ch) => ch.contentModel === "Chapter").length || 0
+          item.chapters?.filter((ch) => ch?.contentModel === "Chapter").length || 0
         }
       />
     );
@@ -493,7 +541,7 @@ const HomeScreen = () => {
                           Math.max(
                             1,
                             seriesData?.chapters?.filter(
-                              (item) => item.contentModel === "Chapter"
+                              (item) => item?.contentModel === "Chapter"
                             ).length || 1
                           )) *
                         100
@@ -513,7 +561,7 @@ const HomeScreen = () => {
                               Math.max(
                                 1,
                                 seriesData?.chapters?.filter(
-                                  (item) => item.contentModel === "Chapter"
+                                  (item) => item?.contentModel === "Chapter"
                                 ).length || 1
                               )) *
                               100
@@ -558,6 +606,7 @@ const HomeScreen = () => {
                 total={item.total}
                 type={item.content.type}
                 author={item.content.author}
+                media={item.content.media}
                 learWidth={(width / 100) * 85}
               />
             ))}
@@ -618,7 +667,7 @@ const HomeScreen = () => {
           <ContentSlider data={trendingStandaloneFive} />
         )}
 
-        {/* Your Feed: Exactly Max 4 Content Cards (Dynamic Category/Subcategory Intelligence) */}
+        {/* Your Feed: Exactly Max 4 Content Cards */}
         <SectionHeader title="Your Feed" icon={<YourFeedIcon />} />
         <View style={styles.gridSectionWrap}>
           {loading ? (

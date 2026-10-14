@@ -20,7 +20,7 @@ import useAuth from "../../hooks/useAuth";
 import { api } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 
 const { width } = Dimensions.get("window");
 
@@ -47,7 +47,6 @@ import { useNetworkStatus } from "../../hooks/useNetwork";
 
 const SHEET_HEIGHT = 320;
 
-// Module-level In-Flight Request Deduplication Map
 const activeSeriesRequests = new Map<string, Promise<any>>();
 
 interface DetailsPanelProps {
@@ -127,7 +126,6 @@ const DetailsPanel = ({ isOpen, onClose, data }: DetailsPanelProps) => {
         <Animated.View style={[panelStyles.detailsPanel, animatedStyles]}>
           <View style={panelStyles.dragHandle} />
 
-          {/* Stats Grid Row */}
           <View style={panelStyles.panelSRow}>
             <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
               <Text style={panelStyles.pVal}>{totalChapters.length}</Text>
@@ -156,7 +154,6 @@ const DetailsPanel = ({ isOpen, onClose, data }: DetailsPanelProps) => {
             </TouchableOpacity>
           </View>
 
-          {/* Body Block */}
           <TouchableOpacity activeOpacity={0.9}>
             <Text style={panelStyles.panelDescription}>
               {data?.description ??
@@ -272,13 +269,17 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
     };
   }, []);
 
-  // 1. High-Performance Cache-First + SWR Series Loader
+  useFocusEffect(
+    useCallback(() => {
+      reload().catch(() => {});
+    }, [reload])
+  );
+
   const loadSeries = useCallback(async () => {
     if (!currentSeriesId) return;
 
     const cacheKey = `cache_series_${currentSeriesId}`;
 
-    // Step A: Instant Cache Hydration (0ms paint)
     try {
       const cached = await AsyncStorage.getItem(cacheKey);
       if (cached && isMountedRef.current) {
@@ -287,7 +288,6 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
       }
     } catch {}
 
-    // Step B: Request Deduplication & Background Revalidation
     if (!accessToken || !isConnected) return;
 
     if (activeSeriesRequests.has(currentSeriesId)) {
@@ -335,7 +335,6 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
     setIsJoined(user?.joinedSeries === seriesData?._id);
   }, [user?.joinedSeries, seriesData?._id]);
 
-  // 2. Optimized Current Joined Series Title Cache
   useEffect(() => {
     let cancel = false;
     const fetchCurrentJoinedSeries = async () => {
@@ -372,7 +371,6 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
     };
   }, [user?.joinedSeries, seriesData?._id, accessToken, isConnected]);
 
-  // 3. Memoized Chapter Metrics & Progress
   const chapterItems = useMemo(() => {
     return (
       seriesData?.chapters?.filter((item) => item.contentModel === "Chapter") || []
@@ -488,9 +486,24 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
 
   const renderContentCard = useCallback(
     ({ item, index }: { item: any; index: number }) => {
-      const rawContent = item.content;
-      const chapterData: IChapter =
-        typeof rawContent === "object" ? rawContent : item;
+      const rawContent = item?.content;
+      const isPopulated = typeof rawContent === "object" && rawContent !== null;
+      const realChapterId =
+        (isPopulated && rawContent._id) ||
+        (typeof rawContent === "string" && rawContent) ||
+        item?._id;
+
+      const chapterData: any = isPopulated
+        ? {
+            ...rawContent,
+            _id: String(realChapterId),
+            series: rawContent.series || seriesData?._id || seriesData,
+          }
+        : {
+            ...item,
+            _id: String(realChapterId),
+            series: seriesData?._id || seriesData,
+          };
 
       return (
         <ContentCard
@@ -501,7 +514,7 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
         />
       );
     },
-    [seriesData?.type]
+    [seriesData]
   );
 
   const renderRecommendationCard = useCallback(() => {
@@ -519,16 +532,6 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
     const recCover = recommendedChapter?.cover || fallbackCover;
     const recTitle =
       recommendedChapter?.title || "Recommended Reading";
-
-    const rawTarget =
-      recommendedChapter?._id ||
-      (seriesData as any)?.recommendationBookId?._id ||
-      (seriesData as any)?.recommendationBookId;
-
-    const targetChapterId =
-      typeof rawTarget === "object" && rawTarget?._id
-        ? rawTarget._id
-        : rawTarget;
 
     return (
       <View style={styles.recommendationSection}>
@@ -997,16 +1000,13 @@ const styles = StyleSheet.create({
   },
   recommendBgOverlay: {
     ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
   recommendCoverWrap: {
-    width: 70,
-    height: 70,
-    borderRadius: 10,
+    width: 60,
+    height: 80,
+    borderRadius: 6,
     overflow: "hidden",
-    backgroundColor: "#111",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.15)",
-    zIndex: 2,
   },
   recommendCover: {
     width: "100%",
@@ -1014,33 +1014,25 @@ const styles = StyleSheet.create({
   },
   recommendInfo: {
     flex: 1,
-    minWidth: 0,
-    justifyContent: "center",
-    zIndex: 2,
   },
   recommendTag: {
-    fontSize: 9,
-    textTransform: "uppercase",
+    color: pallete.accent,
+    fontSize: 10,
     fontWeight: "700",
-    letterSpacing: 0.6,
-    color: "#38bdf8",
-    marginBottom: 3,
+    marginBottom: 4,
   },
   recommendTitle: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#ffffff",
-    marginBottom: 3,
+    color: pallete.textwhite,
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 4,
   },
   recommendDesc: {
+    color: pallete.textgray,
     fontSize: 12,
-    lineHeight: 16,
-    color: "#cbd5e1",
   },
   recommendArrow: {
-    zIndex: 2,
     justifyContent: "center",
-    alignItems: "center",
   },
 });
 

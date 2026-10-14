@@ -263,7 +263,7 @@ const CommentsDrawer = ({
       <View style={styles.commentItem}>
         <Image
           source={{
-            uri: item.by.image || "https://via.placeholder.com/64",
+            uri: item.by?.image || "https://via.placeholder.com/64",
           }}
           style={styles.userAvatar}
         />
@@ -313,7 +313,7 @@ const CommentsDrawer = ({
         {/* Comments List */}
         <FlatList
           data={comments}
-          keyExtractor={(item) => item._id}
+          keyExtractor={(item, index) => String(item?._id ?? index)}
           renderItem={renderComment}
           scrollEnabled={true}
           contentContainerStyle={styles.listContent}

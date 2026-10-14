@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,10 @@ import {
   Modal,
   ActivityIndicator,
   TouchableOpacity,
+  Animated,
+  PanResponder,
+  ScrollView,
+  BackHandler,
 } from "react-native";
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -18,6 +22,9 @@ import Svg, { Path, Polyline, Line } from "react-native-svg";
 import { useDownloads, DownloadedChapter } from "../../hooks/useDownloads";
 import { IRecentRead } from "../../types/Storage";
 import Contentprogress from "../../components/props/ContentProgress";
+import { useNavigation } from "@react-navigation/native";
+import { RootStackParamList } from "../../components/nav/MainNavigation";
+import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 const ACCENT = "#01796F";
 
@@ -115,6 +122,8 @@ const HeadphonesIcon = ({
 export default function Downloads() {
   const { downloads, isLoading, downloadStatuses, deleteChapter,refreshDownloads } =
     useDownloads();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
     const [continueReading, setContinueReading] = useState<
   IRecentRead[] | null
 >(null);
@@ -122,6 +131,65 @@ export default function Downloads() {
   const [deleteTarget, setDeleteTarget] = useState<DownloadedChapter | null>(
     null,
   );
+
+  const deleteSheetY = useRef(new Animated.Value(400)).current;
+  const deletePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderMove: (_, gestureState) => {
+        if (gestureState.dy > 0) {
+          deleteSheetY.setValue(gestureState.dy);
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dy > 100 || gestureState.vy > 0.7) {
+          closeDeletePanel();
+        } else {
+          Animated.spring(deleteSheetY, {
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+    })
+  ).current;
+
+  const closeDeletePanel = () => {
+    Animated.timing(deleteSheetY, {
+      toValue: 400,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(() => setDeleteTarget(null));
+  };
+
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (deleteTarget) {
+        closeDeletePanel();
+        return true;
+      }
+      return false;
+    });
+    return () => sub.remove();
+  }, [deleteTarget]);
+
+  const openDeletePanel = (item: DownloadedChapter) => {
+    setDeleteTarget(item);
+    deleteSheetY.setValue(400);
+    Animated.timing(deleteSheetY, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget._id;
+    setDeleteTarget(null);
+    await deleteChapter(id);
+  };
 
   const groupedDownloads = useMemo(() => {
     const groups: Record<string, DownloadedChapter[]> = {};
@@ -141,12 +209,6 @@ export default function Downloads() {
     return Object.entries(groups);
   }, [downloads]);
 
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    const id = deleteTarget._id
-    setDeleteTarget(null);
-    await deleteChapter(id);
-  };
 
   useEffect(() => {
   const loadRecentReads = async () => {
@@ -196,24 +258,59 @@ const getRecentRead = (
   }
 };
 
+
+  const openDownloadedItem = (item: DownloadedChapter) => {
+    const readTill = getRecentRead(item._id);
+    const targetPage = Math.max(1, parseInt(String(readTill?.readtill || "1"), 10) || 1);
+    const total = readTill?.total || item.total || "10";
+    const initialBookData = {
+      _id: item._id,
+      title: item.title,
+      cover: item.cover,
+      author: item.author || "READAPT",
+      type: item.type,
+      media: item.localUri || item.media,
+      total: parseInt(String(total), 10) || 1,
+    };
+
+    if (String(item.type || "").toLowerCase().includes("audio")) {
+      (navigation as any).navigate("AudioRdr", {
+        bookId: item._id,
+        seekTime: 0,
+        initialBookData,
+      });
+    } else {
+      (navigation as any).navigate("ReadBook", {
+        bookId: item._id,
+        page: targetPage,
+        initialPage: targetPage,
+        startPage: targetPage,
+        initialBookData,
+      });
+    }
+  };
   const renderItem = ({ item }: { item: DownloadedChapter }) => {
     const readTill = getRecentRead(item._id)
 
     return (
-      <View style={styles.itemContent}>
-        <Contentprogress id={item._id} cover={item.cover} title={item.title} readtill={readTill?.readtill.toString() || "0"} total={readTill?.total || "10"} type={item.type} author={item.author} />
-
-        {/* Delete */}
-        <Pressable
-          style={({ pressed }) => [
-            styles.deleteButton,
-            pressed && styles.deletePressed,
-          ]}
-          onPress={() => setDeleteTarget(item)}
-          hitSlop={8}>
-          <TrashIcon />
-        </Pressable>
-      </View>
+      <Pressable
+        style={({ pressed }) => [styles.itemContent, pressed && { opacity: 0.88 }]}
+        onPress={() => openDownloadedItem(item)}
+        onLongPress={() => openDeletePanel(item)}
+        delayLongPress={450}>
+        <View style={{ flex: 1 }} pointerEvents="none">
+          <Contentprogress
+            id={item._id}
+            cover={item.cover}
+            title={item.title}
+            readtill={readTill?.readtill.toString() || "0"}
+            total={readTill?.total || "10"}
+            type={item.type}
+            author={item.author}
+            fileSize={item.fileSize}
+          />
+        </View>
+      </Pressable>
     );
   };
 
@@ -232,40 +329,39 @@ const getRecentRead = (
       {downloads.length === 0 ? (
         <EmptyDownloads reload={refreshDownloads} />
       ) : (
-        <FlatList
-          data={groupedDownloads}
-          keyExtractor={([date]) => date}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.listContent}
-          renderItem={({ item: [date, items] }) => (
-            <View style={styles.dateGroup}>
+        <ScrollView
+          style={{ flex: 1 }}
+          showsVerticalScrollIndicator={true}
+          contentContainerStyle={styles.listContent}>
+          {groupedDownloads.map(([date, items]) => (
+            <View style={styles.dateGroup} key={date}>
               <Text style={styles.dateTitle}>{date}</Text>
 
               {items.map((item) => (
                 <View key={item._id}>{renderItem({ item })}</View>
               ))}
             </View>
-          )}
-        />
+          ))}
+        </ScrollView>
       )}
 
-      {/* Delete confirmation */}
-      <Modal
-        visible={!!deleteTarget}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setDeleteTarget(null)}>
+      {/* Delete confirmation bottom sheet */}
+      {deleteTarget && (
         <View style={styles.modalOverlay}>
-          <View style={styles.confirmPanel}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeDeletePanel} />
+          <Animated.View
+            {...deletePanResponder.panHandlers}
+            style={[
+              styles.confirmPanel,
+              { transform: [{ translateY: deleteSheetY }] },
+            ]}>
             <View style={styles.dragHandle} />
 
             <Text style={styles.panelHeader}>Are you sure to delete</Text>
 
-            {deleteTarget && (
-              <Text style={styles.deleteTitle} numberOfLines={1}>
-                {deleteTarget.title}
-              </Text>
-            )}
+            <Text style={styles.deleteTitle} numberOfLines={1}>
+              {deleteTarget.title}
+            </Text>
 
             <View style={styles.panelActions}>
               <Pressable
@@ -273,8 +369,8 @@ const getRecentRead = (
                   styles.cancelButton,
                   pressed && styles.buttonPressed,
                 ]}
-                onPress={() => setDeleteTarget(null)}>
-                <Text style={styles.cancelText}>Cancel</Text>
+                onPress={closeDeletePanel}>
+                <Text style={styles.cancelText}>Dismiss</Text>
               </Pressable>
 
               <Pressable
@@ -283,12 +379,12 @@ const getRecentRead = (
                   pressed && styles.buttonPressed,
                 ]}
                 onPress={confirmDelete}>
-                <Text style={styles.continueText}>Continue</Text>
+                <Text style={styles.continueText}>Yes</Text>
               </Pressable>
             </View>
-          </View>
+          </Animated.View>
         </View>
-      </Modal>
+      )}
     </View>
   );
 }
@@ -549,9 +645,14 @@ const styles = StyleSheet.create({
   },
 
   modalOverlay: {
-    flex: 1,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: "rgba(0,0,0,0.55)",
     justifyContent: "flex-end",
+    zIndex: 1000,
   },
 
   confirmPanel: {

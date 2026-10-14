@@ -30,7 +30,9 @@ type Props = {
   total: any;
   type: string;
   author: string;
+  media?: string;
   learWidth?: number;
+  fileSize?: string;
 };
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
@@ -65,13 +67,24 @@ const formatClock = (sec: number): string => {
 };
 
 const Contentprogress: React.FC<Props> = memo(
-  ({ id, cover, title, readtill, total, type, author, learWidth }) => {
+  ({
+    id,
+    cover,
+    title,
+    readtill,
+    total,
+    type,
+    author,
+    media,
+    learWidth,
+    fileSize,
+  }) => {
     const navigation = useNavigation<NavigationProp>();
 
     const scaleAnim = useSharedValue(1);
     const progressFillAnim = useSharedValue(0);
 
-    const isAudio = String(type).toLowerCase().includes("audio");
+    const isAudio = String(type || "").toLowerCase().includes("audio");
     const accentColor = isAudio ? "#38bdf8" : "#22c55e";
 
     let currentSec = 0;
@@ -80,6 +93,7 @@ const Contentprogress: React.FC<Props> = memo(
     let displayTotal = "1";
     let progressPct = 0;
     let targetPage = 1;
+    let resolvedTotalPages = 0;
 
     if (isAudio) {
       currentSec = toSeconds(readtill);
@@ -94,13 +108,16 @@ const Contentprogress: React.FC<Props> = memo(
           : 0;
     } else {
       targetPage = Math.max(1, parseInt(String(readtill), 10) || 1);
-      const totPage = Math.max(targetPage, parseInt(String(total), 10) || 1);
+      const parsedTotal = parseInt(String(total), 10) || 0;
+      resolvedTotalPages =
+        parsedTotal > 0 ? Math.max(targetPage, parsedTotal) : 0;
 
       displayCurrent = String(targetPage);
-      displayTotal = String(totPage);
+      displayTotal =
+        resolvedTotalPages > 0 ? String(resolvedTotalPages) : "--";
       progressPct =
-        totPage > 0
-          ? Math.min(100, Math.max(0, (targetPage / totPage) * 100))
+        resolvedTotalPages > 0
+          ? Math.min(100, Math.max(0, (targetPage / resolvedTotalPages) * 100))
           : 0;
     }
 
@@ -129,10 +146,22 @@ const Contentprogress: React.FC<Props> = memo(
     };
 
     const handlePress = () => {
+      if (!id) return;
+
       if (isAudio) {
         (navigation as any).navigate("AudioRdr", {
           bookId: id,
           seekTime: currentSec,
+          initialBookData: {
+            _id: id,
+            title,
+            cover,
+            author: author || "READAPT",
+            type: "audio",
+            media: media || undefined,
+            duration: totalSec > 0 ? totalSec : undefined,
+            total: totalSec > 0 ? totalSec : undefined,
+          },
         });
       } else {
         (navigation as any).navigate("ReadBook", {
@@ -140,6 +169,15 @@ const Contentprogress: React.FC<Props> = memo(
           page: targetPage,
           initialPage: targetPage,
           startPage: targetPage,
+          initialBookData: {
+            _id: id,
+            title,
+            cover,
+            author: author || "READAPT",
+            type: "pdf",
+            media: media || undefined,
+            total: resolvedTotalPages > 0 ? resolvedTotalPages : undefined,
+          },
         });
       }
     };
@@ -180,6 +218,10 @@ const Contentprogress: React.FC<Props> = memo(
               <Text style={styles.listAuthor} numberOfLines={1}>
                 {author || "READAPT"}
               </Text>
+
+              {fileSize ? (
+                <Text style={styles.fileSize}>{fileSize}</Text>
+              ) : null}
 
               {/* Progress Count */}
               <View style={styles.progressTextContainer}>
@@ -295,6 +337,11 @@ const styles = StyleSheet.create({
   listAuthor: {
     fontSize: 11,
     color: pallete.textgray,
+    marginBottom: 6,
+  },
+  fileSize: {
+    fontSize: 10,
+    color: "#9ca3af",
     marginBottom: 6,
   },
   progressTextContainer: {
