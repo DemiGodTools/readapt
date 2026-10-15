@@ -3306,7 +3306,7 @@ const styles = StyleSheet.create({
   qnaOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 10003,
-    backgroundColor: "rgba(0, 0, 0, 0.72)",
+    backgroundColor: "#08090a",
   },
   qnaPanelRoot: {
     flex: 1,
