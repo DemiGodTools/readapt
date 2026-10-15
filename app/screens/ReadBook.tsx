@@ -156,6 +156,7 @@ type BookPopulated = {
     createdAt: string;
   }[];
   cover: string;
+  questions?: any[];
   category: any;
   series?: any;
   likes: number;
@@ -528,7 +529,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const [showPdfControls, setShowPdfControls] = useState(true);
   const { isConnected } = useNetworkStatus();
   const [commentedQueId, setCommentedQueId] = useState("");
-  const [questions, setQuestions] = useState<ISeriesContent[] | null>(null);
+  const [questions, setQuestions] = useState<IQuestion[] | null>(null);
+  const [showQnaPanel, setShowQnaPanel] = useState(false);
+  const [solvedIds, setSolvedIds] = useState<Set<string>>(new Set());
+
+  const questionsSignatureRef = useRef<string>("");
+  const solvedSignatureRef = useRef<string>("");
 
   const [relatedStandaloneBooks, setRelatedStandaloneBooks] = useState<any[]>([]);
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
@@ -845,6 +851,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (showComments) {
       setShowComments(false);
       setCommentedQueId("");
+      return true;
+    }
+    if (showQnaPanel) {
+      setShowQnaPanel(false);
       return true;
     }
     if (!isLocked) {
@@ -1184,6 +1194,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     setCurrentPage(incomingPage);
     currentPageRef.current = incomingPage;
     setQuestions(null);
+    setShowQnaPanel(false);
+    setSolvedIds(new Set());
     setSeriesData(null);
     setRelatedStandaloneBooks([]);
     setIsLocked(true);
@@ -1749,48 +1761,89 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   };
 
   useEffect(() => {
-    if (!book || !user || !book.series) return;
-    const fetchQuestions = async () => {
-      try {
-        const targetSeries = seriesData || book.series;
-        const contents = targetSeries.chapters || [];
-        const chapterIndex = contents.findIndex(
-          (item: any) => item.content?._id === book._id
-        );
+    if (!book) {
+      if (questions !== null) setQuestions(null);
+      setSolvedIds(new Set());
+      questionsSignatureRef.current = "";
+      solvedSignatureRef.current = "";
+      return;
+    }
 
-        const chapterQues: ISeriesContent[] = [];
+    const buildSignature = (items: IQuestion[]) =>
+      items.map((item) => item?._id || item?.question).join("|");
+
+    const incoming =
+      Array.isArray(book.questions) && book.questions.length > 0
+        ? (book.questions as any[]).filter((item) => item && (item._id || item.question))
+        : [];
+
+    let nextQuestions = incoming as IQuestion[];
+
+    if (nextQuestions.length === 0 && user && book.series) {
+      try {
+        const targetSeries = book.series;
+        const contents = targetSeries.chapters || [];
+        const chapterIndex = contents.findIndex((item: any) => item?.content?._id === book._id);
+        const chapterQues: IQuestion[] = [];
         if (chapterIndex !== -1) {
           for (let index = chapterIndex + 1; index < contents.length; index++) {
             const item = contents[index];
-            if (item.contentModel !== "Question") break;
-            chapterQues.push(item);
+            if (item?.contentModel !== "Question") break;
+            if (item?.content && typeof item.content !== "string") {
+              chapterQues.push(item.content as IQuestion);
+            }
           }
         }
-        setQuestions(chapterQues);
+        nextQuestions = chapterQues;
       } catch (error) {
-        console.error("Error fetching questions:", error);
+        console.error("Error fetching legacy questions:", error);
       }
-    };
-    fetchQuestions();
-  }, [accessToken, user, isConnected, book, seriesData]);
-
-  const renderQuestionCard = ({ item }: { item: ISeriesContent }) => {
-    if (!item || !item.content) return null;
-    if (item.contentModel === "Question" && typeof item.content !== "string") {
-      const questionData = item.content as IQuestion;
-      if (!questionData) return null;
-      return (
-        <QuestionCard
-          onCommentClick={() => {
-            setCommentedQueId(questionData._id);
-            setShowComments(true);
-          }}
-          key={questionData._id}
-          question={questionData}
-        />
-      );
     }
-    return null;
+
+    if (buildSignature(nextQuestions) !== questionsSignatureRef.current) {
+      questionsSignatureRef.current = buildSignature(nextQuestions);
+      setQuestions(nextQuestions.length ? nextQuestions : null);
+    }
+
+    if (user) {
+      const attemptedIds = new Set(
+        (user.questionsAttempted || []).map((entry: any) => entry.question)
+      );
+      const solvedIdsForCurrent = new Set(
+        nextQuestions
+          .map((item) => item._id)
+          .filter((id) => attemptedIds.has(id))
+      );
+
+      if (solvedIdsForCurrent.size !== solvedIds.size) {
+        setSolvedIds(solvedIdsForCurrent);
+        solvedSignatureRef.current = solvedIdsForCurrent.size.toString();
+      } else if (buildSignature(nextQuestions) === questionsSignatureRef.current) {
+        const identicalSolved = solvedIdsForCurrent.size === solvedIds.size;
+        if (!identicalSolved) setSolvedIds(solvedIdsForCurrent);
+      }
+    }
+  }, [book, user, isConnected, seriesData, accessToken, questions]);
+
+  const renderQuestionCard = ({ item }: { item: IQuestion }) => {
+    if (!item || !item._id) return null;
+    return (
+      <QuestionCard
+        onAttempted={(isCorrect: boolean) => {
+          setSolvedIds((prev) => {
+            const next = new Set(prev);
+            next.add(item._id);
+            return next;
+          });
+        }}
+        onCommentClick={() => {
+          setCommentedQueId(item._id);
+          setShowComments(true);
+        }}
+        key={item._id}
+        question={item}
+      />
+    );
   };
 
   const renderStrokes = (strokes: AnnotationStroke[]) => {
@@ -2097,7 +2150,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                   <Feather name="info" size={22} color="#9ca3af" />
                 </View>
               </PopButton>
-            </View>
+
+              <PopButton onPress={() => setShowQnaPanel(true)}>
+                <View style={styles.controlItem}>
+                  <Text style={styles.qnaButtonLabel}>Q&A</Text>
+                </View>
+              </PopButton>            </View>
           </View>
         </View>
 
@@ -2530,6 +2588,69 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         }
         isQuestion={!!commentedQueId}
       />
+
+      {showQnaPanel && (
+        <View style={styles.qnaOverlay}>
+          <View style={styles.qnaPanelRoot}>
+            <View style={styles.qnaPanelHeader}>
+              <Text style={styles.qnaPanelTitle}>Q&A</Text>
+              <View style={styles.qnaProgressPill}>
+                <Text style={styles.qnaProgressText}>
+                  Solved {solvedIds.size} / {questions?.length || 0}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowQnaPanel(false)}>
+                <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2.5">
+                  <Line x1="18" y1="6" x2="6" y2="18" />
+                  <Line x1="6" y1="6" x2="18" y2="18" />
+                </Svg>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.qnaCarouselArea}>
+              {questions && questions.length > 0 ? (
+                <Carousel
+                  loop={false}
+                  width={SCREEN_WIDTH}
+                  height={SCREEN_HEIGHT * 0.82}
+                  data={questions}
+                  pagingEnabled
+                  snapEnabled
+                  mode="parallax"
+                  modeConfig={{
+                    parallaxScrollingScale: 0.95,
+                    parallaxScrollingOffset: 0,
+                  }}
+                  onSnapToItem={(index: number) => {}}
+                  renderItem={({ item }) => (
+                    <View
+                      style={{
+                        width: SCREEN_WIDTH,
+                        height: "100%",
+                        justifyContent: "center",
+                        alignItems: "center",
+                      }}>
+                      <View
+                        style={{
+                          width: SCREEN_WIDTH * 0.92,
+                          height: "100%",
+                        }}>
+                        {renderQuestionCard({ item: item as IQuestion })}
+                      </View>
+                    </View>
+                  )}
+                />
+              ) : (
+                <View style={styles.qnaEmptyState}>
+                  <Text style={styles.qnaEmptyText}>
+                    No Q&A available for this chapter.
+                  </Text>
+                </View>
+              )}
+            </View>
+          </View>
+        </View>
+      )}
 
       {resumeBanner.visible && (
         <View style={styles.resumeBanner}>
@@ -3176,6 +3297,56 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  qnaButtonLabel: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  qnaOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10003,
+    backgroundColor: "rgba(0, 0, 0, 0.72)",
+  },
+  qnaPanelRoot: {
+    flex: 1,
+  },
+  qnaPanelHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  qnaPanelTitle: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  qnaProgressPill: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  qnaProgressText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  qnaCarouselArea: {
+    flex: 1,
+  },
+  qnaEmptyState: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qnaEmptyText: {
+    color: "#9ca3af",
+    fontSize: 14,
+    fontWeight: "500",
   },
   modalConfirmBtn: {
     paddingVertical: 9,
