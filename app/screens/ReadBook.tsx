@@ -2118,13 +2118,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 <ControlButton icon="info" />
               </PopButton>
 
-              {questions && questions.length > 0 && (
-                <PopButton onPress={() => setShowQnaPanel(true)}>
-                  <View style={styles.controlItem}>
-                    <Text style={styles.qnaButtonLabel}>Q&A</Text>
-                  </View>
-                </PopButton>
-              )}
+              <PopButton onPress={() => setShowQnaPanel(true)}>
+                <View style={styles.controlItem}>
+                  <Text style={styles.qnaButtonLabel}>Q&A</Text>
+                </View>
+              </PopButton>
             </View>
           </View>
         </View>
@@ -2576,32 +2574,40 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 </Svg>
               </TouchableOpacity>
             </View>
-            <Carousel
-              loop={false}
-              width={SCREEN_WIDTH}
-              height={SCREEN_HEIGHT * 0.7}
-              data={questions || []}
-              pagingEnabled
-              snapEnabled
-              mode="parallax"
-              modeConfig={{
-                parallaxScrollingScale: 0.94,
-                parallaxScrollingOffset: 0,
-              }}
-              renderItem={({ item }) => (
-                <View
-                  style={{
-                    width: SCREEN_WIDTH,
-                    height: "100%",
-                    justifyContent: "center",
-                    alignItems: "center",
-                  }}>
-                  <View style={{ width: SCREEN_WIDTH * 0.9, height: "100%" }}>
-                    {renderQuestionCard({ item: item as IQuestion })}
+            {questions && questions.length > 0 ? (
+              <Carousel
+                loop={false}
+                width={SCREEN_WIDTH}
+                height={SCREEN_HEIGHT * 0.7}
+                data={questions || []}
+                pagingEnabled
+                snapEnabled
+                mode="parallax"
+                modeConfig={{
+                  parallaxScrollingScale: 0.94,
+                  parallaxScrollingOffset: 0,
+                }}
+                renderItem={({ item }) => (
+                  <View
+                    style={{
+                      width: SCREEN_WIDTH,
+                      height: "100%",
+                      justifyContent: "center",
+                      alignItems: "center",
+                    }}>
+                    <View style={{ width: SCREEN_WIDTH * 0.9, height: "100%" }}>
+                      {renderQuestionCard({ item: item as IQuestion })}
+                    </View>
                   </View>
-                </View>
-              )}
-            />
+                )}
+              />
+            ) : (
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ color: "#9ca3af", fontSize: 14, fontWeight: "500" }}>
+                  No Q&A available for this chapter.
+                </Text>
+              </View>
+            )}
           </View>
         </View>
       )}
