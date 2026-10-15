@@ -2255,6 +2255,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               <PopButton onPress={() => setShowQnaPanel(true)}>
                 <View style={styles.controlItem}>
                   <Feather name="help-circle" size={22} color="#e5e7eb" />
+                  <View style={styles.qnaCountBadge}>
+                    <Text style={styles.qnaCountBadgeText}>
+                      {questions?.length || 0}
+                    </Text>
+                  </View>
                 </View>
               </PopButton>
             </View>
@@ -3437,6 +3442,23 @@ const styles = StyleSheet.create({
   qnaProgressText: {
     color: "#ffffff",
     fontSize: 13,
+    fontWeight: "700",
+  },
+  qnaCountBadge: {
+    position: "absolute",
+    top: -6,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    backgroundColor: "#eb4040",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  qnaCountBadgeText: {
+    color: "#ffffff",
+    fontSize: 10,
     fontWeight: "700",
   },
   modalConfirmBtn: {
