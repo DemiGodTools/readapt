@@ -1,7 +1,5 @@
 import { MediaType, SubscriptionPlan } from "../enums";
 
-import { IQuestion } from "./Question";
-
 export type IChapter = {
   _id: string;
   title: string;
@@ -13,7 +11,6 @@ export type IChapter = {
   for: SubscriptionPlan;
   isTrending: boolean;
   comments: number;
-  questions?: IQuestion[];
   cover: string;
   category: string;
   series?: string;
