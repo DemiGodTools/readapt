@@ -22,6 +22,8 @@ import {
   DeviceEventEmitter,
 } from "react-native";
 import Svg, { Path, Line, Circle, Polyline } from "react-native-svg";
+// @ts-ignore
+import Feather from "react-native-vector-icons/Feather";
 import {
   Gesture,
   GestureDetector,
@@ -2091,7 +2093,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               </View>
 
               <PopButton onPress={() => setShowDetailsPanel(true)}>
-                <ControlButton icon="info" />
+                <View style={styles.controlItem}>
+                  <Feather name="info" size={22} color="#9ca3af" />
+                </View>
               </PopButton>
             </View>
           </View>
