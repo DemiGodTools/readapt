@@ -1073,49 +1073,62 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       try {
         const token = accessToken;
-        const chapter = await api.get(`/chapter/${targetId}`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
+       const chapter = await api.get(`/user/chapter/${targetId}`, {
+  headers: token ? { Authorization: `Bearer ${token}` } : {},
+});
 
-        if (chapter?.data?.data) {
-          const freshData: BookPopulated = chapter.data.data;
-          const freshMediaUrl = normalizeMediaUrl(freshData.media);
-          const urlChangedInDb =
-            Boolean(storedMediaUrl && freshMediaUrl && storedMediaUrl !== freshMediaUrl);
+       if (chapter?.data?.data) {
+        const freshData: BookPopulated = chapter.data.data;
+        const freshMediaUrl = normalizeMediaUrl(freshData.media);
+        
+        // 👇 Yeh missing line add karein:
+        const urlChangedInDb = Boolean(
+          storedMediaUrl && freshMediaUrl && storedMediaUrl !== freshMediaUrl
+        );
 
-          if (urlChangedInDb) {
-            ramRealPagesMap.delete(targetId);
-            await AsyncStorage.removeItem(realPagesKey).catch(() => {});
-            if (!isCancelledRef?.current) {
-              setTotalPages(0);
-            }
-          }
-
-          const verifiedCount = ramRealPagesMap.get(targetId) || 0;
-          const mergedBook = {
-            ...freshData,
-            total: verifiedCount > 0 ? verifiedCount : freshData.total,
-          };
-          ramBookMetaMap.set(targetId, mergedBook);
-
+        // If MongoDB media URL changed, wipe old page count
+        if (urlChangedInDb) {
+          ramRealPagesMap.delete(targetId);
+          await AsyncStorage.removeItem(realPagesKey).catch(() => {});
           if (!isCancelledRef?.current) {
-            setBook((prev) => {
-              return { ...mergedBook, likes: freshData.likes ?? prev?.likes ?? 0 };
-            });
+            setTotalPages(0);
           }
+        }
 
-          AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
+        const freshQuestions = Array.isArray(freshData.questions)
+          ? freshData.questions
+          : [];
 
-          if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
-            const newLocalUri = await downloadPdfToDisk(targetId, freshMediaUrl);
-            if (!isCancelledRef?.current) {
-              if (newLocalUri) {
-                setPdfPath(newLocalUri);
-              } else if (!mountedLocalUri) {
-                setPdfPath(freshMediaUrl);
-              }
+        const verifiedCount = ramRealPagesMap.get(targetId) || 0;
+        const mergedBook = {
+          ...freshData,
+          questions: freshQuestions,
+          total: verifiedCount > 0 ? verifiedCount : freshData.total,
+        };
+        ramBookMetaMap.set(targetId, mergedBook);
+
+        if (!isCancelledRef?.current) {
+          setBook((prev) => ({
+            ...mergedBook,
+            likes: freshData.likes ?? prev?.likes ?? 0,
+          }));
+          if (freshQuestions.length > 0) {
+            setQuestions(freshQuestions as any);
+          }
+        }
+
+        AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
+
+        if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
+          const newLocalUri = await downloadPdfToDisk(targetId, freshMediaUrl);
+          if (!isCancelledRef?.current) {
+            if (newLocalUri) {
+              setPdfPath(newLocalUri);
+            } else if (!mountedLocalUri) {
+              setPdfPath(freshMediaUrl);
             }
           }
+        }
 
           try {
             const rawReads = await AsyncStorage.getItem("recentReads");
@@ -1166,6 +1179,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   useEffect(() => {
     if (!activeChapterId) return;
+    AsyncStorage.removeItem(`cached_ch_${activeChapterId}`).catch(() => {});
+  ramBookMetaMap.delete(activeChapterId);
     const isCancelledRef = { current: false };
 
     const ramUri = ramPdfUriMap.get(activeChapterId) || null;
@@ -1770,100 +1785,101 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     }
   };
 
-  // Robust & Fast Chapter-Level / Series QnA Resolver (Checks both populated objects & direct endpoints)
+ // 100% Reliable Q&A Resolver with Direct API Fallback & State Sync
   useEffect(() => {
-    if (!book) {
-      if (questions !== null) setQuestions(null);
-      setSolvedIds(new Set());
-      questionsSignatureRef.current = "";
-      solvedSignatureRef.current = "";
-      return;
-    }
+    let isCancelled = false;
 
-    const buildSignature = (items: IQuestion[]) =>
-      items.map((item) => item?._id || item?.question).join("|");
-
-    let nextQuestions: IQuestion[] = [];
-
-    // 1. Direct Populated Questions from Chapter
-    if (Array.isArray(book.questions) && book.questions.length > 0) {
-      const validPopulated = book.questions.filter(
-        (item) => item && typeof item === "object" && item._id && item.question
-      );
-      if (validPopulated.length > 0) {
-        nextQuestions = validPopulated as IQuestion[];
+    const resolveQuestions = async () => {
+      if (!activeChapterId) {
+        setQuestions(null);
+        return;
       }
-    }
 
-    // 2. Legacy / Series Chapters Questions Fallback
-    if (nextQuestions.length === 0 && book.series) {
-      try {
-        const targetSeries = seriesData || book.series;
-        const contents = targetSeries.chapters || [];
-        const chapterIndex = contents.findIndex(
-          (item: any) => item?.content?._id === book._id
+      // 1. Direct Populated Check from Book State
+      let list: IQuestion[] = [];
+
+      if (Array.isArray(book?.questions) && book.questions.length > 0) {
+        const populated = book.questions.filter(
+          (q: any) => q && typeof q === "object" && (q.question || q._id)
         );
-        const chapterQues: IQuestion[] = [];
-        if (chapterIndex !== -1) {
-          for (let index = chapterIndex + 1; index < contents.length; index++) {
-            const item = contents[index];
-            if (item?.contentModel !== "Question") break;
-            if (item?.content && typeof item.content !== "string") {
-              chapterQues.push(item.content as IQuestion);
+        if (populated.length > 0) {
+          list = populated as IQuestion[];
+        }
+      }
+
+      // 2. Agar questions populated nahi hain ya empty hain, direct fetch karein
+      if (list.length === 0 && isConnected) {
+        try {
+          const token = accessToken;
+          const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+          // Try standard user route first, then root chapter route
+          let res = await api.get(`/user/chapter/${activeChapterId}`, { headers }).catch(() => null);
+          if (!res?.data?.data) {
+            res = await api.get(`/chapter/${activeChapterId}`, { headers }).catch(() => null);
+          }
+
+          const freshData = res?.data?.data;
+          if (freshData?.questions && Array.isArray(freshData.questions) && freshData.questions.length > 0) {
+            const freshPopulated = freshData.questions.filter(
+              (q: any) => q && typeof q === "object" && q.question
+            );
+            if (freshPopulated.length > 0) {
+              list = freshPopulated as IQuestion[];
+              // Update book state & cache so next time it is instant
+              setBook((prev) => (prev ? { ...prev, questions: freshPopulated } : prev));
+              AsyncStorage.setItem(
+                `cached_ch_${activeChapterId}`,
+                JSON.stringify({ ...(book || freshData), questions: freshPopulated })
+              ).catch(() => {});
             }
           }
+        } catch (e) {
+          console.log("Direct question fetch error:", e);
         }
-        if (chapterQues.length > 0) {
-          nextQuestions = chapterQues;
-        }
-      } catch (error) {
-        console.error("Error fetching legacy questions:", error);
       }
-    }
 
-    // 3. Fallback Fetch: If questions exist in book as unpopulated IDs, fetch them directly
-    if (
-      nextQuestions.length === 0 &&
-      Array.isArray(book.questions) &&
-      book.questions.length > 0 &&
-      typeof book.questions[0] === "string" &&
-      isConnected &&
-      accessToken
-    ) {
-      api
-        .get(`/chapter/${activeChapterId}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        })
-        .then((res) => {
-          const freshQ = res?.data?.data?.questions;
-          if (Array.isArray(freshQ) && freshQ.length > 0 && typeof freshQ[0] === "object") {
-            setQuestions(freshQ);
+      // 3. Legacy Series Chapter Questions Fallback
+      if (list.length === 0 && (book?.series || seriesData)) {
+        try {
+          const targetSeries = seriesData || book?.series;
+          const contents = targetSeries.chapters || [];
+          const chapterIndex = contents.findIndex(
+            (item: any) => (item?.content?._id || item?.content) === activeChapterId
+          );
+          if (chapterIndex !== -1) {
+            for (let index = chapterIndex + 1; index < contents.length; index++) {
+              const item = contents[index];
+              if (item?.contentModel !== "Question") break;
+              if (item?.content && typeof item.content === "object") {
+                list.push(item.content as IQuestion);
+              }
+            }
           }
-        })
-        .catch(() => {});
-    }
-
-    if (buildSignature(nextQuestions) !== questionsSignatureRef.current) {
-      questionsSignatureRef.current = buildSignature(nextQuestions);
-      setQuestions(nextQuestions.length ? nextQuestions : null);
-    }
-
-    if (user) {
-      const attemptedIds = new Set(
-        (user.questionsAttempted || []).map((entry: any) => entry.question)
-      );
-      const solvedIdsForCurrent = new Set(
-        nextQuestions
-          .map((item) => item._id)
-          .filter((id) => attemptedIds.has(id))
-      );
-
-      if (solvedIdsForCurrent.size !== solvedIds.size) {
-        setSolvedIds(solvedIdsForCurrent);
-        solvedSignatureRef.current = solvedIdsForCurrent.size.toString();
+        } catch {}
       }
-    }
-  }, [book, user, isConnected, seriesData, accessToken, activeChapterId]);
+
+      if (!isCancelled) {
+        setQuestions(list.length > 0 ? list : null);
+
+        if (user && list.length > 0) {
+          const attemptedIds = new Set(
+            (user.questionsAttempted || []).map((entry: any) => String(entry.question))
+          );
+          const solved = new Set(
+            list.map((item) => String(item._id)).filter((id) => attemptedIds.has(id))
+          );
+          setSolvedIds(solved);
+        }
+      }
+    };
+
+    resolveQuestions();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeChapterId, book?.questions, accessToken, isConnected, seriesData]);
 
   const renderQuestionCard = ({ item }: { item: IQuestion }) => {
     if (!item || !item._id) return null;
