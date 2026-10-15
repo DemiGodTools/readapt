@@ -1179,8 +1179,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   useEffect(() => {
     if (!activeChapterId) return;
-    AsyncStorage.removeItem(`cached_ch_${activeChapterId}`).catch(() => {});
-  ramBookMetaMap.delete(activeChapterId);
     const isCancelledRef = { current: false };
 
     const ramUri = ramPdfUriMap.get(activeChapterId) || null;
