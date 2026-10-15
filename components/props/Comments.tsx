@@ -249,13 +249,38 @@ const CommentsDrawer = ({
     }
   };
 
-  useEffect(() => {
-    if (isQuestion && accessToken && visible) {
-      getCommentsOfQue();
-    } else if (!isQuestion && accessToken && visible) {
-      setLoading(false)
+  const getCommentsOfChapter = useCallback(async () => {
+    if (!chapterId || !accessToken) return;
+    try {
+      setLoading(true);
+      const res = await api.get(`https://redapt-admin-sand.vercel.app/api/user/chapter/${chapterId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const freshChapter = res?.data?.data ?? {};
+      const freshComments = Array.isArray(freshChapter.comments)
+        ? freshChapter.comments
+        : [];
+      setComments(freshComments as Comment[]);
+    } catch (error) {
+      console.error("Error loading chapter comments:", error);
+      setComments(initialComments || []);
+    } finally {
+      setLoading(false);
     }
-  }, [accessToken, visible, isConnected]);
+  }, [chapterId, accessToken, initialComments]);
+
+  useEffect(() => {
+    if (!visible) return;
+
+    if (isQuestion && accessToken) {
+      getCommentsOfQue();
+    } else if (!isQuestion && chapterId) {
+      getCommentsOfChapter();
+    } else {
+      setComments(initialComments || []);
+      setLoading(false);
+    }
+  }, [visible, isQuestion, accessToken, isConnected, chapterId, getCommentsOfChapter, getCommentsOfQue, initialComments]);
 
   // ─── Render Item ────────────────────────────────────────────
   const renderComment = ({ item }: { item: Comment }) => (
