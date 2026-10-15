@@ -7,6 +7,7 @@ import {
   Animated,
   Dimensions,
   Easing,
+  Vibration,
 } from "react-native";
 import Svg, { Path, Circle, Rect, Line } from "react-native-svg";
 import useAuth from "../../hooks/useAuth";
@@ -80,6 +81,12 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
     setSelectedIndex(index);
     setIsCorrect(correct);
     setSubmitting(true);
+
+    if (correct) {
+      Vibration.vibrate(30);
+    } else {
+      Vibration.vibrate([0, 20, 60, 20]);
+    }
 
     // Bubble fill animation
     Animated.timing(fillAnims[index], {

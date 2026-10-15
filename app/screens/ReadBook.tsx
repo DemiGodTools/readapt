@@ -154,6 +154,7 @@ type BookPopulated = {
     createdAt: string;
   }[];
   cover: string;
+  questions?: any[];
   category: any;
   series?: any;
   likes: number;
@@ -526,7 +527,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const [showPdfControls, setShowPdfControls] = useState(true);
   const { isConnected } = useNetworkStatus();
   const [commentedQueId, setCommentedQueId] = useState("");
-  const [questions, setQuestions] = useState<ISeriesContent[] | null>(null);
+  const [questions, setQuestions] = useState<IQuestion[] | null>(null);
+  const [showQnaPanel, setShowQnaPanel] = useState(false);
 
   const [relatedStandaloneBooks, setRelatedStandaloneBooks] = useState<any[]>([]);
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
@@ -843,6 +845,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (showComments) {
       setShowComments(false);
       setCommentedQueId("");
+      return true;
+    }
+    if (showQnaPanel) {
+      setShowQnaPanel(false);
       return true;
     }
     if (!isLocked) {
@@ -1747,48 +1753,66 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   };
 
   useEffect(() => {
-    if (!book || !user || !book.series) return;
+    if (!book) {
+      setQuestions(null);
+      return;
+    }
+
+    const incoming =
+      Array.isArray(book.questions) && book.questions.length > 0
+        ? (book.questions as any[]).filter((item) => item && (item._id || item.question))
+        : null;
+
+    if (incoming && incoming.length > 0) {
+      setQuestions(incoming as IQuestion[]);
+      return;
+    }
+
+    // Legacy fallback for series-based chapter questions
+    if (!user || !book.series) {
+      setQuestions(null);
+      return;
+    }
+
     const fetchQuestions = async () => {
       try {
         const targetSeries = seriesData || book.series;
-        const contents = targetSeries.chapters || [];
+        const contents = targetSeries?.chapters || [];
         const chapterIndex = contents.findIndex(
-          (item: any) => item.content?._id === book._id
+          (item: any) => item?.content?._id === book._id
         );
 
-        const chapterQues: ISeriesContent[] = [];
+        const chapterQues: IQuestion[] = [];
         if (chapterIndex !== -1) {
           for (let index = chapterIndex + 1; index < contents.length; index++) {
             const item = contents[index];
-            if (item.contentModel !== "Question") break;
-            chapterQues.push(item);
+            if (item?.contentModel !== "Question") break;
+            if (item?.content && typeof item.content !== "string") {
+              chapterQues.push(item.content as IQuestion);
+            }
           }
         }
-        setQuestions(chapterQues);
+        setQuestions(chapterQues.length ? chapterQues : null);
       } catch (error) {
         console.error("Error fetching questions:", error);
+        setQuestions(null);
       }
     };
     fetchQuestions();
   }, [accessToken, user, isConnected, book, seriesData]);
 
-  const renderQuestionCard = ({ item }: { item: ISeriesContent }) => {
-    if (!item || !item.content) return null;
-    if (item.contentModel === "Question" && typeof item.content !== "string") {
-      const questionData = item.content as IQuestion;
-      if (!questionData) return null;
-      return (
-        <QuestionCard
-          onCommentClick={() => {
-            setCommentedQueId(questionData._id);
-            setShowComments(true);
-          }}
-          key={questionData._id}
-          question={questionData}
-        />
-      );
-    }
-    return null;
+  const renderQuestionCard = ({ item }: { item: IQuestion }) => {
+    if (!item || !item._id) return null;
+    return (
+      <QuestionCard
+        onCommentClick={() => {
+          setCommentedQueId(item._id);
+          setShowComments(true);
+        }}
+        key={item._id}
+        question={item}
+      />
+    );
   };
 
   const renderStrokes = (strokes: AnnotationStroke[]) => {
@@ -2093,6 +2117,14 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               <PopButton onPress={() => setShowDetailsPanel(true)}>
                 <ControlButton icon="info" />
               </PopButton>
+
+              {questions && questions.length > 0 && (
+                <PopButton onPress={() => setShowQnaPanel(true)}>
+                  <View style={styles.controlItem}>
+                    <Text style={styles.qnaButtonLabel}>Q&A</Text>
+                  </View>
+                </PopButton>
+              )}
             </View>
           </View>
         </View>
@@ -2526,6 +2558,53 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         }
         isQuestion={!!commentedQueId}
       />
+
+      {showQnaPanel && (
+        <View style={styles.qnaOverlay} pointerEvents="box-none">
+          <TouchableOpacity
+            style={styles.qnaBackdrop}
+            activeOpacity={1}
+            onPress={() => setShowQnaPanel(false)}
+          />
+          <View style={styles.qnaSheet}>
+            <View style={styles.qnaHeader}>
+              <Text style={styles.qnaTitle}>Q&A</Text>
+              <TouchableOpacity onPress={() => setShowQnaPanel(false)}>
+                <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2.5">
+                  <Line x1="18" y1="6" x2="6" y2="18" />
+                  <Line x1="6" y1="6" x2="18" y2="18" />
+                </Svg>
+              </TouchableOpacity>
+            </View>
+            <Carousel
+              loop={false}
+              width={SCREEN_WIDTH}
+              height={SCREEN_HEIGHT * 0.7}
+              data={questions || []}
+              pagingEnabled
+              snapEnabled
+              mode="parallax"
+              modeConfig={{
+                parallaxScrollingScale: 0.94,
+                parallaxScrollingOffset: 0,
+              }}
+              renderItem={({ item }) => (
+                <View
+                  style={{
+                    width: SCREEN_WIDTH,
+                    height: "100%",
+                    justifyContent: "center",
+                    alignItems: "center",
+                  }}>
+                  <View style={{ width: SCREEN_WIDTH * 0.9, height: "100%" }}>
+                    {renderQuestionCard({ item: item as IQuestion })}
+                  </View>
+                </View>
+              )}
+            />
+          </View>
+        </View>
+      )}
 
       {resumeBanner.visible && (
         <View style={styles.resumeBanner}>
@@ -3172,6 +3251,41 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  qnaButtonLabel: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  qnaOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: "flex-end",
+    zIndex: 10001,
+  },
+  qnaBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+  },
+  qnaSheet: {
+    height: "78%",
+    backgroundColor: "rgba(18, 18, 24, 0.99)",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 24,
+  },
+  qnaHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+    paddingHorizontal: 8,
+  },
+  qnaTitle: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "700",
   },
   modalConfirmBtn: {
     paddingVertical: 9,
