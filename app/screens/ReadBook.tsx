@@ -1775,7 +1775,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
     const incoming =
       Array.isArray(book.questions) && book.questions.length > 0
-        ? (book.questions as any[]).filter((item) => item && (item._id || item.question))
+        ? (book.questions as any[]).filter(
+            (item) =>
+              item &&
+              item._id &&
+              typeof item.question === "string" &&
+              Array.isArray(item.options),
+          )
         : [];
 
     let nextQuestions = incoming as IQuestion[];
