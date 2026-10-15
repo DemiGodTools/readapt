@@ -1,5 +1,5 @@
-import React, { memo } from "react";
-import { View, Text, Image, StyleSheet, Dimensions } from "react-native";
+import React, { memo, useState, useEffect } from "react";
+import { View, Text, Image, StyleSheet, Dimensions, DeviceEventEmitter } from "react-native";
 import Svg, { Path, Polyline, Line } from "react-native-svg";
 import pallete from "../../lib/Colors";
 import { IChapter } from "../../types/Chapter";
@@ -86,6 +86,27 @@ const ContentCard = memo(
         ? Boolean(isLikedProp)
         : Boolean(finalBookData?.isLiked);
 
+    const [likeOverride, setLikeOverride] = useState<{
+      liked: boolean;
+      count: number;
+    } | null>(null);
+
+    useEffect(() => {
+      const subscription = DeviceEventEmitter.addListener("like-updated", (event: any) => {
+        if (String(event?.chapterId) !== String(finalBookData?._id)) return;
+        if (typeof event?.count !== "number") return;
+        setLikeOverride({
+          liked: Boolean(event.liked),
+          count: Number(event.count),
+        });
+      });
+      return () => subscription.remove();
+    }, [finalBookData?._id]);
+
+    useEffect(() => {
+      setLikeOverride(null);
+    }, [finalBookData?.likes, finalBookData?.isLiked]);
+
     const likesCount = Array.isArray(finalBookData.likes)
       ? finalBookData.likes.length
       : typeof finalBookData.likes === "number"
@@ -97,6 +118,9 @@ const ContentCard = memo(
       : typeof finalBookData.comments === "number"
       ? finalBookData.comments
       : 0;
+
+    const effectiveLiked = likeOverride?.liked ?? isItemLiked;
+    const effectiveLikesCount = likeOverride?.count ?? likesCount;
 
     return (
       <PopButton styles={styles.bookCard} scale={0.97} onPress={handlePress}>
@@ -187,8 +211,8 @@ const ContentCard = memo(
               width={14}
               height={14}
               viewBox="0 0 24 24"
-              fill={isItemLiked ? "#eb4040" : "none"}
-              stroke={isItemLiked ? "#eb4040" : pallete.textgray}
+              fill={effectiveLiked ? "#eb4040" : "none"}
+              stroke={effectiveLiked ? "#eb4040" : pallete.textgray}
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round">
@@ -197,9 +221,9 @@ const ContentCard = memo(
             <Text
               style={[
                 styles.statText,
-                isItemLiked && { color: "#eb4040", fontWeight: "700" },
+                effectiveLiked && { color: "#eb4040", fontWeight: "700" },
               ]}>
-              {likesCount}
+              {effectiveLikesCount}
             </Text>
           </View>
 

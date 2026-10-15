@@ -1,5 +1,6 @@
 import { Modal } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Easing } from "react-native";
 import Pdf, { Source } from "react-native-pdf";
 import React, {
   useEffect,
@@ -493,6 +494,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
+  const heartScale = useRef(new Animated.Value(1)).current;
+  const particleAnim = useRef(new Animated.Value(0)).current;
   const [showComments, setShowComments] = useState(false);
   const [showDetailsPanel, setShowDetailsPanel] = useState(false);
   const [isTocOpen, setIsTocOpen] = useState(false);
@@ -751,14 +754,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     [isAnnotating, selectedTool, selectedColor, fullHeight]
   );
 
- // Instant & Accurate Recent Reads Updater (No Math.max stale-page bug!)
+  // Instant & Accurate Recent Reads Updater (No Math.max stale-page bug!)
   const saveRecentReadProgress = useCallback(
     async (pageToSave?: number, knownTotal?: number) => {
       const targetPage = Math.max(1, pageToSave ?? currentPageRef.current);
       if (!activeChapterId || !book) return;
 
       try {
-        // Persist true page count if provided by PDF engine
         if (knownTotal && knownTotal > 0) {
           ramRealPagesMap.set(activeChapterId, knownTotal);
           totalPagesRef.current = knownTotal;
@@ -778,7 +780,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           ? parseInt(String(existingItem.total || 0), 10)
           : 0;
 
-        // STRICT PRIORITY: Real PDF Engine Count > Cached Real Count > Existing Valid Total > DB Total
         const verifiedEngineTotal =
           (knownTotal && knownTotal > 0 ? knownTotal : 0) ||
           (totalPagesRef.current > 0 ? totalPagesRef.current : 0) ||
@@ -795,7 +796,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               : targetPage;
         }
 
-        // Ensure total is never smaller than current page
         if (resolvedTotal < targetPage) {
           resolvedTotal = targetPage;
         }
@@ -803,7 +803,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         const updatedBookContent = {
           ...book,
           _id: activeChapterId,
-          total: resolvedTotal, // Overwrite stale DB total inside content object too!
+          total: resolvedTotal,
           comments: Array.isArray(book.comments)
             ? book.comments.length
             : typeof book.comments === "number"
@@ -878,6 +878,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     isTocOpen,
     isAnnotating,
     showComments,
+    showQnaPanel,
     isLocked,
     navigation,
     saveRecentReadProgress,
@@ -900,12 +901,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     };
   }, [navigation, saveRecentReadProgress]);
 
-  // ============================================================================
-  // NATIVE KOTLIN/SWIFT-STYLE PDF ENGINE:
-  // 1. Mounts cached local file in 0ms (Zero Spinner on repeat opens)
-  // 2. Downloads once and persists permanently to disk
-  // 3. Invalidates ONLY when MongoDB media URL genuinely changes
-  // ============================================================================
   const downloadPdfToDisk = useCallback(
     async (chapterId: string, remoteUrl: string): Promise<string | null> => {
       const cleanUrl = normalizeMediaUrl(remoteUrl);
@@ -925,7 +920,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       const storageUrlKey = `fast_pdf_url_${chapterId}`;
 
       try {
-        // 1. Check if this exact hashed file already exists on disk
         const info = await FileSystem.getInfoAsync(localFileUri);
         if (info.exists && (info.size ?? 0) > 512) {
           ramPdfUriMap.set(chapterId, info.uri);
@@ -937,21 +931,17 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           return info.uri;
         }
 
-        // 2. Deduplicate concurrent downloads for the same file
         let job = activeDownloadJobs.get(localFileUri);
         if (!job) {
           job = FileSystem.downloadAsync(cleanUrl, localFileUri)
             .then(async (res) => {
               if (res?.uri) {
                 const verify = await FileSystem.getInfoAsync(res.uri);
-                // Accept any valid downloaded file (> 512 bytes) regardless of 200/206/302 status
                 if (verify.exists && (verify.size ?? 0) > 512) {
-                  // Delete old file if URL was updated in MongoDB
                   const prevUri = await AsyncStorage.getItem(storageUriKey);
                   if (prevUri && prevUri !== verify.uri) {
                     FileSystem.deleteAsync(prevUri, { idempotent: true }).catch(() => {});
                   }
-                  // Also delete legacy doc_ file if present
                   FileSystem.deleteAsync(`${targetDir}doc_${chapterId}.pdf`, {
                     idempotent: true,
                   }).catch(() => {});
@@ -987,7 +977,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     []
   );
 
-  // Instant Chapter Hydrator + Silent Background Revalidator
   const loadChapterAndPdfFast = useCallback(
     async (targetId: string, isCancelledRef?: { current: boolean }) => {
       if (!targetId || targetId === "undefined") return;
@@ -1000,7 +989,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       let mountedLocalUri: string | null = ramPdfUriMap.get(targetId) || null;
       let storedMediaUrl: string | null = ramUrlMap.get(targetId) || null;
 
-      // PHASE 1: 0ms Instant Local Disk Hydration
       try {
         if (mountedLocalUri) {
           setPdfPath(mountedLocalUri);
@@ -1048,7 +1036,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           }
         }
 
-        // Check offline explicit downloads if still not found
         if (!mountedLocalUri) {
           const downloaded = await getSingleDownloaded(targetId);
           if (downloaded) {
@@ -1067,7 +1054,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           }
         }
 
-        // If first time ever opening & we have initial param media, start downloading immediately
         const initialMedia = normalizeMediaUrl(
           initialBookParam?.media || initialBookParam?.content?.media
         );
@@ -1085,7 +1071,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       if (!isConnected) return;
 
-      // PHASE 2: Silent Background Sync with MongoDB
       try {
         const token = accessToken;
         const chapter = await api.get(`/chapter/${targetId}`, {
@@ -1098,7 +1083,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           const urlChangedInDb =
             Boolean(storedMediaUrl && freshMediaUrl && storedMediaUrl !== freshMediaUrl);
 
-          // If MongoDB media URL changed, wipe the old PDF's page count immediately!
           if (urlChangedInDb) {
             ramRealPagesMap.delete(targetId);
             await AsyncStorage.removeItem(realPagesKey).catch(() => {});
@@ -1133,7 +1117,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          // Keep cached_feed_data & recentReads in sync with fresh MongoDB media so cards never pass stale URLs again
           try {
             const rawReads = await AsyncStorage.getItem("recentReads");
             if (rawReads) {
@@ -1219,7 +1202,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     removeAllTracks();
   }, []);
 
-  // --- STRICT STANDALONE RELATED CONTENT RESOLVER (100% Zero Series Leak) ---
+  // --- STRICT STANDALONE RELATED CONTENT RESOLVER ---
   useEffect(() => {
     if (!book || book.series || !accessToken) {
       setRelatedStandaloneBooks([]);
@@ -1442,7 +1425,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   }, [user?.likes, activeChapterId]);
 
   useEffect(() => {
-    // Prevent stale PDF totals from persisting across different media
     setTotalPages(0);
   }, [book?.media]);
 
@@ -1650,12 +1632,39 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (!book) return;
 
     const nextLiked = !isLiked;
-    const nextCount = nextLiked
-      ? (book.likes || 0) + 1
-      : Math.max(0, (book.likes || 1) - 1);
+    const currentLikes = (book.likes || 0) + (nextLiked ? 1 : -1);
+    const resolvedLikes = Math.max(0, currentLikes);
 
     setIsLiked(nextLiked);
-    setBook((prev) => (prev ? { ...prev, likes: nextCount } : prev));
+    heartScale.setValue(0.7);
+    particleAnim.setValue(0);
+    Animated.parallel([
+      Animated.spring(heartScale, {
+        toValue: 1.3,
+        friction: 5,
+        tension: 120,
+        useNativeDriver: true,
+      }),
+      Animated.timing(particleAnim, {
+        toValue: 1,
+        duration: 520,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      heartScale.setValue(1);
+      particleAnim.setValue(0);
+    });
+
+    setBook((prev) => (prev ? { ...prev, likes: resolvedLikes } : prev));
+
+    try {
+      DeviceEventEmitter.emit("like-updated", {
+        chapterId: activeChapterId,
+        liked: nextLiked,
+        count: resolvedLikes,
+      });
+    } catch {}
 
     await AsyncStorage.setItem(`liked_${activeChapterId}`, String(nextLiked));
 
@@ -1663,7 +1672,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       const cached = await AsyncStorage.getItem(`cached_ch_${activeChapterId}`);
       if (cached) {
         const parsed = JSON.parse(cached);
-        parsed.likes = nextCount;
+        parsed.likes = resolvedLikes;
         await AsyncStorage.setItem(
           `cached_ch_${activeChapterId}`,
           JSON.stringify(parsed)
@@ -1761,6 +1770,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     }
   };
 
+  // Robust & Fast Chapter-Level / Series QnA Resolver (Checks both populated objects & direct endpoints)
   useEffect(() => {
     if (!book) {
       if (questions !== null) setQuestions(null);
@@ -1773,24 +1783,26 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     const buildSignature = (items: IQuestion[]) =>
       items.map((item) => item?._id || item?.question).join("|");
 
-    const incoming =
-      Array.isArray(book.questions) && book.questions.length > 0
-        ? (book.questions as any[]).filter(
-            (item) =>
-              item &&
-              item._id &&
-              typeof item.question === "string" &&
-              Array.isArray(item.options),
-          )
-        : [];
+    let nextQuestions: IQuestion[] = [];
 
-    let nextQuestions = incoming as IQuestion[];
+    // 1. Direct Populated Questions from Chapter
+    if (Array.isArray(book.questions) && book.questions.length > 0) {
+      const validPopulated = book.questions.filter(
+        (item) => item && typeof item === "object" && item._id && item.question
+      );
+      if (validPopulated.length > 0) {
+        nextQuestions = validPopulated as IQuestion[];
+      }
+    }
 
-    if (nextQuestions.length === 0 && user && book.series) {
+    // 2. Legacy / Series Chapters Questions Fallback
+    if (nextQuestions.length === 0 && book.series) {
       try {
-        const targetSeries = book.series;
+        const targetSeries = seriesData || book.series;
         const contents = targetSeries.chapters || [];
-        const chapterIndex = contents.findIndex((item: any) => item?.content?._id === book._id);
+        const chapterIndex = contents.findIndex(
+          (item: any) => item?.content?._id === book._id
+        );
         const chapterQues: IQuestion[] = [];
         if (chapterIndex !== -1) {
           for (let index = chapterIndex + 1; index < contents.length; index++) {
@@ -1801,10 +1813,34 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
         }
-        nextQuestions = chapterQues;
+        if (chapterQues.length > 0) {
+          nextQuestions = chapterQues;
+        }
       } catch (error) {
         console.error("Error fetching legacy questions:", error);
       }
+    }
+
+    // 3. Fallback Fetch: If questions exist in book as unpopulated IDs, fetch them directly
+    if (
+      nextQuestions.length === 0 &&
+      Array.isArray(book.questions) &&
+      book.questions.length > 0 &&
+      typeof book.questions[0] === "string" &&
+      isConnected &&
+      accessToken
+    ) {
+      api
+        .get(`/chapter/${activeChapterId}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+        .then((res) => {
+          const freshQ = res?.data?.data?.questions;
+          if (Array.isArray(freshQ) && freshQ.length > 0 && typeof freshQ[0] === "object") {
+            setQuestions(freshQ);
+          }
+        })
+        .catch(() => {});
     }
 
     if (buildSignature(nextQuestions) !== questionsSignatureRef.current) {
@@ -1825,12 +1861,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       if (solvedIdsForCurrent.size !== solvedIds.size) {
         setSolvedIds(solvedIdsForCurrent);
         solvedSignatureRef.current = solvedIdsForCurrent.size.toString();
-      } else if (buildSignature(nextQuestions) === questionsSignatureRef.current) {
-        const identicalSolved = solvedIdsForCurrent.size === solvedIds.size;
-        if (!identicalSolved) setSolvedIds(solvedIdsForCurrent);
       }
     }
-  }, [book, user, isConnected, seriesData, accessToken, questions]);
+  }, [book, user, isConnected, seriesData, accessToken, activeChapterId]);
 
   const renderQuestionCard = ({ item }: { item: IQuestion }) => {
     if (!item || !item._id) return null;
@@ -1963,7 +1996,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 enableAntialiasing={true}
                 enableAnnotationRendering={false}
                 onPageChanged={onPageChangedHandler}
-               onLoadComplete={(numberOfPages) => {
+                onLoadComplete={(numberOfPages) => {
                   if (numberOfPages > 0) {
                     ramRealPagesMap.set(activeChapterId, numberOfPages);
                     totalPagesRef.current = numberOfPages;
@@ -2096,11 +2129,56 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             <View style={styles.controlStatsBar}>
               <View style={styles.leftControls}>
                 <PopButton onPress={like}>
-                  <ControlButton
-                    icon="heart"
-                    strokeWidth={isLiked ? 0 : 2}
-                    filled={isLiked ? "#eb4040" : "none"}
-                  />
+                  <Animated.View
+                    style={{
+                      transform: [{ scale: heartScale }],
+                      position: "relative",
+                    }}>
+                    <ControlButton
+                      icon="heart"
+                      strokeWidth={isLiked ? 0 : 2}
+                      filled={isLiked ? "#eb4040" : "none"}
+                    />
+                    {[-1, 0, 1].map((spread) => (
+                      <Animated.View
+                        key={spread}
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          left: 9 + spread * 8,
+                          top: 8,
+                          width: 4,
+                          height: 4,
+                          borderRadius: 2,
+                          backgroundColor: spread === 0 ? "#ffffff" : "#fb7185",
+                          opacity: particleAnim.interpolate({
+                            inputRange: [0, 0.15, 0.75, 1],
+                            outputRange: [0, 1, 1, 0],
+                          }),
+                          transform: [
+                            {
+                              translateY: particleAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0, -32 + spread * 8],
+                              }),
+                            },
+                            {
+                              translateX: particleAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0, spread * 6],
+                              }),
+                            },
+                            {
+                              scale: particleAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0.4, 1.3],
+                              }),
+                            },
+                          ],
+                        }}
+                      />
+                    ))}
+                  </Animated.View>
                 </PopButton>
                 <PopButton onPress={() => setShowComments(true)}>
                   <ControlButton icon="message" />
@@ -2162,7 +2240,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 <View style={styles.controlItem}>
                   <Feather name="help-circle" size={22} color="#e5e7eb" />
                 </View>
-              </PopButton>            </View>
+              </PopButton>
+            </View>
           </View>
         </View>
 
@@ -2201,7 +2280,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           </View>
         )}
 
-        {/* Section: Series (Next Chapters Queue) vs Strictly Standalone (Related 4 Cards) */}
         {isSeriesContent ? (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
@@ -2608,7 +2686,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             paddingTop: insets.top + 8,
           }}>
           <View style={styles.qnaHeader}>
-            <Text style={styles.qnaHeaderTitle}> </Text>
+            <Text style={styles.qnaHeaderTitle}>Questions</Text>
             <TouchableOpacity
               onPress={() => setShowQnaPanel(false)}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
@@ -2616,7 +2694,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             </TouchableOpacity>
           </View>
 
-          <View style={{ flex: 1, paddingHorizontal: 10 }}>
+          <View style={{ flex: 1, width: SCREEN_WIDTH, alignItems: "center" }}>
             {questions && questions.length > 0 ? (
               <Carousel
                 loop={false}
@@ -2637,8 +2715,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                       height: "100%",
                       justifyContent: "center",
                       alignItems: "center",
+                      paddingHorizontal: 16,
                     }}>
-                    <View style={{ width: SCREEN_WIDTH * 0.94, height: "100%" }}>
+                    <View style={{ width: "100%", height: "100%" }}>
                       {renderQuestionCard({ item: item as IQuestion })}
                     </View>
                   </View>

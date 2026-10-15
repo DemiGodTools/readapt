@@ -31,6 +31,7 @@ import NextChapter from "../../components/props/NextChapter";
 import { api } from "../../lib/api";
 import { IRecentRead } from "../../types/Storage";
 import { useToast } from "../../hooks/useToast";
+import { DeviceEventEmitter } from "react-native";
 import { useUser } from "../../hooks/useUser";
 import { useDownloads } from "../../hooks/useDownloads";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -332,6 +333,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
 
   // Check if liked by current user safely
   const [isLiked, setIsLiked] = useState(false);
+  const heartScale = useRef(new Animated.Value(1)).current;
   useEffect(() => {
     if (user && user.likes && chapterId) {
       const isalreadyLiked = user.likes.some((item: any) => {
@@ -610,17 +612,23 @@ const AudioPlayerScreen = ({ route }: Props) => {
       });
       return;
     }
+    const currentLikes = typeof book?.likes === "number" ? book.likes : 0;
     const nextState = !isLiked;
+    const resolvedLikes = nextState ? currentLikes + 1 : Math.max(0, currentLikes - 1);
     setIsLiked(nextState);
     // Optimistic count update
-    setBook((prev) => {
-      if (!prev) return prev;
-      const current = typeof prev.likes === "number" ? prev.likes : 0;
-      return {
-        ...prev,
-        likes: nextState ? current + 1 : Math.max(0, current - 1),
-      };
-    });
+    setBook((prev) =>
+      prev ? { ...prev, likes: resolvedLikes } : prev,
+    );
+
+    try {
+      DeviceEventEmitter?.emit("like-updated", {
+        chapterId,
+        liked: nextState,
+        count: resolvedLikes,
+      });
+    } catch {}
+
     try {
       await api.post(
         "/chapter/like",
@@ -806,15 +814,17 @@ const AudioPlayerScreen = ({ route }: Props) => {
             <View style={styles.controlStatsBar}>
               <View style={styles.leftControlsGroup}>
                 <ControlItem onPress={like}>
-                  <Svg
-                    width={20}
-                    height={20}
-                    viewBox="0 0 24 24"
-                    fill={isLiked ? "#eb4040" : "none"}
-                    stroke={isLiked ? "#eb4040" : colors.textGray}
-                    strokeWidth="2">
-                    <Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
-                  </Svg>
+                  <Animated.View style={{ transform: [{ scale: heartScale }] }}>
+                    <Svg
+                      width={20}
+                      height={20}
+                      viewBox="0 0 24 24"
+                      fill={isLiked ? "#eb4040" : "none"}
+                      stroke={isLiked ? "#eb4040" : colors.textGray}
+                      strokeWidth="2">
+                      <Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                    </Svg>
+                  </Animated.View>
                 </ControlItem>
 
                 <ControlItem onPress={() => setShowComments(true)}>
