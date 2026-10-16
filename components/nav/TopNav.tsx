@@ -1,13 +1,12 @@
 import React from "react";
 import { View, Text, StyleSheet, Pressable, Animated } from "react-native";
-import Svg, { Path } from "react-native-svg";
 import pallete from "../../lib/Colors";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "./MainNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
 import { useUser } from "../../hooks/useUser";
+import PlanPill from "./PlanPill";
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -40,33 +39,8 @@ const TopNav = () => {
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         onPress={() => navigation.navigate("Subscription")}>
-        <Animated.View
-          style={[
-            styles.subscriptionIcon,
-            { transform: [{ scale: scaleAnim }] },
-          ]}>
-          <LinearGradient
-            colors={["#01796F", "#00A36C", "#50C878"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.subscriptionIcon}>
-            <Svg width="24" height="24" viewBox="0 0 24 24" fill="#0B0B0B">
-              <Path
-                d="M5 16L3 5L8.5 10L12 4L15.5 10L21 5L19 16H5Z"
-                stroke="#0B0B0B"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <Path
-                d="M5 20H19"
-                stroke="#0B0B0B"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </Svg>
-          </LinearGradient>
+        <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+          <PlanPill />
         </Animated.View>
       </Pressable>
     </View>

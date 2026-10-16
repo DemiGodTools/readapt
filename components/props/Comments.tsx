@@ -29,12 +29,11 @@ import Animated, {
 } from "react-native-reanimated";
 import Svg, { Line, Polyline } from "react-native-svg";
 import useAuth from "../../hooks/useAuth";
-import PopButton from "./PopButton"; // your existing PopButton
+import PopButton from "./PopButton";
 import pallete from "../../lib/Colors";
 import { useToast } from "../../hooks/useToast";
 import { api } from "../../lib/api";
 import { useUser } from "../../hooks/useUser";
-import { IComment } from "../../types/Comment";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -45,11 +44,11 @@ const CLOSE_THRESHOLD = 120;
 export type Comment = {
   _id: string;
   by: {
-    _id: string;
+    _id?: string;
     name?: string;
     username?: string;
-    userId: string;
-    image: string;
+    userId?: string;
+    image?: string;
   };
   text: string;
   createdAt: string;
@@ -71,34 +70,43 @@ const CommentsDrawer = ({
   onClose,
   chapterId,
   initialComments = [],
-  isQuestion = false,
 }: Props) => {
-  const {accessToken} = useAuth();
+  const { accessToken } = useAuth();
   const { user } = useUser();
+  const { showToast } = useToast();
+  const { isConnected } = useNetworkStatus();
+
   const [comments, setComments] = useState<Comment[]>(initialComments);
   const [text, setText] = useState("");
   const [posting, setPosting] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const { showToast } = useToast();
-  const { isConnected } = useNetworkStatus()
+  const [loading, setLoading] = useState(false);
+
   const translateY = useSharedValue(DRAWER_HEIGHT);
   const context = useSharedValue({ y: 0 });
+  const keyboardOffset = useSharedValue(0);
 
-  // Open / Close animation
+  // Sync initial comments when provided
+  useEffect(() => {
+    if (Array.isArray(initialComments) && initialComments.length > 0) {
+      setComments(initialComments);
+    }
+  }, [initialComments]);
+
+  // Clean Single Animation Lifecycle (Prevents visual jump/blink)
   useEffect(() => {
     if (visible) {
+      translateY.value = DRAWER_HEIGHT;
       translateY.value = withSpring(0, {
-        damping: 50,
-        stiffness: 200,
+        damping: 48,
+        stiffness: 220,
       });
       fetchComments();
     } else {
-      translateY.value = withTiming(DRAWER_HEIGHT, { duration: 250 });
+      translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 });
     }
-  }, [visible]);
+  }, [visible, chapterId]);
 
-  const keyboardOffset = useSharedValue(0);
-
+  // Keyboard height adaptation
   useEffect(() => {
     const showEvent =
       Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
@@ -106,15 +114,14 @@ const CommentsDrawer = ({
       Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
     const showListener = Keyboard.addListener(showEvent, (e) => {
-      // Smoothly animate the offset to match keyboard height
       keyboardOffset.value = withTiming(e.endCoordinates.height, {
-        duration: Platform.OS === "ios" ? e.duration : 200,
+        duration: Platform.OS === "ios" ? e.duration : 180,
       });
     });
 
-    const hideListener = Keyboard.addListener(hideEvent, (e) => {
+    const hideListener = Keyboard.addListener(hideEvent, () => {
       keyboardOffset.value = withTiming(0, {
-        duration: Platform.OS === "ios" ? e.duration : 200,
+        duration: Platform.OS === "ios" ? 200 : 180,
       });
     });
 
@@ -124,19 +131,36 @@ const CommentsDrawer = ({
     };
   }, []);
 
-  // Define animated style using the shared value
-  const inputAnimatedStyle = useAnimatedStyle(() => {
-    return {
-      marginBottom: keyboardOffset.value, // or bottom: keyboardOffset.value if position: 'absolute'
-    };
-  });
+  const inputAnimatedStyle = useAnimatedStyle(() => ({
+    marginBottom: keyboardOffset.value,
+  }));
 
   const fetchComments = async () => {
-    setComments(initialComments);
+    if (!chapterId) return;
+
+    if (comments.length === 0) {
+      setLoading(true);
+    }
+
+    try {
+      const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+      const res = await api
+        .get(`/user/chapter/${chapterId}`, { headers })
+        .catch(() => null);
+
+      const freshComments = res?.data?.data?.comments;
+      if (Array.isArray(freshComments)) {
+        setComments(freshComments);
+      }
+    } catch (err) {
+      console.warn("Silent comments fetch warning:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const closeDrawer = useCallback(() => {
-    translateY.value = withTiming(DRAWER_HEIGHT, { duration: 250 }, () => {
+    translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 }, () => {
       runOnJS(onClose)();
     });
   }, [onClose]);
@@ -148,17 +172,17 @@ const CommentsDrawer = ({
     })
     .onUpdate((event) => {
       const newY = context.value.y + event.translationY;
-      translateY.value = Math.max(0, newY); // only allow dragging down
+      translateY.value = Math.max(0, newY);
     })
     .onEnd((event) => {
-      if (event.translationY > CLOSE_THRESHOLD || event.velocityY > 800) {
-        translateY.value = withTiming(DRAWER_HEIGHT, { duration: 250 }, () => {
+      if (event.translationY > CLOSE_THRESHOLD || event.velocityY > 750) {
+        translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 }, () => {
           runOnJS(onClose)();
         });
       } else {
         translateY.value = withSpring(0, {
-          damping: 50,
-          stiffness: 200,
+          damping: 48,
+          stiffness: 220,
         });
       }
     });
@@ -177,112 +201,61 @@ const CommentsDrawer = ({
     return { opacity };
   });
 
-  // ─── Post Comment ───────────────────────────────────────────
+  // ─── Instant Optimistic Comment Post ─────────────────────────
   const handleSend = async () => {
-     if (!isConnected) {
-      showToast({
-        title: "Please connect to the Internet.",
-      });
+    if (!isConnected) {
+      showToast({ title: "Please connect to the Internet." });
       return;
     }
-    if (!text.trim() || !accessToken || posting) {
-      showToast({ title: "Alredy sent please wait" });
-      return;
-    }
+    const trimmed = text.trim();
+    if (!trimmed || posting) return;
 
+    const tempId = `temp_${Date.now()}`;
+    const optimisticComment: Comment = {
+      _id: tempId,
+      by: {
+        _id: user?._id || "temp_user",
+        name: user?.name || "You",
+        userId: user?.userId ? "@" + user.userId : "@you",
+        image: user?.image || "https://via.placeholder.com/64",
+      },
+      text: trimmed,
+      createdAt: new Date().toISOString(),
+    };
+
+    setText("");
+    setComments((prev) => [optimisticComment, ...prev]);
     setPosting(true);
-    try {
-      const res = await api.post(
-        isQuestion ? "/question/comment" : "/chapter/comment/add",
-        {
-          chapterId,
-          text: text.trim(),
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
-      );
 
-      if (res.data?.success && user) {
-        // Optimistically add the new comment
-        const newComment: Comment = {
-          _id: res.data?._id || Date.now().toString(),
-          by: {
-            _id: user._id,
-            name: user.name || "Anonymous",
-            userId: "@" + user.userId,
-            image: user?.image || "",
-          },
-          text: text.trim(),
-          createdAt: new Date().toISOString(),
-        };
-        setComments((prev) => [newComment, ...prev]);
-        setText("");
-      } else {
-        console.warn("Failed to post comment:", res.data?.message);
+    try {
+      const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+
+      let res = await api
+        .post("/chapter/comment/add", { chapterId, text: trimmed }, { headers })
+        .catch(() => null);
+
+      if (!res?.data?.success) {
+        res = await api
+          .post("/chapter/comment", { chapterId, text: trimmed }, { headers })
+          .catch(() => null);
       }
+
+      if (res?.data?.success && res.data?.data) {
+        setComments((prev) =>
+          prev.map((c) => (c._id === tempId ? res.data.data : c))
+        );
+      }
+      reload?.();
     } catch (err) {
       console.error("Comment post error:", err);
+      setComments((prev) => prev.filter((c) => c._id !== tempId));
+      setText(trimmed);
+      showToast({ title: "Could not send comment. Try again." });
     } finally {
-      reload();
       setPosting(false);
     }
   };
 
-  const getCommentsOfQue = async () => {
-    try {
-      const initialComments = await api.get(
-        `/question/get-comments/${chapterId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
-      );
-      setComments(initialComments.data.data);
-    } catch (error) {
-      console.error("error while loding comment for the ques, ", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const getCommentsOfChapter = useCallback(async () => {
-    if (!chapterId || !accessToken) return;
-    try {
-      setLoading(true);
-      const res = await api.get(`https://redapt-admin-sand.vercel.app/api/user/chapter/${chapterId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const freshChapter = res?.data?.data ?? {};
-      const freshComments = Array.isArray(freshChapter.comments)
-        ? freshChapter.comments
-        : [];
-      setComments(freshComments as Comment[]);
-    } catch (error) {
-      console.error("Error loading chapter comments:", error);
-      setComments(initialComments || []);
-    } finally {
-      setLoading(false);
-    }
-  }, [chapterId, accessToken, initialComments]);
-
-  useEffect(() => {
-    if (!visible) return;
-
-    if (isQuestion && accessToken) {
-      getCommentsOfQue();
-    } else if (!isQuestion && chapterId) {
-      getCommentsOfChapter();
-    } else {
-      setComments(initialComments || []);
-      setLoading(false);
-    }
-  }, [visible, isQuestion, accessToken, isConnected, chapterId, getCommentsOfChapter, getCommentsOfQue, initialComments]);
-
-  // ─── Render Item ────────────────────────────────────────────
   const renderComment = ({ item }: { item: Comment }) => (
     <PopButton>
       <View style={styles.commentItem}>
@@ -295,7 +268,11 @@ const CommentsDrawer = ({
         <View style={styles.commentContent}>
           <View style={styles.commentMeta}>
             <Text style={styles.userName}>{item.by?.name || "Anonymous"}</Text>
-            <Text style={styles.userHandle}>{item.by?.userId || "@user"}</Text>
+            <Text style={styles.userHandle}>
+              {item.by?.userId?.startsWith("@")
+                ? item.by?.userId
+                : `@${item.by?.userId || "user"}`}
+            </Text>
             <Text style={styles.commentDate}>{formatDate(item.createdAt)}</Text>
           </View>
           <Text style={styles.commentText}>{item.text}</Text>
@@ -317,7 +294,6 @@ const CommentsDrawer = ({
       {/* Drawer */}
       <Animated.View style={[styles.drawer, animatedStyle]}>
         <GestureDetector gesture={panGesture}>
-          {/* Drag Handle */}
           <View>
             <View style={styles.dragHandleArea}>
               <View style={styles.dragHandle} />
@@ -344,23 +320,24 @@ const CommentsDrawer = ({
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={
-            <>
-              {loading ? (
-                <ActivityIndicator color={pallete.accent} size={30} />
-              ) : (
-                  <View style={styles.emptyCommentsBox}>
-                    <Text style={styles.emptyTitleText}>No Comments Yet</Text>
-                    <Text style={styles.emptyText}>Be the first to share your thoughts about this!</Text>
-                  </View>
-              )}
-            </>
+            loading ? (
+              <View style={styles.loaderCenter}>
+                <ActivityIndicator color={pallete.accent} size={28} />
+              </View>
+            ) : (
+              <View style={styles.emptyCommentsBox}>
+                <Text style={styles.emptyTitleText}>No Comments Yet</Text>
+                <Text style={styles.emptyText}>
+                  Be the first to share your thoughts about this!
+                </Text>
+              </View>
+            )
           }
         />
 
-        {/* Input */}
+        {/* Input Bar */}
         <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}>
+          behavior={Platform.OS === "ios" ? "padding" : undefined}>
           <Animated.View style={[styles.inputWrapper, inputAnimatedStyle]}>
             <View style={styles.inputBox}>
               <TextInput
@@ -408,7 +385,10 @@ const CommentsDrawer = ({
 const formatDate = (iso: string) => {
   try {
     const d = new Date(iso);
-    return `${String(d.getDate()).padStart(2, "0")}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getFullYear()).slice(-2)}`;
+    if (isNaN(d.getTime())) return "";
+    return `${String(d.getDate()).padStart(2, "0")}-${String(
+      d.getMonth() + 1
+    ).padStart(2, "0")}-${String(d.getFullYear()).slice(-2)}`;
   } catch {
     return "";
   }
@@ -437,7 +417,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 0,
     right: 0,
-    flex: 1,
     bottom: 0,
     height: DRAWER_HEIGHT,
     backgroundColor: "#0f0f0f",
@@ -487,19 +466,20 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 24,
-    paddingBottom: 20,
+    paddingBottom: 24,
+    flexGrow: 1,
   },
   commentItem: {
     flexDirection: "row",
     gap: 12,
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: "rgba(255,255,255,0.06)",
   },
   userAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: "#1a1a1a",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
@@ -517,45 +497,51 @@ const styles = StyleSheet.create({
   userName: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#9ca3af",
+    color: "#e5e7eb",
   },
   userHandle: {
-    fontSize: 10,
-    fontWeight: "600",
+    fontSize: 11,
+    fontWeight: "500",
     color: "#9ca3af",
   },
   commentDate: {
     fontSize: 11,
-    color: "#9ca3af",
-    opacity: 0.7,
+    color: "#6b7280",
   },
   commentText: {
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 20,
+    color: "#d1d5db",
+  },
+  loaderCenter: {
+    marginTop: 60,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyCommentsBox: {
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 60,
+    paddingHorizontal: 20,
+    gap: 6,
+  },
+  emptyTitleText: {
+    textAlign: "center",
     color: "#e5e7eb",
+    fontWeight: "600",
+    fontSize: 17,
   },
   emptyText: {
     textAlign: "center",
     color: "#9ca3af",
-    fontSize: 14,
-  },
-  emptyTitleText : {
-    textAlign: "center",
-    color: "#c5c5c5",
-fontWeight: "600",
-    fontSize: 18,
-    marginTop: 40,
-  }, 
-  emptyCommentsBox : {
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 40,
+    fontSize: 13,
+    lineHeight: 18,
   },
   inputWrapper: {
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 44,
-    backgroundColor: "rgba(15, 15, 15, 0.95)",
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "ios" ? 36 : 20,
+    backgroundColor: "#141414",
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.08)",
   },
@@ -566,7 +552,7 @@ fontWeight: "600",
     borderRadius: 24,
     paddingLeft: 18,
     paddingRight: 6,
-    paddingVertical: 6,
+    paddingVertical: 4,
     flexDirection: "row",
     alignItems: "center",
   },

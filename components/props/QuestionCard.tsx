@@ -30,12 +30,17 @@ const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 
 const QuestionCard = ({ question: rawQuestion, onAttempted, onCommentClick }: Props) => {
   // Gracefully unpack question data
+ // Normalization
   const question: IQuestion =
     rawQuestion?.content && typeof rawQuestion.content === "object"
       ? rawQuestion.content
       : typeof rawQuestion === "object" && rawQuestion !== null
       ? rawQuestion
       : ({} as any);
+
+  const safeOptions: string[] = Array.isArray(question?.options)
+    ? question.options
+    : [];
 
   const { accessToken } = useAuth();
   const { showToast } = useToast();
@@ -47,11 +52,7 @@ const QuestionCard = ({ question: rawQuestion, onAttempted, onCommentClick }: Pr
   const [showExplanation, setShowExplanation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [prevAnswer, setPrevAnswer] = useState<number | null>(null);
-
-  const safeOptions: string[] = Array.isArray(question?.options)
-    ? question.options
-    : [];
-
+  
   const fillAnims = useRef<Animated.Value[]>([]);
   if (fillAnims.current.length !== safeOptions.length) {
     fillAnims.current = safeOptions.map(() => new Animated.Value(0));

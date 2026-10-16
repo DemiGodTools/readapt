@@ -1,10 +1,10 @@
 import React from "react";
 import { StyleSheet, View, TouchableOpacity, Platform, Dimensions } from "react-native";
-import Svg, { Polyline, Path } from "react-native-svg";
 import { BlurView } from "expo-blur";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
+import Svg, { Polyline } from "react-native-svg";
 import PopButton from "../props/PopButton";
+import PlanPill from "./PlanPill";
 
 const palette = {
   accent: "#01796F",
@@ -45,28 +45,7 @@ const BackNav = ({
           </Svg>
         </TouchableOpacity>
         <PopButton onPress={onSubscriptionPress}>
-          <LinearGradient
-            colors={["#01796F", "#00A36C", "#50C878"]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={styles.subscriptionIcon}>
-            <Svg width="24" height="24" viewBox="0 0 24 24" fill="#0B0B0B">
-              <Path
-                d="M5 16L3 5L8.5 10L12 4L15.5 10L21 5L19 16H5Z"
-                stroke="#0B0B0B"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <Path
-                d="M5 20H19"
-                stroke="#0B0B0B"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </Svg>
-          </LinearGradient>
+          <PlanPill />
         </PopButton>
       </View>
     </View>

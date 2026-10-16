@@ -1070,12 +1070,27 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       try {
         const token = accessToken;
-        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        const headers: Record<string, string> = {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        // Fetch user chapter endpoint
-        let chapter = await api.get(`/user/chapter/${targetId}`, { headers }).catch(() => null);
+        // ⚡ Cache-busting param (_t: Date.now()) taaki network level par purana data na fase
+        let chapter = await api
+          .get(`/user/chapter/${targetId}`, {
+            headers,
+            params: { _t: Date.now() },
+          })
+          .catch(() => null);
+
         if (!chapter?.data?.data) {
-          chapter = await api.get(`/chapter/${targetId}`, { headers }).catch(() => null);
+          chapter = await api
+            .get(`/chapter/${targetId}`, {
+              headers,
+              params: { _t: Date.now() },
+            })
+            .catch(() => null);
         }
 
         if (chapter?.data?.data) {
@@ -1094,16 +1109,21 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          const freshQuestions = Array.isArray(freshData.questions)
-            ? freshData.questions.filter((q) => q && typeof q === "object")
+          // ⚡ Direct DB populated questions extract karein
+          const freshQuestions: IQuestion[] = Array.isArray(freshData.questions)
+            ? (freshData.questions.filter(
+                (q: any) => q && typeof q === "object" && (q.question || q._id)
+              ) as IQuestion[])
             : [];
-            
-        const verifiedCount = ramRealPagesMap.get(targetId) || 0;
+
+          const verifiedCount = ramRealPagesMap.get(targetId) || 0;
           const mergedBook = {
             ...freshData,
-            questions: freshQuestions.length > 0 ? freshQuestions : (book?.questions || []),
+            questions: freshQuestions,
             total: verifiedCount > 0 ? verifiedCount : freshData.total,
           };
+
+          // RAM aur Local Storage dono mein fresh DB data update karein
           ramBookMetaMap.set(targetId, mergedBook);
 
           if (!isCancelledRef?.current) {
@@ -1111,9 +1131,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               ...mergedBook,
               likes: freshData.likes ?? prev?.likes ?? 0,
             }));
-            if (freshQuestions.length > 0) {
-              setQuestions(freshQuestions as any);
-            }
+
+            // ⚡ State ko fresh DB questions se update karein
+            setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
           }
 
           AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
@@ -1788,99 +1808,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     }
   };
 
-// 100% Reliable Q&A Resolver with Direct API Fallback & State Sync
-  useEffect(() => {
-    let isCancelled = false;
-
-    const resolveQuestions = async () => {
-      if (!activeChapterId) {
-        setQuestions(null);
-        return;
-      }
-
-      // 1. Direct Populated Check from Book State
-      let list: IQuestion[] = [];
-
-      if (Array.isArray (book?.questions) && book.questions.length > 0) {
-        const populated = book.questions.filter(
-          (q: any) => q && typeof q === "object" && (q.question || q._id)
-        );
-        if (populated.length > 0) {
-          list = populated as IQuestion[];
-        }
-      }
-
-      // 2. Agar questions populated nahi hain ya empty hain, direct fetch karein
-      if (list.length === 0 && isConnected) {
-        try {
-          const token = accessToken;
-          const headers = token ? { Authorization: `Bearer ${token}` } : {};
-
-          let res = await api.get(`/user/chapter/${activeChapterId}`, { headers }).catch(() => null);
-          if (!res?.data?.data) {
-            res = await api.get(`/chapter/${activeChapterId}`, { headers }).catch(() => null);
-          }
-
-          const freshData = res?.data?.data;
-          if (freshData?.questions && Array.isArray(freshData.questions) && freshData.questions.length > 0) {
-            const freshPopulated = freshData.questions.filter(
-              (q: any) => q && typeof q === "object" && q.question
-            );
-            if (freshPopulated.length > 0) {
-              list = freshPopulated as IQuestion[];
-              setBook((prev) => (prev ? { ...prev, questions: freshPopulated } : prev));
-              AsyncStorage.setItem(
-                `cached_ch_${activeChapterId}`,
-                JSON.stringify({ ...(book || freshData), questions: freshPopulated })
-              ).catch(() => {});
-            }
-          }
-        } catch (e) {
-          console.log("Direct question fetch error:", e);
-        }
-      }
-
-      // 3. Legacy Series Chapter Questions Fallback
-      if (list.length === 0 && (book?.series || seriesData)) {
-        try {
-          const targetSeries = seriesData || book?.series;
-          const contents = targetSeries.chapters || [];
-          const chapterIndex = contents.findIndex(
-            (item: any) => (item?.content?._id || item?.content) === activeChapterId
-          );
-          if (chapterIndex !== -1) {
-            for (let index = chapterIndex + 1; index < contents.length; index++) {
-              const item = contents[index];
-              if (item?.contentModel !== "Question") break;
-              if (item?.content && typeof item.content === "object") {
-                list.push(item.content as IQuestion);
-              }
-            }
-          }
-        } catch {}
-      }
-
-      if (!isCancelled) {
-        setQuestions(list.length > 0 ? list : null);
-
-        if (user && list.length > 0) {
-          const attemptedIds = new Set(
-            (user.questionsAttempted || []).map((entry: any) => String(entry.question))
-          );
-          const solved = new Set(
-            list.map((item) => String(item._id)).filter((id) => attemptedIds.has(id))
-          );
-          setSolvedIds(solved);
-        }
-      }
-    };
-
-    resolveQuestions();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [activeChapterId, book?.questions, accessToken, isConnected, seriesData]);
   const renderQuestionCard = ({ item }: { item: IQuestion }) => {
     if (!item || !item._id) return null;
     return (
@@ -2648,33 +2575,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         book={book}
         totalPages={totalCountResolved}
       />
-
-      <CommentsDrawer
-        visible={showComments}
-        reload={() => loadChapterAndPdfFast(activeChapterId)}
-        onClose={() => {
-          setShowComments(false);
-          setCommentedQueId("");
-        }}
-        chapterId={commentedQueId ? commentedQueId : activeChapterId}
-        initialComments={
-          (commentedQueId ? [] : Array.isArray(book?.comments) ? book?.comments : []) as any
-        }
-        isQuestion={!!commentedQueId}
-      />
-
-    {/* FULLSCREEN QNA MODAL */}
+   {/* FULLSCREEN QNA MODAL */}
       <Modal
         visible={showQnaPanel}
         animationType="slide"
         transparent={false}
-        onRequestClose={() => {
-          if (showQnaComments) {
-            setShowQnaComments(false);
-          } else {
-            setShowQnaPanel(false);
-          }
-        }}>
+        onRequestClose={() => setShowQnaPanel(false)}>
         <View
           style={{
             flex: 1,
@@ -2691,7 +2597,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             </TouchableOpacity>
           </View>
 
-          {/* Cards Area with full-width FlatList */}
+          {/* Cards Area */}
           <View style={{ flex: 1, justifyContent: "center" }}>
             {questions && questions.length > 0 ? (
               <FlatList
@@ -2722,19 +2628,21 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                           width: "100%",
                         }}
                         style={{ width: "100%" }}>
-                        <QuestionCard
-                          question={actual}
-                          onCommentClick={() => setShowQnaComments(true)}
-                          onAttempted={(isCorrect: boolean) => {
-                            if (qId) {
-                              setSolvedIds((prev) => {
-                                const next = new Set(prev);
-                                next.add(String(qId));
-                                return next;
-                              });
-                            }
-                          }}
-                        />
+                       <QuestionCard
+  question={actual}
+  onCommentClick={() => {
+    setShowComments(true); // 👈 Direct single chapter comments open karega
+  }}
+  onAttempted={(isCorrect: boolean) => {
+    if (qId) {
+      setSolvedIds((prev) => {
+        const next = new Set(prev);
+        next.add(String(qId));
+        return next;
+      });
+    }
+  }}
+/>
                       </ScrollView>
                     </View>
                   );
@@ -2755,18 +2663,17 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               {solvedIds.size} / {questions?.length || 0}
             </Text>
           </View>
-
-          {/* Dedicated Q&A Comments Drawer for this chapter */}
-          <CommentsDrawer
-            visible={showQnaComments}
-            reload={() => loadChapterAndPdfFast(activeChapterId)}
-            onClose={() => setShowQnaComments(false)}
-            chapterId={activeChapterId}
-            initialComments={[]}
-            isQuestion={false}
-          />
         </View>
       </Modal>
+
+      <CommentsDrawer
+        visible={showComments}
+        reload={() => loadChapterAndPdfFast(activeChapterId)}
+        onClose={() => setShowComments(false)}
+        chapterId={activeChapterId}
+        initialComments={Array.isArray(book?.comments) ? (book?.comments as any) : []}
+        isQuestion={false}
+      />
 
       {resumeBanner.visible && (
         <View style={styles.resumeBanner}>
