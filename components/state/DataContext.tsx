@@ -61,6 +61,7 @@ export const UserContext = createContext<{
   user: IUser | null;
   loadingUser: boolean;
   reload: () => Promise<void>;
+  updateUser: (patch: Partial<IUser>) => void;
 } | null>(null);
 
 const DEMO_AUDIO_URL =
@@ -112,6 +113,14 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   const [toast, setToast] = useState<ToastData | null>(null);
   const [modal, setModal] = useState<ModalData | null>(null);
   const [user, setUser] = useState<IUser | null>(null);
+  const updateUser = useCallback((patch: Partial<IUser>) => {
+    setUser((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  }, []);
   const { accessToken } = useAuth();
   const { isConnected } = useNetworkStatus();
   const [loadingUser, setLoadingUser] = useState(true);
@@ -352,7 +361,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
       <ToastContext.Provider value={{ toast, showToast, hideToast }}>
         <ModalContext.Provider value={{ modal, showModal, hideModal }}>
           <UserContext.Provider
-            value={{ user, loadingUser, reload: getUser }}>
+            value={{ user, loadingUser, reload: getUser, updateUser }}>
             {children}
           </UserContext.Provider>
         </ModalContext.Provider>

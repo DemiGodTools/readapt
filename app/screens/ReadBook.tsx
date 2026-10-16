@@ -793,10 +793,18 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           resolvedTotal = targetPage;
         }
 
-       const updatedBookContent = {
+       // ⚡ Ensure karein ki exit karte waqt active questions array wipe na ho
+        const activeQuestionsList =
+          questions && questions.length > 0
+            ? questions
+            : Array.isArray(book?.questions) && book.questions.length > 0
+            ? book.questions
+            : ramBookMetaMap.get(activeChapterId)?.questions || [];
+
+        const updatedBookContent = {
           ...book,
           _id: activeChapterId,
-          questions: Array.isArray(book?.questions) ? book.questions : [],
+          questions: activeQuestionsList, // 👈 Safe questions persistence
           total: resolvedTotal,
           comments: Array.isArray(book?.comments)
             ? book.comments.length
@@ -805,7 +813,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             : 0,
           category: book?.category?.name || book?.category?._id || "",
         };
-
         const filtered = recentReads.filter(
           (item) => item?.content?._id !== activeChapterId
         );

@@ -11,6 +11,7 @@ import {
   Modal,
   TouchableOpacity,
   Alert,
+  Animated,
 } from "react-native";
 import Svg, { Path, Circle, Line, Polyline } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -58,7 +59,7 @@ const ProfileScreen = () => {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { accessToken } = useAuth();
-  const { user, reload, loadingUser } = useUser();
+  const { user, reload, loadingUser, updateUser } = useUser();
   const { openImagePicker, isUploading } = useImageUploader("profileImage", {
     headers: async () => {
       return {
@@ -67,6 +68,13 @@ const ProfileScreen = () => {
     },
     onClientUploadComplete: (res: any) => {
       const uploadedFile = res[0];
+      const remoteUrl = uploadedFile?.url || uploadedFile?.fileUrl || uploadedFile?.preview;
+
+      if (remoteUrl) {
+        setAvatar(remoteUrl);
+        updateUser({ image: remoteUrl } as any);
+      }
+
       showToast({ title: "Success Profile image updated!" });
       reload();
     },
@@ -169,6 +177,27 @@ const ProfileScreen = () => {
     });
   };
 
+  const uploadSpinValue = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!isUploading) {
+      uploadSpinValue.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.timing(uploadSpinValue, {
+        toValue: 1,
+        duration: 700,
+        easing: undefined,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+
+    return () => loop.stop();
+  }, [isUploading, uploadSpinValue]);
+
   const updateUsername = async () => {
      if (!isConnected) {
       showToast({
@@ -181,13 +210,19 @@ const ProfileScreen = () => {
       return;
     }
 
+    const previousName = user?.name || "";
+
     try {
       setUpdatingUsername(true);
+      const nextName = newUsername.trim();
+
+      updateUser({ name: nextName } as any);
+      setShowUsernameModal(false);
 
       const newUser = await api.post(
         "/update/username",
         {
-          newUsername: newUsername.trim(),
+          newUsername: nextName,
         },
         {
           headers: {
@@ -196,9 +231,8 @@ const ProfileScreen = () => {
         },
       );
       reload();
-
-      setShowUsernameModal(false);
     } catch (err: any) {
+      updateUser({ name: previousName } as any);
       Alert.alert(
         "Error",
         err?.response?.data?.message ?? "Unable to update username.",
@@ -292,6 +326,23 @@ const ProfileScreen = () => {
                 }}
                 style={styles.avatarImage}
               />
+              {isUploading && (
+                <Animated.View
+                  style={[
+                    styles.avatarUploadRing,
+                    {
+                      transform: [
+                        {
+                          rotate: uploadSpinValue.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: ["0deg", "360deg"],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}
+                />
+              )}
             </View>
           </TouchableOpacity>
 
@@ -653,6 +704,16 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     resizeMode: "cover",
+  },
+  avatarUploadRing: {
+    position: "absolute",
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+    borderWidth: 2.5,
+    borderColor: "rgba(255,255,255,0.35)",
+    borderTopColor: "#ffffff",
+    borderRightColor: "#ffffff",
   },
   infoDetails: {
     marginLeft: 18,
