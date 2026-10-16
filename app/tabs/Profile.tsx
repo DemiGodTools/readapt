@@ -15,6 +15,8 @@ import {
 } from "react-native";
 import Svg, { Path, Circle, Line, Polyline } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as FileSystem from "expo-file-system/legacy";
+import * as ImagePicker from "expo-image-picker";
 import { useNavigation } from "@react-navigation/native";
 import pallete from "../../lib/Colors";
 import useAuth from "../../hooks/useAuth";
@@ -26,7 +28,6 @@ import PopButton from "../../components/props/PopButton";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useModal } from "../../hooks/useModal";
-import { useImageUploader, hasUploadThingConfig } from "../../lib/uploadthing";
 import { useToast } from "../../hooks/useToast";
 import { getLevelTitle } from "../../lib/levels";
 import { useStreak } from "../../hooks/useStreak";
@@ -60,28 +61,83 @@ const ProfileScreen = () => {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { accessToken } = useAuth();
   const { user, reload, loadingUser, updateUser } = useUser();
-  const { openImagePicker, isUploading } = useImageUploader("profileImage", {
-    headers: async () => {
-      return {
-        "x-user-email": user?.email || "",
-      };
-    },
-    onClientUploadComplete: (res: any) => {
-      const uploadedFile = res[0];
-      const remoteUrl = uploadedFile?.url || uploadedFile?.fileUrl || uploadedFile?.preview;
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
-      if (remoteUrl) {
-        setAvatar(remoteUrl);
-        updateUser({ image: remoteUrl } as any);
+  const pickAndUploadProfilePhoto = async () => {
+    if (!isConnected) {
+      showToast({ title: "Please connect to the Internet." });
+      return;
+    }
+    if (!user?.email) {
+      showToast({ title: "Profile is not loaded yet." });
+      return;
+    }
+
+    try {
+      setUploadingPhoto(true);
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permission.granted) {
+        Alert.alert("Permissions Required", "Photo library access is required.");
+        return;
       }
 
-      showToast({ title: "Success Profile image updated!" });
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images" as any],
+        quality: 0.75,
+        selectionLimit: 1,
+      });
+
+      if (result.canceled || !result.assets?.[0]) {
+        return;
+      }
+
+      const localAsset = result.assets[0];
+      const localUri = localAsset?.uri;
+      if (!localUri) {
+        showToast({ title: "Unable to read selected image." });
+        return;
+      }
+
+      // Instant local preview while remote upload is in-flight
+      setAvatar(localUri);
+
+      const response = await FileSystem.uploadAsync(
+        "https://redapt-admin-sand.vercel.app/api/user/update/profile",
+        localUri,
+        {
+          httpMethod: "POST",
+          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+          fieldName: "file",
+          headers: {
+            "x-user-email": user.email,
+          },
+          parameters: {},
+        }
+      );
+
+      if (response.status !== 200) {
+        showToast({ title: "Upload Error try again later" });
+        return;
+      }
+
+      const data = JSON.parse(response.body || "{}");
+      const remoteUrl = data?.url;
+
+      if (!remoteUrl) {
+        showToast({ title: "Upload Error try again later" });
+        return;
+      }
+
+      setAvatar(remoteUrl);
+      updateUser({ image: remoteUrl } as any);
       reload();
-    },
-    onUploadError: (error: any) => {
-      showToast({ title: "Upload Error try again later" });
-    },
-  });
+    } catch (err: any) {
+      showToast({ title: err?.message || "Upload Error try again later" });
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [completeChapters, setCompleteChapters] = useState(0);
@@ -180,7 +236,7 @@ const ProfileScreen = () => {
   const uploadSpinValue = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (!isUploading) {
+    if (!uploadingPhoto) {
       uploadSpinValue.setValue(0);
       return;
     }
@@ -196,7 +252,7 @@ const ProfileScreen = () => {
     loop.start();
 
     return () => loop.stop();
-  }, [isUploading, uploadSpinValue]);
+  }, [uploadingPhoto, uploadSpinValue]);
 
   const updateUsername = async () => {
      if (!isConnected) {
@@ -300,24 +356,9 @@ const ProfileScreen = () => {
         <View style={styles.profileInfo}>
           <TouchableOpacity
             onPress={() => {
-              if (isUploading) return;
+              if (uploadingPhoto) return;
 
-              if (!hasUploadThingConfig) {
-                showToast({
-                  title: "Profile image upload is not configured yet.",
-                });
-                return;
-              }
-
-              openImagePicker({
-                source: "library",
-                onInsufficientPermissions: () => {
-                  Alert.alert(
-                    "Permissions Required",
-                    "Photo library access is required.",
-                  );
-                },
-              });
+              void pickAndUploadProfilePhoto();
             }}>
             <View style={styles.avatarPlaceholder}>
               <Image
@@ -326,7 +367,7 @@ const ProfileScreen = () => {
                 }}
                 style={styles.avatarImage}
               />
-              {isUploading && (
+              {uploadingPhoto && (
                 <Animated.View
                   style={[
                     styles.avatarUploadRing,
