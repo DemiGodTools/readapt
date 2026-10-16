@@ -8,57 +8,75 @@ import {
   Dimensions,
   Easing,
 } from "react-native";
-import Svg, { Path, Circle, Rect, Line } from "react-native-svg";
+import Svg, { Path, Circle, Rect } from "react-native-svg";
 import useAuth from "../../hooks/useAuth";
 import pallete from "../../lib/Colors";
 import { IQuestion } from "../../types/Question";
 import { api } from "../../lib/api";
 import { useToast } from "../../hooks/useToast";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { updateStreak } from "../../hooks/useStreak";
 import { useUser } from "../../hooks/useUser";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 
-const { width } = Dimensions.get("window");
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 type Props = {
-  question: IQuestion;
+  question: any;
   onAttempted?: (isCorrect: boolean) => void;
   onCommentClick: () => void;
 };
 
 const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 
-const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
+const QuestionCard = ({ question: rawQuestion, onAttempted, onCommentClick }: Props) => {
+  // Gracefully unpack question data
+  const question: IQuestion =
+    rawQuestion?.content && typeof rawQuestion.content === "object"
+      ? rawQuestion.content
+      : typeof rawQuestion === "object" && rawQuestion !== null
+      ? rawQuestion
+      : ({} as any);
+
   const { accessToken } = useAuth();
+  const { showToast } = useToast();
+  const { user } = useUser();
+  const { isConnected } = useNetworkStatus();
+
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
   const [showExplanation, setShowExplanation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [prevAnswer, setPrevAnswer] = useState<number | null>(null);
-  const { showToast } = useToast();
-  const { user } = useUser();
-  const {isConnected} = useNetworkStatus()
 
-  // Animations
-  const fillAnims = useRef(
-    question.options.map(() => new Animated.Value(0)),
-  ).current;
+  const safeOptions: string[] = Array.isArray(question?.options)
+    ? question.options
+    : [];
+
+  const fillAnims = useRef<Animated.Value[]>([]);
+  if (fillAnims.current.length !== safeOptions.length) {
+    fillAnims.current = safeOptions.map(() => new Animated.Value(0));
+  }
+
   const explanationAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  const formatDate = (iso: string) => {
+  const formatDate = (iso?: string | Date) => {
     try {
+      if (!iso) return "";
       const d = new Date(iso);
-      return `${d.getDate()}-${d.getMonth() + 1}-${d.getFullYear()}`;
+      if (isNaN(d.getTime())) return "";
+      const day = String(d.getDate()).padStart(2, "0");
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      return `${day}-${month}-${d.getFullYear()}`;
     } catch {
       return "";
     }
   };
 
-  const formatTime = (iso: string) => {
+  const formatTime = (iso?: string | Date) => {
     try {
+      if (!iso) return "";
       const d = new Date(iso);
+      if (isNaN(d.getTime())) return "";
       return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     } catch {
       return "";
@@ -66,11 +84,8 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
   };
 
   const handleSelect = async (index: number, isForce: boolean = false) => {
-    console.log("handleSelect called with index:", index, "isForce:", isForce);
-     if (!isConnected && !isForce) {
-      showToast({
-        title: "Please connect to the Internet.",
-      });
+    if (!isConnected && !isForce) {
+      showToast({ title: "Please connect to the Internet." });
       return;
     }
     if (prevAnswer !== null) return;
@@ -81,17 +96,17 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
     setIsCorrect(correct);
     setSubmitting(true);
 
-    // Bubble fill animation
-    Animated.timing(fillAnims[index], {
-      toValue: 1,
-      duration: 420,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start();
+    if (fillAnims.current[index]) {
+      Animated.timing(fillAnims.current[index], {
+        toValue: 1,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start();
+    }
 
-    // If wrong, also highlight the correct one lightly
-    if (!correct) {
-      Animated.timing(fillAnims[question.correct], {
+    if (!correct && typeof question.correct === "number" && fillAnims.current[question.correct]) {
+      Animated.timing(fillAnims.current[question.correct], {
         toValue: 1,
         duration: 500,
         delay: 200,
@@ -99,7 +114,6 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
       }).start();
     }
 
-    // Show explanation with slide + fade
     setTimeout(() => {
       setShowExplanation(true);
       Animated.timing(explanationAnim, {
@@ -124,7 +138,6 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
         : "Wrong Answer!, But Streak Updated",
     });
 
-    // API call
     try {
       const data = await api.post(
         "/question/attempt",
@@ -134,13 +147,10 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
           iscorrect: correct,
         },
         {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }
       );
-      const levelUpgraded: boolean = data.data;
-      if (levelUpgraded) {
+      if (data?.data) {
         showToast({ title: "Level Upgraded" });
       }
     } catch (err) {
@@ -153,86 +163,81 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
   };
 
   useEffect(() => {
-    if (!user?.questionsAttempted) return;
-    if (user?.questionsAttempted.length === 0) return;
-      const prevAnswer = user.questionsAttempted.find(
-        (questionAt) => questionAt.question === question._id,
-      )?.answered;
-      console.log(user.questionsAttempted, "ques attempted bu user")
-      setSelectedIndex(prevAnswer ?? null);
-      if(prevAnswer) {
-
-      }
-      handleSelect(prevAnswer ?? -1, true);
-    
-  }, [user?.questionsAttempted]);
+    if (!user?.questionsAttempted || !user.questionsAttempted.length || !question?._id) return;
+    const past = user.questionsAttempted.find(
+      (q: any) => String(q.question) === String(question._id)
+    );
+    if (past && typeof past.answered === "number") {
+      setSelectedIndex(past.answered);
+      handleSelect(past.answered, true);
+    }
+  }, [user?.questionsAttempted, question?._id]);
 
   const getTrackStyle = (index: number) => {
     if (selectedIndex === null) return styles.pollTrack;
-
     const isSelected = selectedIndex === index;
     const isRightAnswer = index === question.correct;
 
-    if (isSelected && isCorrect) {
-      return [styles.pollTrack, styles.trackUserTrue];
-    }
-    if (isSelected && !isCorrect) {
-      return [styles.pollTrack, styles.trackUserFalse];
-    }
-    if (!isSelected && isRightAnswer) {
-      return [styles.pollTrack, styles.trackTrue];
-    }
-    if (!isSelected && !isRightAnswer && selectedIndex !== null) {
-      return [styles.pollTrack, styles.trackFalse];
-    }
+    if (isSelected && isCorrect) return [styles.pollTrack, styles.trackUserTrue];
+    if (isSelected && !isCorrect) return [styles.pollTrack, styles.trackUserFalse];
+    if (!isSelected && isRightAnswer) return [styles.pollTrack, styles.trackTrue];
+    if (!isSelected && !isRightAnswer && selectedIndex !== null) return [styles.pollTrack, styles.trackFalse];
     return styles.pollTrack;
   };
 
-  return (
-    <Animated.View
-      style={[styles.pollBox]}>
-      {/* Time & Date */}
-      <View style={styles.pollTimes}>
-        <View style={styles.timeItem}>
-          <Svg
-            width={14}
-            height={14}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={pallete.textgray}
-            strokeWidth="2">
-            <Circle cx="12" cy="12" r="9" />
-            <Path d="M12 7V12L14.5 14.5" />
-          </Svg>
-          <Text style={styles.timeText}>{formatTime(question.createdAt)}</Text>
-        </View>
-        <View style={styles.timeItem}>
-          <Svg
-            width={14}
-            height={14}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={pallete.textgray}
-            strokeWidth="2">
-            <Rect x="3" y="6" width="18" height="15" rx="2" />
-            <Path d="M3 11H21" />
-            <Path d="M9 3V7" />
-            <Path d="M15 3V7" />
-          </Svg>
-          <Text style={styles.timeText}>{formatDate(question.createdAt)}</Text>
-        </View>
-      </View>
+  const timeText = formatTime(question.createdAt);
+  const dateText = formatDate(question.createdAt);
 
-      {/* Question */}
-      <Text style={styles.pollQuestion}>{question.question}</Text>
+const commentCount = (() => {
+    const comms: any = question?.comments;
+    if (typeof comms === "number") return comms;
+    if (Array.isArray(comms)) return comms.length;
+    return 0;
+  })();
+  
+  return (
+    <View style={styles.pollBox}>
+      {/* Time & Date Header */}
+      {(timeText || dateText) ? (
+        <View style={styles.pollTimes}>
+          {timeText ? (
+            <View style={styles.timeItem}>
+              <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2">
+                <Circle cx="12" cy="12" r="9" />
+                <Path d="M12 7V12L14.5 14.5" />
+              </Svg>
+              <Text style={styles.timeText}>{timeText}</Text>
+            </View>
+          ) : null}
+          {dateText ? (
+            <View style={styles.timeItem}>
+              <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2">
+                <Rect x="3" y="6" width="18" height="15" rx="2" />
+                <Path d="M3 11H21" />
+                <Path d="M9 3V7" />
+                <Path d="M15 3V7" />
+              </Svg>
+              <Text style={styles.timeText}>{dateText}</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {/* Question Text */}
+      <Text style={styles.pollQuestion}>
+        {question.question || "What is your answer?"}
+      </Text>
 
       {/* Options */}
       <View style={styles.pollOptions}>
-        {question.options.map((opt, index) => {
-          const fillWidth = fillAnims[index].interpolate({
-            inputRange: [0, 1],
-            outputRange: ["0%", "100%"],
-          });
+        {safeOptions.map((opt, index) => {
+          const fillAnim = fillAnims.current[index];
+          const fillWidth = fillAnim
+            ? fillAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ["0%", "100%"],
+              })
+            : "0%";
 
           const isSelected = selectedIndex === index;
           const isRight = index === question.correct;
@@ -246,13 +251,12 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
               style={styles.pollOptionItem}>
               <View style={styles.pollLabelRow}>
                 <Text style={styles.optionLabel}>
-                  {OPTION_LABELS[index]}) {opt}
+                  {OPTION_LABELS[index] || ""}) {opt}
                 </Text>
               </View>
 
               <View style={styles.pollSliderContainer}>
                 <View style={getTrackStyle(index)}>
-                  {/* Animated fill */}
                   <Animated.View
                     style={[
                       styles.fillBar,
@@ -262,31 +266,22 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
                           isSelected && isCorrect
                             ? "rgba(52, 211, 153, 0.45)"
                             : isSelected && !isCorrect
-                              ? "rgba(251, 113, 133, 0.45)"
-                              : isRight
-                                ? "rgba(52, 211, 153, 0.3)"
-                                : "transparent",
+                            ? "rgba(251, 113, 133, 0.45)"
+                            : isRight
+                            ? "rgba(52, 211, 153, 0.3)"
+                            : "transparent",
                       },
                     ]}
                   />
 
-                  {/* Status icon */}
                   {showIcon && (
                     <View style={styles.pollStatusIcon}>
                       {isRight ? (
-                        <Svg
-                          width={12}
-                          height={12}
-                          viewBox="0 0 24 24"
-                          fill={pallete.true || "#34d399"}>
+                        <Svg width={12} height={12} viewBox="0 0 24 24" fill={pallete.true || "#34d399"}>
                           <Path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
                         </Svg>
                       ) : (
-                        <Svg
-                          width={12}
-                          height={12}
-                          viewBox="0 0 24 24"
-                          fill={pallete.false || "#fb7185"}>
+                        <Svg width={12} height={12} viewBox="0 0 24 24" fill={pallete.false || "#fb7185"}>
                           <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
                         </Svg>
                       )}
@@ -299,7 +294,7 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
         })}
       </View>
 
-      {/* Explanation (slide + fade) */}
+      {/* Explanation */}
       {showExplanation && question.explanation ? (
         <Animated.View
           style={[
@@ -323,49 +318,37 @@ const QuestionCard = ({ question, onAttempted, onCommentClick}: Props) => {
         </Animated.View>
       ) : null}
 
-      {/* Footer */}
+      {/* Footer / Clean Icon Comment Trigger */}
       <View style={styles.pollFooter}>
-        <Pressable style={styles.pollCommentIcon} onPress={onCommentClick}>
-          <Svg
-            width={16}
-            height={16}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={pallete.textgray}
-            strokeWidth="2">
+        <Pressable
+          style={styles.pollCommentIcon}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          onPress={onCommentClick}>
+          <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2">
             <Path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
           </Svg>
           <Text style={styles.commentCount}>
-            {(() => {
-              const count =
-                typeof question.comments === "number"
-                  ? question.comments
-                  : Array.isArray(question.comments)
-                  ? (question.comments as any).length
-                  : 0;
-              return count >= 1000 ? `${(count / 1000).toFixed(0)}k` : count;
-            })()}
+            {commentCount > 0 ? (commentCount >= 1000 ? `${(commentCount / 1000).toFixed(0)}k` : commentCount) : ""}
           </Text>
         </Pressable>
       </View>
-    </Animated.View>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
   pollBox: {
-    minWidth: (width / 100) * 85,
-    maxWidth: 400,
-    backgroundColor: pallete.bgcard || "rgba(20,20,20,0.6)",
+    width: "100%",
+    backgroundColor: pallete.bgcard || "rgba(20,20,20,0.85)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-    borderRadius: 12,
-    padding: 16,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderRadius: 16,
+    padding: 18,
   },
   pollTimes: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 8,
+    marginBottom: 10,
     opacity: 0.7,
   },
   timeItem: {
@@ -379,16 +362,17 @@ const styles = StyleSheet.create({
     color: pallete.textgray,
   },
   pollQuestion: {
-    fontSize: 16,
-    fontWeight: "500",
+    fontSize: 17,
+    fontWeight: "600",
+    lineHeight: 24,
     color: pallete.textwhite || "#fff",
-    marginBottom: 12,
+    marginBottom: 14,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.1)",
+    borderBottomColor: "rgba(255,255,255,0.08)",
   },
   pollOptions: {
-    gap: 14,
+    gap: 12,
   },
   pollOptionItem: {
     gap: 6,
@@ -398,8 +382,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   optionLabel: {
-    fontSize: 13,
-    color: pallete.textgray,
+    fontSize: 14,
+    color: "#e5e7eb",
+    lineHeight: 20,
   },
   pollSliderContainer: {
     flexDirection: "row",
@@ -407,7 +392,7 @@ const styles = StyleSheet.create({
   },
   pollTrack: {
     flex: 1,
-    height: 18,
+    height: 20,
     backgroundColor: "rgba(255,255,255,0.08)",
     borderRadius: 20,
     overflow: "hidden",
@@ -440,7 +425,7 @@ const styles = StyleSheet.create({
   },
   pollStatusIcon: {
     position: "absolute",
-    right: 6,
+    right: 8,
     top: "50%",
     marginTop: -6,
     width: 12,
@@ -448,30 +433,29 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   explanationBox: {
-    marginTop: 16,
-    padding: 14,
+    marginTop: 14,
+    padding: 12,
     borderRadius: 10,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(0, 210, 180, 0.08)",
+    borderLeftWidth: 3,
+    borderLeftColor: pallete.accent,
   },
   explanationLabel: {
     fontSize: 12,
     fontWeight: "700",
     color: pallete.accent,
-    marginBottom: 6,
+    marginBottom: 4,
     textTransform: "uppercase",
-    letterSpacing: 0.5,
   },
   explanationText: {
     fontSize: 13,
-    lineHeight: 20,
+    lineHeight: 18,
     color: "#d1d5db",
   },
   pollFooter: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    marginTop: 12,
+    marginTop: 14,
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.05)",
@@ -485,9 +469,8 @@ const styles = StyleSheet.create({
     borderRadius: 50,
   },
   commentCount: {
-    fontSize: 13,
+    fontSize: 12,
     color: pallete.textgray,
-    opacity: 0.6,
   },
 });
 

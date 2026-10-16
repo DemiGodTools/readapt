@@ -22,6 +22,7 @@ import {
   PanResponder,
   ScrollView,
   DeviceEventEmitter,
+  FlatList,
 } from "react-native";
 import Svg, { Path, Line, Circle, Polyline } from "react-native-svg";
 // @ts-ignore
@@ -74,14 +75,13 @@ const CARD_HORIZONTAL_MARGIN =
 const SHEET_HEIGHT = 400;
 const TOC_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 350);
 
-const ramPdfUriMap = new Map<string, string>(); // chapterId -> local file:// URI
-const ramBookMetaMap = new Map<string, any>(); // chapterId -> BookPopulated
-const ramUrlMap = new Map<string, string>(); // chapterId -> normalized MongoDB URL
-const ramRealPagesMap = new Map<string, number>(); // chapterId -> True PDF Page Count
-const ramLastPageMap = new Map<string, number>(); // chapterId -> Last Read Page (Global Resume)
+const ramPdfUriMap = new Map<string, string>();
+const ramBookMetaMap = new Map<string, any>();
+const ramUrlMap = new Map<string, string>();
+const ramRealPagesMap = new Map<string, number>();
+const ramLastPageMap = new Map<string, number>();
 const activeDownloadJobs = new Map<string, Promise<string | null>>();
 
-// Normalize URL so temporary query tokens don't break cache, while real MongoDB URL changes are caught
 const normalizeMediaUrl = (url?: string | null): string => {
   if (!url || typeof url !== "string") return "";
   return url.trim();
@@ -182,7 +182,6 @@ const shuffleArray = <T,>(array: T[]): T[] => {
   return shuffled;
 };
 
-// Strict standalone validator + exclusion set check
 const isStrictlyStandaloneBook = (
   item: any,
   excludedSeriesChapterIds?: Set<string>
@@ -227,7 +226,6 @@ const isStrictlyStandaloneBook = (
   return true;
 };
 
-// --- SCROLLABLE & SWIPEABLE TOC DRAWER ---
 interface TocDrawerProps {
   isOpen: boolean;
   onClose: () => void;
@@ -325,7 +323,6 @@ const TocDrawer = ({ isOpen, onClose, toc, onSelectPage }: TocDrawerProps) => {
   );
 };
 
-// --- CHAPTER DETAILS PANEL ---
 interface ChapterDetailsPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -476,7 +473,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   const initialBookParam = (route.params as any)?.initialBookData || null;
 
-  // 0ms Instant State Initialization from RAM Cache
   const [book, setBook] = useState<BookPopulated | null>(() => {
     if (activeChapterId && ramBookMetaMap.has(activeChapterId)) {
       return ramBookMetaMap.get(activeChapterId);
@@ -534,11 +530,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const { isConnected } = useNetworkStatus();
   const [commentedQueId, setCommentedQueId] = useState("");
   const [questions, setQuestions] = useState<IQuestion[] | null>(null);
+  const [showQnaComments, setShowQnaComments] = useState(false);
   const [showQnaPanel, setShowQnaPanel] = useState(false);
   const [solvedIds, setSolvedIds] = useState<Set<string>>(new Set());
-
-  const questionsSignatureRef = useRef<string>("");
-  const solvedSignatureRef = useRef<string>("");
 
   const [relatedStandaloneBooks, setRelatedStandaloneBooks] = useState<any[]>([]);
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
@@ -754,7 +748,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     [isAnnotating, selectedTool, selectedColor, fullHeight]
   );
 
-  // Instant & Accurate Recent Reads Updater (No Math.max stale-page bug!)
   const saveRecentReadProgress = useCallback(
     async (pageToSave?: number, knownTotal?: number) => {
       const targetPage = Math.max(1, pageToSave ?? currentPageRef.current);
@@ -800,16 +793,17 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           resolvedTotal = targetPage;
         }
 
-        const updatedBookContent = {
+       const updatedBookContent = {
           ...book,
           _id: activeChapterId,
+          questions: Array.isArray(book?.questions) ? book.questions : [],
           total: resolvedTotal,
-          comments: Array.isArray(book.comments)
+          comments: Array.isArray(book?.comments)
             ? book.comments.length
-            : typeof book.comments === "number"
+            : typeof book?.comments === "number"
             ? book.comments
             : 0,
-          category: book.category?.name || book.category?._id || "",
+          category: book?.category?.name || book?.category?._id || "",
         };
 
         const filtered = recentReads.filter(
@@ -1015,6 +1009,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           ramBookMetaMap.set(targetId, parsedCh);
           if (!isCancelledRef?.current) {
             setBook((prev) => ({ ...(prev || {}), ...parsedCh }));
+            if (Array.isArray(parsedCh.questions) && parsedCh.questions.length > 0) {
+              setQuestions(parsedCh.questions);
+            }
           }
           if (!storedMediaUrl && parsedCh.media) {
             storedMediaUrl = normalizeMediaUrl(parsedCh.media);
@@ -1073,62 +1070,64 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       try {
         const token = accessToken;
-       const chapter = await api.get(`/user/chapter/${targetId}`, {
-  headers: token ? { Authorization: `Bearer ${token}` } : {},
-});
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-       if (chapter?.data?.data) {
-        const freshData: BookPopulated = chapter.data.data;
-        const freshMediaUrl = normalizeMediaUrl(freshData.media);
-        
-        // 👇 Yeh missing line add karein:
-        const urlChangedInDb = Boolean(
-          storedMediaUrl && freshMediaUrl && storedMediaUrl !== freshMediaUrl
-        );
-
-        // If MongoDB media URL changed, wipe old page count
-        if (urlChangedInDb) {
-          ramRealPagesMap.delete(targetId);
-          await AsyncStorage.removeItem(realPagesKey).catch(() => {});
-          if (!isCancelledRef?.current) {
-            setTotalPages(0);
-          }
+        // Fetch user chapter endpoint
+        let chapter = await api.get(`/user/chapter/${targetId}`, { headers }).catch(() => null);
+        if (!chapter?.data?.data) {
+          chapter = await api.get(`/chapter/${targetId}`, { headers }).catch(() => null);
         }
 
-        const freshQuestions = Array.isArray(freshData.questions)
-          ? freshData.questions
-          : [];
+        if (chapter?.data?.data) {
+          const freshData: BookPopulated = chapter.data.data;
+          const freshMediaUrl = normalizeMediaUrl(freshData.media);
 
-        const verifiedCount = ramRealPagesMap.get(targetId) || 0;
-        const mergedBook = {
-          ...freshData,
-          questions: freshQuestions,
-          total: verifiedCount > 0 ? verifiedCount : freshData.total,
-        };
-        ramBookMetaMap.set(targetId, mergedBook);
+          const urlChangedInDb = Boolean(
+            storedMediaUrl && freshMediaUrl && storedMediaUrl !== freshMediaUrl
+          );
 
-        if (!isCancelledRef?.current) {
-          setBook((prev) => ({
-            ...mergedBook,
-            likes: freshData.likes ?? prev?.likes ?? 0,
-          }));
-          if (freshQuestions.length > 0) {
-            setQuestions(freshQuestions as any);
-          }
-        }
-
-        AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
-
-        if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
-          const newLocalUri = await downloadPdfToDisk(targetId, freshMediaUrl);
-          if (!isCancelledRef?.current) {
-            if (newLocalUri) {
-              setPdfPath(newLocalUri);
-            } else if (!mountedLocalUri) {
-              setPdfPath(freshMediaUrl);
+          if (urlChangedInDb) {
+            ramRealPagesMap.delete(targetId);
+            await AsyncStorage.removeItem(realPagesKey).catch(() => {});
+            if (!isCancelledRef?.current) {
+              setTotalPages(0);
             }
           }
-        }
+
+          const freshQuestions = Array.isArray(freshData.questions)
+            ? freshData.questions.filter((q) => q && typeof q === "object")
+            : [];
+            
+        const verifiedCount = ramRealPagesMap.get(targetId) || 0;
+          const mergedBook = {
+            ...freshData,
+            questions: freshQuestions.length > 0 ? freshQuestions : (book?.questions || []),
+            total: verifiedCount > 0 ? verifiedCount : freshData.total,
+          };
+          ramBookMetaMap.set(targetId, mergedBook);
+
+          if (!isCancelledRef?.current) {
+            setBook((prev) => ({
+              ...mergedBook,
+              likes: freshData.likes ?? prev?.likes ?? 0,
+            }));
+            if (freshQuestions.length > 0) {
+              setQuestions(freshQuestions as any);
+            }
+          }
+
+          AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
+
+          if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
+            const newLocalUri = await downloadPdfToDisk(targetId, freshMediaUrl);
+            if (!isCancelledRef?.current) {
+              if (newLocalUri) {
+                setPdfPath(newLocalUri);
+              } else if (!mountedLocalUri) {
+                setPdfPath(freshMediaUrl);
+              }
+            }
+          }
 
           try {
             const rawReads = await AsyncStorage.getItem("recentReads");
@@ -1177,7 +1176,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     [accessToken, isConnected, initialBookParam, downloadPdfToDisk]
   );
 
-  useEffect(() => {
+ useEffect(() => {
     if (!activeChapterId) return;
     const isCancelledRef = { current: false };
 
@@ -1185,12 +1184,18 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     const ramMeta = ramBookMetaMap.get(activeChapterId) || initialBookParam || null;
     const verifiedPages = ramRealPagesMap.get(activeChapterId) || 0;
 
-    setPdfPath(ramUri);
+   setPdfPath(ramUri);
     setBook(ramMeta);
     setTotalPages(verifiedPages);
     setCurrentPage(incomingPage);
     currentPageRef.current = incomingPage;
-    setQuestions(null);
+
+    if (Array.isArray(ramMeta?.questions) && ramMeta.questions.length > 0) {
+      setQuestions(ramMeta.questions);
+    } else {
+      setQuestions(null);
+    }
+
     setShowQnaPanel(false);
     setSolvedIds(new Set());
     setSeriesData(null);
@@ -1215,7 +1220,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     removeAllTracks();
   }, []);
 
-  // --- STRICT STANDALONE RELATED CONTENT RESOLVER ---
+  // Related standalone books resolver
   useEffect(() => {
     if (!book || book.series || !accessToken) {
       setRelatedStandaloneBooks([]);
@@ -1783,7 +1788,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     }
   };
 
- // 100% Reliable Q&A Resolver with Direct API Fallback & State Sync
+// 100% Reliable Q&A Resolver with Direct API Fallback & State Sync
   useEffect(() => {
     let isCancelled = false;
 
@@ -1796,7 +1801,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       // 1. Direct Populated Check from Book State
       let list: IQuestion[] = [];
 
-      if (Array.isArray(book?.questions) && book.questions.length > 0) {
+      if (Array.isArray (book?.questions) && book.questions.length > 0) {
         const populated = book.questions.filter(
           (q: any) => q && typeof q === "object" && (q.question || q._id)
         );
@@ -1811,7 +1816,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           const token = accessToken;
           const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-          // Try standard user route first, then root chapter route
           let res = await api.get(`/user/chapter/${activeChapterId}`, { headers }).catch(() => null);
           if (!res?.data?.data) {
             res = await api.get(`/chapter/${activeChapterId}`, { headers }).catch(() => null);
@@ -1824,7 +1828,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             );
             if (freshPopulated.length > 0) {
               list = freshPopulated as IQuestion[];
-              // Update book state & cache so next time it is instant
               setBook((prev) => (prev ? { ...prev, questions: freshPopulated } : prev));
               AsyncStorage.setItem(
                 `cached_ch_${activeChapterId}`,
@@ -1878,7 +1881,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       isCancelled = true;
     };
   }, [activeChapterId, book?.questions, accessToken, isConnected, seriesData]);
-
   const renderQuestionCard = ({ item }: { item: IQuestion }) => {
     if (!item || !item._id) return null;
     return (
@@ -2253,52 +2255,20 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               <PopButton onPress={() => setShowQnaPanel(true)}>
                 <View style={styles.controlItem}>
                   <Feather name="help-circle" size={22} color="#e5e7eb" />
-                  <View style={styles.qnaCountBadge}>
-                    <Text style={styles.qnaCountBadgeText}>
-                      {questions?.length || 0}
-                    </Text>
-                  </View>
+                  {questions && questions.length > 0 ? (
+                    <View style={styles.qnaCountBadge}>
+                      <Text style={styles.qnaCountBadgeText}>
+                        {questions.length}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
               </PopButton>
             </View>
           </View>
         </View>
 
-        {questions && questions.length > 0 && (
-          <View style={styles.pollSection}>
-            <Carousel
-              loop={false}
-              width={SCREEN_WIDTH}
-              height={510}
-              data={questions}
-              pagingEnabled
-              snapEnabled
-              mode="parallax"
-              modeConfig={{
-                parallaxScrollingScale: 0.92,
-                parallaxScrollingOffset: 0,
-              }}
-              renderItem={({ item }) => (
-                <View
-                  style={{
-                    width: (SCREEN_WIDTH / 100) * 85,
-                    height: "100%",
-                    justifyContent: "center",
-                    alignItems: "center",
-                  }}>
-                  <View
-                    style={{
-                      width: (SCREEN_WIDTH / 100) * 85,
-                      height: "100%",
-                    }}>
-                    {renderQuestionCard({ item })}
-                  </View>
-                </View>
-              )}
-            />
-          </View>
-        )}
-
+        {/* Section: Series vs Strictly Standalone */}
         {isSeriesContent ? (
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
@@ -2693,17 +2663,25 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         isQuestion={!!commentedQueId}
       />
 
+    {/* FULLSCREEN QNA MODAL */}
       <Modal
         visible={showQnaPanel}
         animationType="slide"
         transparent={false}
-        onRequestClose={() => setShowQnaPanel(false)}>
+        onRequestClose={() => {
+          if (showQnaComments) {
+            setShowQnaComments(false);
+          } else {
+            setShowQnaPanel(false);
+          }
+        }}>
         <View
           style={{
             flex: 1,
             backgroundColor: "#08090a",
             paddingTop: insets.top + 8,
           }}>
+          {/* Header */}
           <View style={styles.qnaHeader}>
             <Text style={styles.qnaHeaderTitle}>Questions</Text>
             <TouchableOpacity
@@ -2713,34 +2691,54 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             </TouchableOpacity>
           </View>
 
-          <View style={{ flex: 1, width: SCREEN_WIDTH, alignItems: "center" }}>
+          {/* Cards Area with full-width FlatList */}
+          <View style={{ flex: 1, justifyContent: "center" }}>
             {questions && questions.length > 0 ? (
-              <Carousel
-                loop={false}
-                width={SCREEN_WIDTH}
-                height={SCREEN_HEIGHT * 0.82}
+              <FlatList
                 data={questions}
-                pagingEnabled
-                snapEnabled
-                mode="parallax"
-                modeConfig={{
-                  parallaxScrollingScale: 0.95,
-                  parallaxScrollingOffset: 0,
+                keyExtractor={(item: any, index: number) => {
+                  const id = item?._id || item?.content?._id || (typeof item === "string" ? item : `q_${index}`);
+                  return String(id);
                 }}
-                renderItem={({ item }) => (
-                  <View
-                    style={{
-                      width: SCREEN_WIDTH,
-                      height: "100%",
-                      justifyContent: "center",
-                      alignItems: "center",
-                      paddingHorizontal: 16,
-                    }}>
-                    <View style={{ width: "100%", height: "100%" }}>
-                      {renderQuestionCard({ item: item as IQuestion })}
+                horizontal
+                pagingEnabled
+                showsHorizontalScrollIndicator={false}
+                renderItem={({ item }: { item: any }) => {
+                  const actual = item?.content && typeof item.content === "object" ? item.content : item;
+                  const qId = actual?._id || (typeof item === "string" ? item : "");
+
+                  return (
+                    <View
+                      style={{
+                        width: SCREEN_WIDTH,
+                        paddingHorizontal: 20,
+                        justifyContent: "center",
+                        alignItems: "center",
+                      }}>
+                      <ScrollView
+                        showsVerticalScrollIndicator={false}
+                        contentContainerStyle={{
+                          paddingVertical: 20,
+                          width: "100%",
+                        }}
+                        style={{ width: "100%" }}>
+                        <QuestionCard
+                          question={actual}
+                          onCommentClick={() => setShowQnaComments(true)}
+                          onAttempted={(isCorrect: boolean) => {
+                            if (qId) {
+                              setSolvedIds((prev) => {
+                                const next = new Set(prev);
+                                next.add(String(qId));
+                                return next;
+                              });
+                            }
+                          }}
+                        />
+                      </ScrollView>
                     </View>
-                  </View>
-                )}
+                  );
+                }}
               />
             ) : (
               <View style={styles.qnaEmptyState}>
@@ -2751,11 +2749,22 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             )}
           </View>
 
+          {/* Bottom Left Solved Indicator */}
           <View style={styles.qnaIndicatorBottomLeft}>
             <Text style={styles.qnaProgressText}>
               {solvedIds.size} / {questions?.length || 0}
             </Text>
           </View>
+
+          {/* Dedicated Q&A Comments Drawer for this chapter */}
+          <CommentsDrawer
+            visible={showQnaComments}
+            reload={() => loadChapterAndPdfFast(activeChapterId)}
+            onClose={() => setShowQnaComments(false)}
+            chapterId={activeChapterId}
+            initialComments={[]}
+            isQuestion={false}
+          />
         </View>
       </Modal>
 
