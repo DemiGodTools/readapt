@@ -1116,12 +1116,25 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          // ⚡ Direct DB populated questions extract karein
-          const freshQuestions: IQuestion[] = Array.isArray(freshData.questions)
-            ? (freshData.questions.filter(
-                (q: any) => q && typeof q === "object" && (q.question || q._id)
-              ) as IQuestion[])
-            : [];
+        // ⚡ Populated objects aur raw IDs dono ko safely handle karein
+          let freshQuestions: IQuestion[] = [];
+          if (Array.isArray(freshData.questions) && freshData.questions.length > 0) {
+            freshQuestions = freshData.questions.map((q: any, idx: number) => {
+              if (typeof q === "object" && q !== null) {
+                return q.content && typeof q.content === "object" ? q.content : q;
+              }
+              // Agar backend se unpopulated ID string aayi ho
+              return {
+                _id: String(q),
+                question: "Question",
+                options: [],
+                correct: 0,
+                comments: 0,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              } as unknown as IQuestion;
+            });
+          }
 
           const verifiedCount = ramRealPagesMap.get(targetId) || 0;
           const mergedBook = {
@@ -1130,7 +1143,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             total: verifiedCount > 0 ? verifiedCount : freshData.total,
           };
 
-          // RAM aur Local Storage dono mein fresh DB data update karein
           ramBookMetaMap.set(targetId, mergedBook);
 
           if (!isCancelledRef?.current) {
@@ -1138,11 +1150,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               ...mergedBook,
               likes: freshData.likes ?? prev?.likes ?? 0,
             }));
-
-            // ⚡ State ko fresh DB questions se update karein
             setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
           }
-
           AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
 
           if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {

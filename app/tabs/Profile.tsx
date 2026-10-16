@@ -84,7 +84,8 @@ const ProfileScreen = () => {
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images" as any],
-        quality: 0.75,
+        quality: 0.45,
+        base64: true,
         selectionLimit: 1,
       });
 
@@ -102,26 +103,32 @@ const ProfileScreen = () => {
       // Instant local preview while remote upload is in-flight
       setAvatar(localUri);
 
-      const response = await FileSystem.uploadAsync(
-        "https://redapt-admin-sand.vercel.app/api/user/update/profile",
-        localUri,
-        {
-          httpMethod: "POST",
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          fieldName: "file",
-          headers: {
-            "x-user-email": user.email,
-          },
-          parameters: {},
-        }
-      );
+      let imageDataUri = localAsset?.base64
+        ? `data:${localAsset.mimeType || "image/jpeg"};base64,${localAsset.base64}`
+        : "";
 
-      if (response.status !== 200) {
+      if (!imageDataUri) {
+        const base64Image = await FileSystem.readAsStringAsync(localUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        imageDataUri = `data:${localAsset.mimeType || "image/jpeg"};base64,${base64Image}`;
+      }
+
+      const response = await fetch(`${api.getUri()}/update/profile-direct`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-email": user.email,
+        },
+        body: JSON.stringify({ image: imageDataUri }),
+      });
+
+      if (!response.ok) {
         showToast({ title: "Upload Error try again later" });
         return;
       }
 
-      const data = JSON.parse(response.body || "{}");
+      const data = await response.json();
       const remoteUrl = data?.url;
 
       if (!remoteUrl) {
