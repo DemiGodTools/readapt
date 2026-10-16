@@ -261,7 +261,11 @@ const CommentsDrawer = ({
       <View style={styles.commentItem}>
         <Image
           source={{
-            uri: item.by?.image || "https://via.placeholder.com/64",
+            uri:
+              item.by?._id === user?._id && user?.image
+                ? user.image
+                : item.by?.image || "https://via.placeholder.com/64",
+            cache: "reload",
           }}
           style={styles.userAvatar}
         />

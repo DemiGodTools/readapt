@@ -144,6 +144,20 @@ const ProfileScreen = () => {
   const { showModal } = useModal();
   const { streak } = useStreak();
   const [avatar, setAvatar] = useState(user?.image ?? "");
+  const [avatarPreviewVisible, setAvatarPreviewVisible] = useState(false);
+  const previewScale = useRef(new Animated.Value(0.9)).current;
+
+  useEffect(() => {
+    if (!avatarPreviewVisible) return;
+
+    previewScale.setValue(0.85);
+    Animated.spring(previewScale, {
+      toValue: 1,
+      friction: 7,
+      tension: 120,
+      useNativeDriver: true,
+    }).start();
+  }, [avatarPreviewVisible, previewScale]);
 
   // Panels
   const [showStreakInfo, setShowStreakInfo] = useState(false);
@@ -349,6 +363,32 @@ const ProfileScreen = () => {
 
   return (
     <View style={styles.container}>
+      <Modal
+        visible={avatarPreviewVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAvatarPreviewVisible(false)}>
+        <TouchableOpacity
+          style={styles.avatarPreviewOverlay}
+          activeOpacity={1}
+          onPress={() => setAvatarPreviewVisible(false)}>
+          <Animated.View
+            style={[
+              styles.avatarPreviewWrap,
+              { transform: [{ scale: previewScale }] },
+            ]}>
+            <Image
+              source={{
+                uri: avatar || "https://via.placeholder.com/160",
+                cache: "reload",
+              }}
+              style={styles.avatarPreviewImage}
+              resizeMode="contain"
+            />
+          </Animated.View>
+        </TouchableOpacity>
+      </Modal>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}>
@@ -359,7 +399,9 @@ const ProfileScreen = () => {
               if (uploadingPhoto) return;
 
               void pickAndUploadProfilePhoto();
-            }}>
+            }}
+            onLongPress={() => setAvatarPreviewVisible(true)}
+            delayLongPress={400}>
             <View style={styles.avatarPlaceholder}>
               <Image
                 source={{
@@ -755,6 +797,24 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.35)",
     borderTopColor: "#ffffff",
     borderRightColor: "#ffffff",
+  },
+  avatarPreviewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarPreviewWrap: {
+    width: "90%",
+    aspectRatio: 1,
+    maxWidth: 420,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarPreviewImage: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 12,
   },
   infoDetails: {
     marginLeft: 18,
