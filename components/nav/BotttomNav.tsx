@@ -1,4 +1,6 @@
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { useEffect, useState } from "react";
+import { DeviceEventEmitter } from "react-native";
 
 import Svg, { Circle, Path } from "react-native-svg";
 import Home from "../../app/tabs/Home";
@@ -12,6 +14,15 @@ const Tab = createBottomTabNavigator();
 function BottomNav() {
   
     const insets = useSafeAreaInsets();
+
+    // Hide the tab bar while any bottom sheet (upgrade / logout / info) is open
+    const [sheetOpen, setSheetOpen] = useState(false);
+    useEffect(() => {
+      const sub = DeviceEventEmitter.addListener("app-sheet-visibility", (e) => {
+        setSheetOpen(Boolean(e?.open));
+      });
+      return () => sub.remove();
+    }, []);
     
   return (
     <Tab.Navigator
@@ -21,12 +32,15 @@ function BottomNav() {
         headerTransparent: true,
         header: () => <TopNav />,
         tabBarShowLabel: true,
-        tabBarStyle: {
-          backgroundColor: "rgb(12, 7, 26)",
-          borderTopWidth: 1,
-          borderColor: "#ffffff1a",
-          height: 70 + insets.bottom,
-        },
+        tabBarStyle: [
+          {
+            backgroundColor: "rgb(12, 7, 26)",
+            borderTopWidth: 1,
+            borderColor: "#ffffff1a",
+            height: 70 + insets.bottom,
+          },
+          sheetOpen && { display: "none" },
+        ],
         tabBarInactiveTintColor: "#9ca3af",
         tabBarActiveTintColor: "#01796F",
       }}>

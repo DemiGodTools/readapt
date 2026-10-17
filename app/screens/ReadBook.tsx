@@ -1101,13 +1101,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         };
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        // ⚡ Cache-busting param (_t: Date.now()) taaki network level par purana data na fase
-        let chapter = await api
+    let chapter = await api
           .get(`/user/chapter/${targetId}`, {
             headers,
             params: { _t: Date.now() },
           })
-          .catch(() => null);
+          .catch((err) => {
+            console.error("Chapter fetch network error:", err?.message);
+            return null;
+          });
 
         if (!chapter?.data?.data) {
           chapter = await api
@@ -1118,7 +1120,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             .catch(() => null);
         }
 
-     if (chapter?.data?.data) {
+        if (chapter?.data?.data) {
           const freshData: BookPopulated = chapter.data.data;
           const freshMediaUrl = normalizeMediaUrl(freshData.media);
 
@@ -1134,55 +1136,19 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          // ⚡ MongoDB se aane wale real questions extract & normalize karein
-          // Only keep fully-populated question objects (with question text + options).
-          // Raw ObjectId strings or stubs (no question/options) are discarded.
-          const freshQuestions: IQuestion[] = Array.isArray(freshData.questions)
-            ? (freshData.questions
-                .map((q: any) => {
-                  // unwrap populated refs like { content: {...}, contentModel: "Question" }
-                  const unwrapped = q?.content && typeof q.content === "object" ? q.content : q;
-                  return unwrapped;
-                })
-                .filter(
-                  (q: any) =>
-                    q &&
-                    typeof q === "object" &&
-                    typeof q._id === "string" &&
-                    q._id.length > 0 &&
-                    typeof q.question === "string" &&
-                    q.question.trim().length > 0 &&
-                    Array.isArray(q.options) &&
-                    q.options.length > 0
-                ) as IQuestion[])
-            : [];
+          // ⚡ MongoDB questions extract karein
+          const rawQList = Array.isArray(freshData.questions) ? freshData.questions : [];
+          const freshQuestions: IQuestion[] = rawQList
+            .map((q: any) => (q?.content ? q.content : q))
+            .filter((q: any) => q && typeof q === "object" && (q.question || q._id));
 
           const verifiedCount = ramRealPagesMap.get(targetId) || 0;
-
-          // ⚡ If API returns no populated questions (un-populated refs), preserve
-          // whatever questions we already have in state/cache rather than wiping them.
-          const questionsToStore =
-            freshQuestions.length > 0
-              ? freshQuestions
-              : (ramBookMetaMap.get(targetId)?.questions?.filter(
-                  (q: any) =>
-                    q &&
-                    typeof q === "object" &&
-                    typeof q._id === "string" &&
-                    q._id.length > 0 &&
-                    typeof q.question === "string" &&
-                    q.question.trim().length > 0 &&
-                    Array.isArray(q.options) &&
-                    q.options.length > 0
-                ) ?? []);
-
           const mergedBook = {
             ...freshData,
-            questions: questionsToStore,
+            questions: freshQuestions,
             total: verifiedCount > 0 ? verifiedCount : freshData.total,
           };
 
-          // ⚡ Purana cache overwrite karein
           ramBookMetaMap.set(targetId, mergedBook);
           AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
 
@@ -1192,14 +1158,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               likes: freshData.likes ?? prev?.likes ?? 0,
             }));
 
-            // ⚡ Only update questions state if API returned populated ones.
-            // If API returned empty (un-populated refs), keep whatever is already in state.
-            if (freshQuestions.length > 0) {
-              setQuestions(freshQuestions);
-            }
-            // else: do NOT call setQuestions(null) — leave existing questions intact
+            // Exact count set hoga (disappear nahi hoga)
+            setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
           }
-          AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
 
           if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
             const newLocalUri = await downloadPdfToDisk(targetId, freshMediaUrl);
@@ -1263,31 +1224,20 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (!activeChapterId) return;
     const isCancelledRef = { current: false };
 
+    // ⚡ Purana stale cache wipe karein
+    AsyncStorage.removeItem(`cached_ch_${activeChapterId}`).catch(() => {});
+    ramBookMetaMap.delete(activeChapterId);
+
     const ramUri = ramPdfUriMap.get(activeChapterId) || null;
-    const ramMeta = ramBookMetaMap.get(activeChapterId) || initialBookParam || null;
     const verifiedPages = ramRealPagesMap.get(activeChapterId) || 0;
 
-   setPdfPath(ramUri);
-    setBook(ramMeta);
+    setPdfPath(ramUri);
     setTotalPages(verifiedPages);
     setCurrentPage(incomingPage);
     currentPageRef.current = incomingPage;
 
-    // Validate questions from RAM cache — only fully-populated objects, no raw string IDs
-    const ramQuestions: IQuestion[] = Array.isArray(ramMeta?.questions)
-      ? ramMeta.questions.filter(
-          (q: any) =>
-            q &&
-            typeof q === "object" &&
-            typeof q._id === "string" &&
-            q._id.length > 0 &&
-            typeof q.question === "string" &&
-            q.question.trim().length > 0 &&
-            Array.isArray(q.options) &&
-            q.options.length > 0
-        )
-      : [];
-    setQuestions(ramQuestions.length > 0 ? ramQuestions : null);
+    // ⚡ Yahan dummy initial questions mat set karo (jis se 1 sec flash hota hai)
+    setQuestions(null);
 
     setShowQnaPanel(false);
     setSolvedIds(new Set());
@@ -1308,7 +1258,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       isCancelledRef.current = true;
     };
   }, [activeChapterId]);
-
   useEffect(() => {
     removeAllTracks();
   }, []);

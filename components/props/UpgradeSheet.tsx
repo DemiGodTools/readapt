@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  DeviceEventEmitter,
   Dimensions,
   Modal,
   Platform,
@@ -59,9 +60,12 @@ const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) =>
     const hideSheet = () => {
       sheetOpenRef.current = false;
       setSheetOpen(false);
+      DeviceEventEmitter.emit("app-sheet-visibility", { open: false });
     };
 
     if (visible) {
+      // Ask the app bottom nav to step aside while a sheet is open
+      DeviceEventEmitter.emit("app-sheet-visibility", { open: true });
       setSheetOpenSafe(true);
       translateY.value = SCREEN_HEIGHT;
       translateY.value = withSpring(0, { damping: 85, stiffness: 300, mass: 0.9 });
@@ -71,6 +75,15 @@ const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) =>
       });
     }
   }, [visible, translateY]);
+
+  // Safety: if the host screen unmounts with a sheet open, restore the nav
+  useEffect(() => {
+    return () => {
+      if (sheetOpenRef.current) {
+        DeviceEventEmitter.emit("app-sheet-visibility", { open: false });
+      }
+    };
+  }, []);
 
   const panGesture = Gesture.Pan()
     .onStart(() => {
