@@ -1,61 +1,23 @@
-import { createBottomTabNavigator, BottomTabBar } from "@react-navigation/bottom-tabs";
-import { useEffect, useState } from "react";
-import { DeviceEventEmitter } from "react-native";
+import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
 import Svg, { Circle, Path } from "react-native-svg";
 import Home from "../../app/tabs/Home";
 import Downloads from "../../app/tabs/Downloads";
 import Profile from "../../app/tabs/Profile";
 import TopNav from "./TopNav";
+import AnimatedTabBar from "./AnimatedTabBar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withTiming,
-} from "react-native-reanimated";
 
 const Tab = createBottomTabNavigator();
 
-/**
- * Standard tab bar wrapped to slide below the screen edge (like a native
- * Kotlin/Swift bottom bar) while a bottom sheet is open - instead of
- * popping in/out, so it never blinks.
- */
-function SmoothTabBar({ hidden, ...props }: any) {
-  const offset = useSharedValue(0);
-
-  useEffect(() => {
-    offset.value = withTiming(hidden ? 180 : 0, { duration: 220 });
-  }, [hidden, offset]);
-
-  const slideStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: offset.value }],
-  }));
-
-  return (
-    <Animated.View style={[slideStyle, { overflow: "visible" }]}>
-      <BottomTabBar {...props} />
-    </Animated.View>
-  );
-}
-
 function BottomNav() {
-
+  
     const insets = useSafeAreaInsets();
-
-    // Smoothly slide the tab bar away while any bottom sheet (upgrade / logout / info) is open
-    const [sheetOpen, setSheetOpen] = useState(false);
-    useEffect(() => {
-      const sub = DeviceEventEmitter.addListener("app-sheet-visibility", (e) => {
-        setSheetOpen(Boolean(e?.open));
-      });
-      return () => sub.remove();
-    }, []);
-
+    
   return (
     <Tab.Navigator
       initialRouteName="Home"
-      tabBar={(props: any) => <SmoothTabBar hidden={sheetOpen} {...props} />}
+      tabBar={(props) => <AnimatedTabBar {...props} />}
       screenOptions={{
         headerShown: true,
         headerTransparent: true,

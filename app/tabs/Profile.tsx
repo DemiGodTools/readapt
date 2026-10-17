@@ -751,10 +751,10 @@ const ProfileScreen = () => {
         <View style={styles.logoutSheetBody}>
           <View style={styles.logoutActions}>
             <TouchableOpacity
-              style={[styles.logoutBtn, styles.logoutCancelBtn]}
+              style={[styles.logoutBtn, styles.logoutDismissBtn]}
               activeOpacity={0.8}
               onPress={() => setShowLogoutSheet(false)}>
-              <Text style={styles.logoutCancelText}>Dismiss</Text>
+              <Text style={styles.logoutBtnText}>Dismiss</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -764,7 +764,7 @@ const ProfileScreen = () => {
                 setShowLogoutSheet(false);
                 handleLogout();
               }}>
-              <Text style={styles.logoutConfirmText}>Log Out</Text>
+              <Text style={styles.logoutBtnText}>Log Out</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1078,12 +1078,12 @@ const styles = StyleSheet.create({
 
   // LogOut sheet
   logoutSheetBody: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
+    paddingHorizontal: 24,
   },
   logoutActions: {
     flexDirection: "row",
     gap: 16,
+    marginTop: 24,
     paddingHorizontal: 12,
   },
   logoutBtn: {
@@ -1092,20 +1092,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
   },
-  logoutCancelBtn: {
+  logoutDismissBtn: {
     backgroundColor: "rgba(255,255,255,0.08)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.05)",
   },
-  logoutCancelText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
-  },
   logoutConfirmBtn: {
     backgroundColor: "#ef4444",
   },
-  logoutConfirmText: {
+  logoutBtnText: {
     color: "#fff",
     fontSize: 14,
     fontWeight: "600",

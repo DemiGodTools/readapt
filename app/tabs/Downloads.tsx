@@ -6,7 +6,6 @@ import {
   FlatList,
   Image,
   Pressable,
-  Modal,
   ActivityIndicator,
   TouchableOpacity,
   ScrollView,
@@ -129,20 +128,21 @@ export default function Downloads() {
   const [deleteTarget, setDeleteTarget] = useState<DownloadedChapter | null>(
     null,
   );
+  const [deleteSheetVisible, setDeleteSheetVisible] = useState(false);
 
-  const [showDeleteSheet, setShowDeleteSheet] = useState(false);
+  const closeDeletePanel = () => {
+    setDeleteSheetVisible(false);
+  };
 
   const openDeletePanel = (item: DownloadedChapter) => {
     setDeleteTarget(item);
-    setShowDeleteSheet(true);
+    setDeleteSheetVisible(true);
   };
-
-  const closeDeletePanel = () => setShowDeleteSheet(false);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     const id = deleteTarget._id;
-    setShowDeleteSheet(false);
+    setDeleteSheetVisible(false);
     await deleteChapter(id);
   };
 
@@ -302,12 +302,12 @@ const getRecentRead = (
 
       {/* Delete confirmation bottom sheet */}
       <UpgradeSheet
-        visible={showDeleteSheet}
+        visible={deleteSheetVisible}
         onClose={closeDeletePanel}
         onClosed={() => setDeleteTarget(null)}
         title="Are you sure to delete"
       >
-        <View style={styles.sheetButtonsWrap}>
+        <View style={styles.deleteSheetBody}>
           <Text style={styles.deleteTitle} numberOfLines={1}>
             {deleteTarget?.title}
           </Text>
@@ -592,8 +592,7 @@ const styles = StyleSheet.create({
     maxWidth: 240,
   },
 
-  // Delete sheet
-  sheetButtonsWrap: {
+  deleteSheetBody: {
     paddingHorizontal: 24,
   },
 

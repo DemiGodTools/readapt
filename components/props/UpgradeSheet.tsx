@@ -55,6 +55,12 @@ const UpgradeSheet = ({
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheetOpenRef = useRef(false);
 
+  // Always call the latest onClosed after the exit animation finishes
+  const onClosedRef = useRef(onClosed);
+  useEffect(() => {
+    onClosedRef.current = onClosed;
+  }, [onClosed]);
+
   const setSheetOpenSafe = (val: boolean) => {
     sheetOpenRef.current = val;
     setSheetOpen(val);
@@ -68,23 +74,21 @@ const UpgradeSheet = ({
     const hideSheet = () => {
       sheetOpenRef.current = false;
       setSheetOpen(false);
-      onClosed?.();
+      DeviceEventEmitter.emit("app-sheet-visibility", { open: false });
+      onClosedRef.current?.();
     };
 
     if (visible) {
-      // Restore happens together with the sheet rise (native pass-by motion)
+      // Ask the app bottom nav to step aside while a sheet is open
       DeviceEventEmitter.emit("app-sheet-visibility", { open: true });
       setSheetOpenSafe(true);
       translateY.value = SCREEN_HEIGHT;
       translateY.value = withSpring(0, { damping: 85, stiffness: 300, mass: 0.9 });
     } else if (sheetOpenRef.current) {
-      // Nav slides back up WHILE the sheet slides down – no blink, no gap
-      DeviceEventEmitter.emit("app-sheet-visibility", { open: false });
       translateY.value = withTiming(SCREEN_HEIGHT, { duration: 200 }, (finished) => {
         if (finished) runOnJS(hideSheet)();
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, translateY]);
 
   // Safety: if the host screen unmounts with a sheet open, restore the nav

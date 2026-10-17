@@ -145,7 +145,7 @@ const CommentsDrawer = ({
     try {
       const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
       const res = await api
-        .get(`/user/chapter/${chapterId}`, { headers })
+        .get(`/chapter/${chapterId}`, { headers })
         .catch(() => null);
 
       const freshComments = res?.data?.data?.comments;

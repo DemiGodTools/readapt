@@ -1101,24 +1101,16 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         };
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    let chapter = await api
-          .get(`/user/chapter/${targetId}`, {
+        // ⚡ FIX: baseURL mein /api/user pehle se hai, isliye sirf /chapter/${targetId} call hoga
+        let chapter = await api
+          .get(`/chapter/${targetId}`, {
             headers,
             params: { _t: Date.now() },
           })
           .catch((err) => {
-            console.error("Chapter fetch network error:", err?.message);
+            console.error("Chapter fetch error:", err?.response?.status || err?.message);
             return null;
           });
-
-        if (!chapter?.data?.data) {
-          chapter = await api
-            .get(`/chapter/${targetId}`, {
-              headers,
-              params: { _t: Date.now() },
-            })
-            .catch(() => null);
-        }
 
         if (chapter?.data?.data) {
           const freshData: BookPopulated = chapter.data.data;
@@ -1136,11 +1128,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          // ⚡ MongoDB questions extract karein
+          // ⚡ MongoDB questions safely filter karein
           const rawQList = Array.isArray(freshData.questions) ? freshData.questions : [];
           const freshQuestions: IQuestion[] = rawQList
             .map((q: any) => (q?.content ? q.content : q))
-            .filter((q: any) => q && typeof q === "object" && (q.question || q._id));
+            .filter((q: any) => q && typeof q === "object" && Boolean(q.question && q.options));
 
           const verifiedCount = ramRealPagesMap.get(targetId) || 0;
           const mergedBook = {
@@ -1158,7 +1150,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               likes: freshData.likes ?? prev?.likes ?? 0,
             }));
 
-            // Exact count set hoga (disappear nahi hoga)
+            // ⚡ DB ka exact question count set karein
             setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
           }
 
