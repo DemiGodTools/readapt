@@ -1,4 +1,4 @@
-import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { createBottomTabNavigator, BottomTabBar } from "@react-navigation/bottom-tabs";
 import { useEffect, useState } from "react";
 import { DeviceEventEmitter } from "react-native";
 
@@ -8,14 +8,42 @@ import Downloads from "../../app/tabs/Downloads";
 import Profile from "../../app/tabs/Profile";
 import TopNav from "./TopNav";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+} from "react-native-reanimated";
 
 const Tab = createBottomTabNavigator();
 
+/**
+ * Standard tab bar wrapped to slide below the screen edge (like a native
+ * Kotlin/Swift bottom bar) while a bottom sheet is open - instead of
+ * popping in/out, so it never blinks.
+ */
+function SmoothTabBar({ hidden, ...props }: any) {
+  const offset = useSharedValue(0);
+
+  useEffect(() => {
+    offset.value = withTiming(hidden ? 180 : 0, { duration: 220 });
+  }, [hidden, offset]);
+
+  const slideStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: offset.value }],
+  }));
+
+  return (
+    <Animated.View style={[slideStyle, { overflow: "visible" }]}>
+      <BottomTabBar {...props} />
+    </Animated.View>
+  );
+}
+
 function BottomNav() {
-  
+
     const insets = useSafeAreaInsets();
 
-    // Hide the tab bar while any bottom sheet (upgrade / logout / info) is open
+    // Smoothly slide the tab bar away while any bottom sheet (upgrade / logout / info) is open
     const [sheetOpen, setSheetOpen] = useState(false);
     useEffect(() => {
       const sub = DeviceEventEmitter.addListener("app-sheet-visibility", (e) => {
@@ -23,24 +51,22 @@ function BottomNav() {
       });
       return () => sub.remove();
     }, []);
-    
+
   return (
     <Tab.Navigator
       initialRouteName="Home"
+      tabBar={(props: any) => <SmoothTabBar hidden={sheetOpen} {...props} />}
       screenOptions={{
         headerShown: true,
         headerTransparent: true,
         header: () => <TopNav />,
         tabBarShowLabel: true,
-        tabBarStyle: [
-          {
-            backgroundColor: "rgb(12, 7, 26)",
-            borderTopWidth: 1,
-            borderColor: "#ffffff1a",
-            height: 70 + insets.bottom,
-          },
-          sheetOpen && { display: "none" },
-        ],
+        tabBarStyle: {
+          backgroundColor: "rgb(12, 7, 26)",
+          borderTopWidth: 1,
+          borderColor: "#ffffff1a",
+          height: 70 + insets.bottom,
+        },
         tabBarInactiveTintColor: "#9ca3af",
         tabBarActiveTintColor: "#01796F",
       }}>

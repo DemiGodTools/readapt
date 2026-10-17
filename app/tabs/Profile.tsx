@@ -749,22 +749,24 @@ const ProfileScreen = () => {
         title="Are you sure want to LogOut"
       >
         <View style={styles.logoutSheetBody}>
-          <TouchableOpacity
-            style={[styles.logoutBtn, styles.logoutCancelBtn]}
-            activeOpacity={0.8}
-            onPress={() => setShowLogoutSheet(false)}>
-            <Text style={styles.logoutCancelText}>Cancel</Text>
-          </TouchableOpacity>
+          <View style={styles.logoutActions}>
+            <TouchableOpacity
+              style={[styles.logoutBtn, styles.logoutCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setShowLogoutSheet(false)}>
+              <Text style={styles.logoutCancelText}>Dismiss</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={[styles.logoutBtn, styles.logoutConfirmBtn]}
-            activeOpacity={0.8}
-            onPress={() => {
-              setShowLogoutSheet(false);
-              handleLogout();
-            }}>
-            <Text style={styles.logoutConfirmText}>Log Out</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.logoutBtn, styles.logoutConfirmBtn]}
+              activeOpacity={0.8}
+              onPress={() => {
+                setShowLogoutSheet(false);
+                handleLogout();
+              }}>
+              <Text style={styles.logoutConfirmText}>Log Out</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </UpgradeSheet>
     </View>
@@ -1078,9 +1080,14 @@ const styles = StyleSheet.create({
   logoutSheetBody: {
     paddingHorizontal: 20,
     paddingTop: 12,
-    gap: 12,
+  },
+  logoutActions: {
+    flexDirection: "row",
+    gap: 16,
+    paddingHorizontal: 12,
   },
   logoutBtn: {
+    flex: 1,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",

@@ -30,6 +30,7 @@ const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 type Props = {
   visible: boolean;
   onClose: () => void;
+  onClosed?: () => void;
   title: string;
   subtitle?: string;
   children: React.ReactNode;
@@ -43,7 +44,14 @@ type Props = {
  * - Drag handle (and header) to drag down and close
  * - Closes on outside tap or Android hardware back
  */
-const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) => {
+const UpgradeSheet = ({
+  visible,
+  onClose,
+  onClosed,
+  title,
+  subtitle,
+  children,
+}: Props) => {
   const [sheetOpen, setSheetOpen] = useState(false);
   const sheetOpenRef = useRef(false);
 
@@ -60,20 +68,23 @@ const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) =>
     const hideSheet = () => {
       sheetOpenRef.current = false;
       setSheetOpen(false);
-      DeviceEventEmitter.emit("app-sheet-visibility", { open: false });
+      onClosed?.();
     };
 
     if (visible) {
-      // Ask the app bottom nav to step aside while a sheet is open
+      // Restore happens together with the sheet rise (native pass-by motion)
       DeviceEventEmitter.emit("app-sheet-visibility", { open: true });
       setSheetOpenSafe(true);
       translateY.value = SCREEN_HEIGHT;
       translateY.value = withSpring(0, { damping: 85, stiffness: 300, mass: 0.9 });
     } else if (sheetOpenRef.current) {
+      // Nav slides back up WHILE the sheet slides down – no blink, no gap
+      DeviceEventEmitter.emit("app-sheet-visibility", { open: false });
       translateY.value = withTiming(SCREEN_HEIGHT, { duration: 200 }, (finished) => {
         if (finished) runOnJS(hideSheet)();
       });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, translateY]);
 
   // Safety: if the host screen unmounts with a sheet open, restore the nav

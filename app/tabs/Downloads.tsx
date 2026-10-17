@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -9,10 +9,7 @@ import {
   Modal,
   ActivityIndicator,
   TouchableOpacity,
-  Animated,
-  PanResponder,
   ScrollView,
-  BackHandler,
 } from "react-native";
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -22,6 +19,7 @@ import Svg, { Path, Polyline, Line } from "react-native-svg";
 import { useDownloads, DownloadedChapter } from "../../hooks/useDownloads";
 import { IRecentRead } from "../../types/Storage";
 import Contentprogress from "../../components/props/ContentProgress";
+import UpgradeSheet from "../../components/props/UpgradeSheet";
 import { useNavigation } from "@react-navigation/native";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -132,62 +130,19 @@ export default function Downloads() {
     null,
   );
 
-  const deleteSheetY = useRef(new Animated.Value(400)).current;
-  const deletePanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderMove: (_, gestureState) => {
-        if (gestureState.dy > 0) {
-          deleteSheetY.setValue(gestureState.dy);
-        }
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dy > 100 || gestureState.vy > 0.7) {
-          closeDeletePanel();
-        } else {
-          Animated.spring(deleteSheetY, {
-            toValue: 0,
-            useNativeDriver: true,
-          }).start();
-        }
-      },
-    })
-  ).current;
-
-  const closeDeletePanel = () => {
-    Animated.timing(deleteSheetY, {
-      toValue: 400,
-      duration: 200,
-      useNativeDriver: true,
-    }).start(() => setDeleteTarget(null));
-  };
-
-  useEffect(() => {
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (deleteTarget) {
-        closeDeletePanel();
-        return true;
-      }
-      return false;
-    });
-    return () => sub.remove();
-  }, [deleteTarget]);
+  const [showDeleteSheet, setShowDeleteSheet] = useState(false);
 
   const openDeletePanel = (item: DownloadedChapter) => {
     setDeleteTarget(item);
-    deleteSheetY.setValue(400);
-    Animated.timing(deleteSheetY, {
-      toValue: 0,
-      duration: 220,
-      useNativeDriver: true,
-    }).start();
+    setShowDeleteSheet(true);
   };
+
+  const closeDeletePanel = () => setShowDeleteSheet(false);
 
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     const id = deleteTarget._id;
-    setDeleteTarget(null);
+    setShowDeleteSheet(false);
     await deleteChapter(id);
   };
 
@@ -346,45 +301,38 @@ const getRecentRead = (
       )}
 
       {/* Delete confirmation bottom sheet */}
-      {deleteTarget && (
-        <View style={styles.modalOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={closeDeletePanel} />
-          <Animated.View
-            {...deletePanResponder.panHandlers}
-            style={[
-              styles.confirmPanel,
-              { transform: [{ translateY: deleteSheetY }] },
-            ]}>
-            <View style={styles.dragHandle} />
+      <UpgradeSheet
+        visible={showDeleteSheet}
+        onClose={closeDeletePanel}
+        onClosed={() => setDeleteTarget(null)}
+        title="Are you sure to delete"
+      >
+        <View style={styles.sheetButtonsWrap}>
+          <Text style={styles.deleteTitle} numberOfLines={1}>
+            {deleteTarget?.title}
+          </Text>
 
-            <Text style={styles.panelHeader}>Are you sure to delete</Text>
+          <View style={styles.panelActions}>
+            <Pressable
+              style={({ pressed }) => [
+                styles.cancelButton,
+                pressed && styles.buttonPressed,
+              ]}
+              onPress={closeDeletePanel}>
+              <Text style={styles.cancelText}>Dismiss</Text>
+            </Pressable>
 
-            <Text style={styles.deleteTitle} numberOfLines={1}>
-              {deleteTarget.title}
-            </Text>
-
-            <View style={styles.panelActions}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.cancelButton,
-                  pressed && styles.buttonPressed,
-                ]}
-                onPress={closeDeletePanel}>
-                <Text style={styles.cancelText}>Dismiss</Text>
-              </Pressable>
-
-              <Pressable
-                style={({ pressed }) => [
-                  styles.continueButton,
-                  pressed && styles.buttonPressed,
-                ]}
-                onPress={confirmDelete}>
-                <Text style={styles.continueText}>Yes</Text>
-              </Pressable>
-            </View>
-          </Animated.View>
+            <Pressable
+              style={({ pressed }) => [
+                styles.continueButton,
+                pressed && styles.buttonPressed,
+              ]}
+              onPress={confirmDelete}>
+              <Text style={styles.continueText}>Yes</Text>
+            </Pressable>
+          </View>
         </View>
-      )}
+      </UpgradeSheet>
     </View>
   );
 }
@@ -644,60 +592,9 @@ const styles = StyleSheet.create({
     maxWidth: 240,
   },
 
-  modalOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "flex-end",
-    zIndex: 1000,
-  },
-
-  confirmPanel: {
-    backgroundColor: "#111",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-
+  // Delete sheet
+  sheetButtonsWrap: {
     paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 40,
-
-    borderTopWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-
-    shadowColor: "#000",
-    shadowOpacity: 0.6,
-    shadowRadius: 20,
-    elevation: 20,
-  },
-
-  dragHandle: {
-    position: "absolute",
-    top: 12,
-    alignSelf: "center",
-
-    width: 48,
-    height: 4,
-
-    borderRadius: 10,
-
-    backgroundColor: "rgba(255,255,255,0.15)",
-  },
-
-  panelHeader: {
-    marginTop: 10,
-    marginBottom: 8,
-
-    color: ACCENT,
-    fontSize: 12,
-    fontWeight: "700",
-
-    textTransform: "uppercase",
-    letterSpacing: 1.5,
-
-    textAlign: "center",
   },
 
   deleteTitle: {
