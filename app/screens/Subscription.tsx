@@ -3,7 +3,7 @@ import { RootStackParamList } from "../../components/nav/MainNavigation";
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Subscription'>;
 import useAuth from "../../hooks/useAuth";
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -13,11 +13,6 @@ import {
   FlatList,
   Alert,
   ActivityIndicator,
-  Dimensions,
-  Animated,
-  PanResponder,
-  BackHandler,
-  TouchableOpacity,
 } from 'react-native';
 import Svg, { Polyline, Line } from 'react-native-svg';
 import * as WebBrowser from 'expo-web-browser';
@@ -27,6 +22,7 @@ import { useUser } from '../../hooks/useUser';
 import { useToast } from '../../hooks/useToast';
 import { api } from '../../lib/api';
 import Offline from '../../components/state/Offline';
+import UpgradeSheet from '../../components/props/UpgradeSheet';
 import { useNetworkStatus } from '../../hooks/useNetwork';
 
 const CARD_WIDTH = 290;
@@ -399,6 +395,90 @@ const Subscription = ({ route, navigation }: Props) => {
     );
   };
 
+  // ---------- Upgrade Sheet ----------
+  const renderUpgradeSheet = () => (
+    <UpgradeSheet
+      visible={showUpgradeModal}
+      onClose={() => setShowUpgradeModal(false)}
+      title="Upgrade Your Plan"
+      subtitle="Choose a higher plan. You can only upgrade â€” downgrades are not allowed."
+    >
+      {upgradeOptions.length === 0 ? (
+        <View style={styles.upgradeEmpty}>
+          <Text style={styles.upgradeEmptyText}>
+            You are already on the highest plan â€” no upgrades available.
+          </Text>
+        </View>
+      ) : (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.upgradeSheetBody}
+        >
+          {upgradeOptions.map((plan) => (
+            <View
+              key={plan.id}
+              style={[
+                styles.upgradeOptionCard,
+                plan.featured && styles.planCardFeatured,
+              ]}
+            >
+              <View style={styles.upgradeOptionHeader}>
+                <Text style={styles.planName}>{plan.name}</Text>
+                <View style={styles.planPriceRow}>
+                  <Text style={styles.planPrice}>{plan.price}</Text>
+                  <Text style={styles.planPriceUnit}>/mo</Text>
+                </View>
+              </View>
+
+              <Text style={styles.planDuration}>{plan.duration}</Text>
+
+              <View style={styles.featuresList}>
+                {plan.features.map((feat, idx) => (
+                  <View key={idx} style={styles.featureItem}>
+                    <Svg
+                      width={16}
+                      height={16}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke={plan.featured ? '#4ade80' : pallete.accent}
+                      strokeWidth="3"
+                    >
+                      <Polyline points="20 6 9 17 4 12" />
+                    </Svg>
+                    <Text style={styles.featureText}>{feat}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <Pressable
+                disabled={loadingPlanId !== null}
+                style={({ pressed }) => [
+                  styles.actionBtn,
+                  plan.featured && styles.actionBtnFeatured,
+                  pressed && { transform: [{ scale: 0.97 }] },
+                ]}
+                onPress={() => handlePayment(plan)}
+              >
+                {loadingPlanId === plan.id ? (
+                  <ActivityIndicator color={plan.featured ? '#0b0b0b' : '#fff'} />
+                ) : (
+                  <Text
+                    style={[
+                      styles.actionBtnText,
+                      plan.featured && styles.actionBtnTextFeatured,
+                    ]}
+                  >
+                    Upgrade to {plan.name}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          ))}
+        </ScrollView>
+      )}
+    </UpgradeSheet>
+  );
+
     if (!user && !isConnected) {
     return <View style={[styles.container,{ paddingTop: 100, alignItems: "center", justifyContent: "center"}]}>
       <Offline />
@@ -460,169 +540,10 @@ const Subscription = ({ route, navigation }: Props) => {
         </View>
       </ScrollView>
 
-      <UpgradeSheet
-        visible={showUpgradeModal}
-        onClose={() => setShowUpgradeModal(false)}
-        plans={upgradeOptions}
-        onSelect={handlePayment}
-      />
+      {renderUpgradeSheet()}
     </View>
   );
 };
-
-const SHEET_HEIGHT = Math.round(Dimensions.get('window').height * 0.72);
-
-function UpgradeSheet({
-  visible,
-  onClose,
-  plans,
-  onSelect,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  plans: typeof PLANS;
-  onSelect: (plan: (typeof PLANS)[0]) => void;
-}) {
-  const translateY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) =>
-        Math.abs(gestureState.dy) > 5 &&
-        Math.abs(gestureState.dy) > Math.abs(gestureState.dx),
-      onPanResponderMove: (_, gestureState) => {
-        if (gestureState.dy > 0) {
-          translateY.setValue(gestureState.dy);
-        }
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        const shouldClose = gestureState.dy > 110 || gestureState.vy > 0.6;
-
-        if (shouldClose) {
-          Animated.timing(translateY, {
-            toValue: SHEET_HEIGHT,
-            duration: 220,
-            useNativeDriver: true,
-          }).start(() => onClose());
-          return;
-        }
-
-        Animated.spring(translateY, {
-          toValue: 0,
-          friction: 9,
-          tension: 90,
-          useNativeDriver: true,
-        }).start();
-      },
-    })
-  ).current;
-
-  useEffect(() => {
-    if (!visible) {
-      translateY.setValue(SHEET_HEIGHT);
-      return;
-    }
-
-    translateY.setValue(SHEET_HEIGHT);
-    Animated.spring(translateY, {
-      toValue: 0,
-      damping: 20,
-      stiffness: 160,
-      mass: 0.9,
-      useNativeDriver: true,
-    }).start();
-  }, [visible, translateY]);
-
-  useEffect(() => {
-    if (!visible) return;
-
-    const backHandler = BackHandler.addEventListener(
-      'hardwareBackPress',
-      () => {
-        onClose();
-        return true;
-      }
-    );
-
-    return () => backHandler.remove();
-  }, [visible, onClose]);
-
-  return (
-    <Animated.View
-      style={[
-        styles.sheetOverlay,
-        {
-          opacity: translateY.interpolate({
-            inputRange: [0, SHEET_HEIGHT],
-            outputRange: [1, 0],
-          }),
-        },
-      ]}>
-      <TouchableOpacity
-        style={StyleSheet.absoluteFill}
-        activeOpacity={1}
-        onPress={onClose}
-      />
-
-      <Animated.View
-        style={[styles.sheet, { transform: [{ translateY }] }]}
-        {...panResponder.panHandlers}>
-        <View style={styles.sheetHandle} />
-
-        <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>Upgrade Your Plan</Text>
-          <Pressable onPress={onClose} hitSlop={14}>
-            <Text style={styles.sheetClose}>×</Text>
-          </Pressable>
-        </View>
-
-        <Text style={styles.sheetSubtitle}>
-          You can only upgrade — downgrades are not allowed.
-        </Text>
-
-        <ScrollView
-          style={styles.sheetScroll}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.sheetContent}>
-          {plans.map((plan) => (
-            <View key={plan.id} style={styles.sheetPlanCard}>
-              <View style={styles.sheetPlanHeader}>
-                <Text style={styles.planName}>{plan.name}</Text>
-                <View style={styles.planPriceRow}>
-                  <Text style={styles.planPrice}>{plan.price}</Text>
-                  <Text style={styles.planPriceUnit}>/mo</Text>
-                </View>
-              </View>
-
-              <Text style={styles.planDuration}>{plan.duration}</Text>
-
-              <View style={styles.featuresList}>
-                {plan.features.map((feature, index) => (
-                  <View key={index} style={styles.featureItem}>
-                    <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="3">
-                      <Polyline points="20 6 9 17 4 12" />
-                    </Svg>
-                    <Text style={styles.featureText}>{feature}</Text>
-                  </View>
-                ))}
-              </View>
-
-              <Pressable
-                style={({ pressed }) => [
-                  styles.actionBtn,
-                  pressed && { transform: [{ scale: 0.97 }] },
-                ]}
-                onPress={() => onSelect(plan)}>
-                <Text style={styles.actionBtnText}>Upgrade to {plan.name}</Text>
-              </Pressable>
-            </View>
-          ))}
-        </ScrollView>
-      </Animated.View>
-    </Animated.View>
-  );
-}
 
 const styles = StyleSheet.create({
   container: {
@@ -862,118 +783,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sheetOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.68)',
-    justifyContent: 'flex-end',
-    zIndex: 9999,
-  },
-  sheet: {
-    height: SHEET_HEIGHT,
-    backgroundColor: 'rgba(12,12,16,0.98)',
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-  },
-  sheetHandle: {
-    alignSelf: 'center',
-    width: 46,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.35)',
-    marginBottom: 14,
-  },
-  sheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  sheetTitle: {
-    color: '#ffffff',
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  sheetClose: {
-    color: '#9ca3af',
-    fontSize: 30,
-    lineHeight: 32,
-    paddingHorizontal: 6,
-  },
-  sheetSubtitle: {
-    color: 'rgba(255,255,255,0.78)',
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 16,
-  },
-  sheetScroll: {
-    flex: 1,
-  },
-  sheetContent: {
-    paddingBottom: 12,
-    gap: 14,
-  },
-  sheetPlanCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    padding: 16,
-  },
-  sheetPlanHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
   compValue: {
     fontSize: 12,
     color: '#e5e7eb',
     textAlign: 'center',
   },
 
-  // ---- Upgrade Modal ----
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: pallete.bgmain || '#090314',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+  // ---- Upgrade Sheet ----
+  upgradeSheetBody: {
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 40,
-    maxHeight: Dimensions.get('window').height * 0.85,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    paddingTop: 14,
+    paddingBottom: 6,
   },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
+  upgradeEmpty: {
+    paddingHorizontal: 20,
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  modalClose: {
-    fontSize: 22,
-    color: pallete.textgray,
-    padding: 4,
-  },
-  modalSubtitle: {
+  upgradeEmptyText: {
     fontSize: 13,
     color: pallete.textgray,
-    marginBottom: 20,
-    lineHeight: 18,
+    lineHeight: 20,
+    textAlign: 'center',
+    paddingVertical: 28,
   },
   upgradeOptionCard: {
     backgroundColor: pallete.bgcard || 'rgba(20,20,20,0.6)',

@@ -1013,11 +1013,29 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
         if (cachedChRaw) {
           const parsedCh = JSON.parse(cachedChRaw);
-          ramBookMetaMap.set(targetId, parsedCh);
+          // Only set questions from cache if they are fully-populated objects
+          const cachedQuestions: IQuestion[] = Array.isArray(parsedCh.questions)
+            ? parsedCh.questions.filter(
+                (q: any) =>
+                  q &&
+                  typeof q === "object" &&
+                  typeof q._id === "string" &&
+                  q._id.length > 0 &&
+                  typeof q.question === "string" &&
+                  q.question.trim().length > 0 &&
+                  Array.isArray(q.options) &&
+                  q.options.length > 0
+              )
+            : [];
+
+          // Store only clean data in RAM cache
+          const cleanParsedCh = { ...parsedCh, questions: cachedQuestions };
+          ramBookMetaMap.set(targetId, cleanParsedCh);
+
           if (!isCancelledRef?.current) {
-            setBook((prev) => ({ ...(prev || {}), ...parsedCh }));
-            if (Array.isArray(parsedCh.questions) && parsedCh.questions.length > 0) {
-              setQuestions(parsedCh.questions);
+            setBook((prev) => ({ ...(prev || {}), ...cleanParsedCh }));
+            if (cachedQuestions.length > 0) {
+              setQuestions(cachedQuestions);
             }
           }
           if (!storedMediaUrl && parsedCh.media) {
@@ -1116,21 +1134,55 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          // ⚡ MongoDB se aane wale real questions extract karein
+          // ⚡ MongoDB se aane wale real questions extract & normalize karein
+          // Only keep fully-populated question objects (with question text + options).
+          // Raw ObjectId strings or stubs (no question/options) are discarded.
           const freshQuestions: IQuestion[] = Array.isArray(freshData.questions)
             ? (freshData.questions
-                .map((q: any) => (q?.content ? q.content : q))
-                .filter((q: any) => q && typeof q === "object" && (q.question || q._id)) as IQuestion[])
+                .map((q: any) => {
+                  // unwrap populated refs like { content: {...}, contentModel: "Question" }
+                  const unwrapped = q?.content && typeof q.content === "object" ? q.content : q;
+                  return unwrapped;
+                })
+                .filter(
+                  (q: any) =>
+                    q &&
+                    typeof q === "object" &&
+                    typeof q._id === "string" &&
+                    q._id.length > 0 &&
+                    typeof q.question === "string" &&
+                    q.question.trim().length > 0 &&
+                    Array.isArray(q.options) &&
+                    q.options.length > 0
+                ) as IQuestion[])
             : [];
 
           const verifiedCount = ramRealPagesMap.get(targetId) || 0;
+
+          // ⚡ If API returns no populated questions (un-populated refs), preserve
+          // whatever questions we already have in state/cache rather than wiping them.
+          const questionsToStore =
+            freshQuestions.length > 0
+              ? freshQuestions
+              : (ramBookMetaMap.get(targetId)?.questions?.filter(
+                  (q: any) =>
+                    q &&
+                    typeof q === "object" &&
+                    typeof q._id === "string" &&
+                    q._id.length > 0 &&
+                    typeof q.question === "string" &&
+                    q.question.trim().length > 0 &&
+                    Array.isArray(q.options) &&
+                    q.options.length > 0
+                ) ?? []);
+
           const mergedBook = {
             ...freshData,
-            questions: freshQuestions,
+            questions: questionsToStore,
             total: verifiedCount > 0 ? verifiedCount : freshData.total,
           };
 
-          // ⚡ Purana 5 wala cache overwrite karein
+          // ⚡ Purana cache overwrite karein
           ramBookMetaMap.set(targetId, mergedBook);
           AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
 
@@ -1140,8 +1192,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               likes: freshData.likes ?? prev?.likes ?? 0,
             }));
 
-            // ⚡ Exact DB count set karein (jo DB mein hai wahi aayega, e.g. 2)
-            setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
+            // ⚡ Only update questions state if API returned populated ones.
+            // If API returned empty (un-populated refs), keep whatever is already in state.
+            if (freshQuestions.length > 0) {
+              setQuestions(freshQuestions);
+            }
+            // else: do NOT call setQuestions(null) — leave existing questions intact
           }
           AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(() => {});
 
@@ -1203,7 +1259,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     [accessToken, isConnected, initialBookParam, downloadPdfToDisk]
   );
 
-useEffect(() => {
+ useEffect(() => {
     if (!activeChapterId) return;
     const isCancelledRef = { current: false };
 
@@ -1217,11 +1273,21 @@ useEffect(() => {
     setCurrentPage(incomingPage);
     currentPageRef.current = incomingPage;
 
-    if (Array.isArray(ramMeta?.questions) && ramMeta.questions.length > 0) {
-      setQuestions(ramMeta.questions);
-    } else {
-      setQuestions(null);
-    }
+    // Validate questions from RAM cache — only fully-populated objects, no raw string IDs
+    const ramQuestions: IQuestion[] = Array.isArray(ramMeta?.questions)
+      ? ramMeta.questions.filter(
+          (q: any) =>
+            q &&
+            typeof q === "object" &&
+            typeof q._id === "string" &&
+            q._id.length > 0 &&
+            typeof q.question === "string" &&
+            q.question.trim().length > 0 &&
+            Array.isArray(q.options) &&
+            q.options.length > 0
+        )
+      : [];
+    setQuestions(ramQuestions.length > 0 ? ramQuestions : null);
 
     setShowQnaPanel(false);
     setSolvedIds(new Set());
@@ -2609,16 +2675,24 @@ useEffect(() => {
             {questions && questions.length > 0 ? (
               <FlatList
                 data={questions}
-                keyExtractor={(item: any, index: number) => {
-                  const id = item?._id || item?.content?._id || (typeof item === "string" ? item : `q_${index}`);
-                  return String(id);
-                }}
+                keyExtractor={(item: IQuestion, index: number) =>
+                  item?._id ? String(item._id) : `q_${index}`
+                }
                 horizontal
                 pagingEnabled
                 showsHorizontalScrollIndicator={false}
-                renderItem={({ item }: { item: any }) => {
-                  const actual = item?.content && typeof item.content === "object" ? item.content : item;
-                  const qId = actual?._id || (typeof item === "string" ? item : "");
+                renderItem={({ item }: { item: IQuestion }) => {
+                  // Guard: skip any item that slipped through without required fields
+                  if (
+                    !item ||
+                    typeof item !== "object" ||
+                    !item._id ||
+                    !item.question ||
+                    !Array.isArray(item.options) ||
+                    item.options.length === 0
+                  ) {
+                    return null;
+                  }
 
                   return (
                     <View
@@ -2635,21 +2709,20 @@ useEffect(() => {
                           width: "100%",
                         }}
                         style={{ width: "100%" }}>
-                       <QuestionCard
-  question={actual}
-  onCommentClick={() => {
-    setShowComments(true); // 👈 Direct single chapter comments open karega
-  }}
-  onAttempted={(isCorrect: boolean) => {
-    if (qId) {
-      setSolvedIds((prev) => {
-        const next = new Set(prev);
-        next.add(String(qId));
-        return next;
-      });
-    }
-  }}
-/>
+                        <QuestionCard
+                          question={item}
+                          onCommentClick={() => {
+                            setCommentedQueId(item._id);
+                            setShowQnaComments(true);
+                          }}
+                          onAttempted={(isCorrect: boolean) => {
+                            setSolvedIds((prev) => {
+                              const next = new Set(prev);
+                              next.add(String(item._id));
+                              return next;
+                            });
+                          }}
+                        />
                       </ScrollView>
                     </View>
                   );
@@ -2680,6 +2753,19 @@ useEffect(() => {
         chapterId={activeChapterId}
         initialComments={Array.isArray(book?.comments) ? (book?.comments as any) : []}
         isQuestion={false}
+      />
+
+      {/* QnA question-specific comments drawer */}
+      <CommentsDrawer
+        visible={showQnaComments}
+        reload={() => loadChapterAndPdfFast(activeChapterId)}
+        onClose={() => {
+          setShowQnaComments(false);
+          setCommentedQueId("");
+        }}
+        chapterId={commentedQueId}
+        initialComments={[]}
+        isQuestion={true}
       />
 
       {resumeBanner.visible && (
