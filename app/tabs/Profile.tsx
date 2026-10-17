@@ -27,7 +27,6 @@ import { api } from "../../lib/api";
 import PopButton from "../../components/props/PopButton";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
-import { useModal } from "../../hooks/useModal";
 import { useToast } from "../../hooks/useToast";
 import { getLevelTitle } from "../../lib/levels";
 import { useStreak } from "../../hooks/useStreak";
@@ -149,7 +148,6 @@ const ProfileScreen = () => {
 
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [completeChapters, setCompleteChapters] = useState(0);
-  const { showModal } = useModal();
   const { streak } = useStreak();
   const [avatar, setAvatar] = useState(user?.image ?? "");
   const [avatarPreviewVisible, setAvatarPreviewVisible] = useState(false);
@@ -170,6 +168,7 @@ const ProfileScreen = () => {
   // Panels
   const [showStreakInfo, setShowStreakInfo] = useState(false);
   const [showLevelInfo, setShowLevelInfo] = useState(false);
+  const [showLogoutSheet, setShowLogoutSheet] = useState(false);
 
   const { showToast } = useToast();
   const [showUsernameModal, setShowUsernameModal] = useState(false);
@@ -629,12 +628,7 @@ const ProfileScreen = () => {
             <MenuItem
               label="Log Out"
               isLogout
-              onPress={() =>
-                showModal({
-                  title: "Are you sure want to LogOut",
-                  onConfirm: handleLogout,
-                })
-              }
+              onPress={() => setShowLogoutSheet(true)}
               icon={
                 <Svg
                   width={22}
@@ -745,6 +739,32 @@ const ProfileScreen = () => {
             triggers an{" "}
             <Text style={{ fontWeight: "700" }}>immediate Level Down</Text>.
           </Text>
+        </View>
+      </UpgradeSheet>
+
+      {/* ── LogOut Confirm Sheet ────────────────────────────────── */}
+      <UpgradeSheet
+        visible={showLogoutSheet}
+        onClose={() => setShowLogoutSheet(false)}
+        title="Are you sure want to LogOut"
+      >
+        <View style={styles.logoutSheetBody}>
+          <TouchableOpacity
+            style={[styles.logoutBtn, styles.logoutCancelBtn]}
+            activeOpacity={0.8}
+            onPress={() => setShowLogoutSheet(false)}>
+            <Text style={styles.logoutCancelText}>Cancel</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.logoutBtn, styles.logoutConfirmBtn]}
+            activeOpacity={0.8}
+            onPress={() => {
+              setShowLogoutSheet(false);
+              handleLogout();
+            }}>
+            <Text style={styles.logoutConfirmText}>Log Out</Text>
+          </TouchableOpacity>
         </View>
       </UpgradeSheet>
     </View>
@@ -1052,6 +1072,36 @@ const styles = StyleSheet.create({
   },
   infoSheetBody: {
     paddingHorizontal: 24,
+  },
+
+  // LogOut sheet
+  logoutSheetBody: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    gap: 12,
+  },
+  logoutBtn: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  logoutCancelBtn: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.05)",
+  },
+  logoutCancelText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  logoutConfirmBtn: {
+    backgroundColor: "#ef4444",
+  },
+  logoutConfirmText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
   },
 });
 

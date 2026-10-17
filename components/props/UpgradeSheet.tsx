@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
-  BackHandler,
   Dimensions,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -35,18 +35,20 @@ type Props = {
 };
 
 /**
- * Dark, draggable bottom sheet used for the Upgrade Plan panel.
+ * Dark, native bottom sheet (standard Upgrade Plan / info panel).
+ * Rendered inside a React Native Modal so it always floats above
+ * tab bars / nav bars and runs in its own native layer.
  * - Spring slide-in / smooth slide-out
  * - Drag handle (and header) to drag down and close
  * - Closes on outside tap or Android hardware back
  */
 const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) => {
-  const [mounted, setMountedState] = useState(false);
-  const mountedRef = useRef(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const sheetOpenRef = useRef(false);
 
-  const setMounted = (val: boolean) => {
-    mountedRef.current = val;
-    setMountedState(val);
+  const setSheetOpenSafe = (val: boolean) => {
+    sheetOpenRef.current = val;
+    setSheetOpen(val);
   };
 
   const translateY = useSharedValue(SCREEN_HEIGHT);
@@ -54,35 +56,22 @@ const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) =>
 
   // Single animation lifecycle (prevents blink on open/close)
   useEffect(() => {
-    const unmount = () => {
-      mountedRef.current = false;
-      setMountedState(false);
+    const hideSheet = () => {
+      sheetOpenRef.current = false;
+      setSheetOpen(false);
     };
 
     if (visible) {
-      setMounted(true);
+      setSheetOpenSafe(true);
       translateY.value = SCREEN_HEIGHT;
       translateY.value = withSpring(0, { damping: 85, stiffness: 300, mass: 0.9 });
-    } else if (mountedRef.current) {
+    } else if (sheetOpenRef.current) {
       translateY.value = withTiming(SCREEN_HEIGHT, { duration: 200 }, (finished) => {
-        if (finished) runOnJS(unmount)();
+        if (finished) runOnJS(hideSheet)();
       });
     }
   }, [visible, translateY]);
 
-  // Close on Android hardware back
-  useEffect(() => {
-    if (Platform.OS !== "android" || !visible) return;
-
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      onClose();
-      return true;
-    });
-
-    return () => sub.remove();
-  }, [visible, onClose]);
-
-  // Drag-to-close on the handle / header area
   const panGesture = Gesture.Pan()
     .onStart(() => {
       startY.value = translateY.value;
@@ -112,45 +101,50 @@ const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) =>
     ),
   }));
 
-  if (!mounted) return null;
-
   return (
-    <GestureHandlerRootView style={styles.root}>
-      {/* Backdrop – tap anywhere outside to close */}
-      <Animated.View style={[styles.backdrop, backdropAnimatedStyle]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-      </Animated.View>
+    <Modal
+      visible={sheetOpen}
+      transparent
+      animationType="none"
+      hardwareAccelerated
+      statusBarTranslucent
+      navigationBarTranslucent={Platform.OS === "android"}
+      onRequestClose={onClose}>
+      <GestureHandlerRootView style={styles.root}>
+        {/* Backdrop – tap anywhere outside to close */}
+        <Animated.View style={[styles.backdrop, backdropAnimatedStyle]}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        </Animated.View>
 
-      {/* Sheet */}
-      <Animated.View style={[styles.panel, panelAnimatedStyle]}>
-        <GestureDetector gesture={panGesture}>
-          <View>
-            <View style={styles.grabberArea}>
-              <View style={styles.grabHandle} />
-            </View>
+        {/* Sheet */}
+        <Animated.View style={[styles.panel, panelAnimatedStyle]}>
+          <GestureDetector gesture={panGesture}>
+            <View>
+              <View style={styles.grabberArea}>
+                <View style={styles.grabHandle} />
+              </View>
 
-            <View style={styles.headerRow}>
-              <View style={styles.headerTextWrap}>
-                <Text style={styles.title}>{title}</Text>
-                {subtitle ? (
-                  <Text style={styles.subtitle}>{subtitle}</Text>
-                ) : null}
+              <View style={styles.headerRow}>
+                <View style={styles.headerTextWrap}>
+                  <Text style={styles.title}>{title}</Text>
+                  {subtitle ? (
+                    <Text style={styles.subtitle}>{subtitle}</Text>
+                  ) : null}
+                </View>
               </View>
             </View>
-          </View>
-        </GestureDetector>
+          </GestureDetector>
 
-        {children}
-      </Animated.View>
-    </GestureHandlerRootView>
+          {children}
+        </Animated.View>
+      </GestureHandlerRootView>
+    </Modal>
   );
 };
 
 const styles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 9999,
-    elevation: 9999,
+    flex: 1,
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
