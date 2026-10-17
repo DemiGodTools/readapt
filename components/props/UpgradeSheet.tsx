@@ -6,7 +6,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import {
@@ -23,8 +22,6 @@ import Animated, {
   interpolate,
   Extrapolation,
 } from "react-native-reanimated";
-// @ts-ignore
-import Feather from "react-native-vector-icons/Feather";
 import pallete from "../../lib/Colors";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -139,14 +136,6 @@ const UpgradeSheet = ({ visible, onClose, title, subtitle, children }: Props) =>
                   <Text style={styles.subtitle}>{subtitle}</Text>
                 ) : null}
               </View>
-
-              <TouchableOpacity
-                style={styles.closeBtn}
-                activeOpacity={0.7}
-                onPress={onClose}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-                <Feather name="x" size={20} color={pallete.textgray} />
-              </TouchableOpacity>
             </View>
           </View>
         </GestureDetector>
@@ -218,9 +207,6 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     color: pallete.textgray,
     marginTop: 6,
-  },
-  closeBtn: {
-    padding: 4,
   },
 });
 

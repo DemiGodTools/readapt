@@ -33,6 +33,7 @@ import { getLevelTitle } from "../../lib/levels";
 import { useStreak } from "../../hooks/useStreak";
 import * as SecureStore from "expo-secure-store";
 import Offline from "../../components/state/Offline";
+import UpgradeSheet from "../../components/props/UpgradeSheet";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 const { width, height } = Dimensions.get("window");
 
@@ -693,15 +694,13 @@ const ProfileScreen = () => {
         </View>
       </Modal>
 
-      {/* ── Streak Info Panel ──────────────────────────────────── */}
-      <Modal visible={showStreakInfo} transparent animationType="slide">
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setShowStreakInfo(false)}
-        />
-        <View style={styles.detailsPanel}>
-          <View style={styles.dragHandle} />
-          <Text style={styles.panelHeader}>How Streak Works?</Text>
+      {/* ── Streak Info Sheet ──────────────────────────────────── */}
+      <UpgradeSheet
+        visible={showStreakInfo}
+        onClose={() => setShowStreakInfo(false)}
+        title="How Streak Works?"
+      >
+        <View style={styles.infoSheetBody}>
           <Text style={styles.panelDescription}>
             <Text style={{ fontWeight: "700" }}>Read or listen</Text> to a
             chapter <Text style={{ fontWeight: "700" }}>every day</Text> and
@@ -717,17 +716,15 @@ const ProfileScreen = () => {
             </Text>
           </Text>
         </View>
-      </Modal>
+      </UpgradeSheet>
 
-      {/* ── Level Info Panel ───────────────────────────────────── */}
-      <Modal visible={showLevelInfo} transparent animationType="slide">
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setShowLevelInfo(false)}
-        />
-        <View style={styles.detailsPanel}>
-          <View style={styles.dragHandle} />
-          <Text style={styles.panelHeader}>How Levels Works?</Text>
+      {/* ── Level Info Sheet ───────────────────────────────────── */}
+      <UpgradeSheet
+        visible={showLevelInfo}
+        onClose={() => setShowLevelInfo(false)}
+        title="How Levels Works?"
+      >
+        <View style={styles.infoSheetBody}>
           <Text style={styles.panelDescription}>
             Can you <Text style={{ fontWeight: "700" }}>reach the top</Text>?
             Your intelligence is your greatest weapon.
@@ -749,7 +746,7 @@ const ProfileScreen = () => {
             <Text style={{ fontWeight: "700" }}>immediate Level Down</Text>.
           </Text>
         </View>
-      </Modal>
+      </UpgradeSheet>
     </View>
   );
 };
@@ -1047,75 +1044,14 @@ const styles = StyleSheet.create({
   },
 
   // Panels
-  modalBackdrop: {
-    flex: 1,
-    height: 2 * height,
-    backgroundColor: "rgba(0,0,0,0.5)",
-  },
-  detailsPanel: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: "#111",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    paddingBottom: 40,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.1)",
-  },
-  dragHandle: {
-    width: 48,
-    height: 4,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    borderRadius: 10,
-    alignSelf: "center",
-    marginBottom: 16,
-  },
-  panelHeader: {
-    fontSize: 12,
-    textTransform: "uppercase",
-    letterSpacing: 1.5,
-    color: pallete.accent,
-    fontWeight: "700",
-    textAlign: "center",
-    marginBottom: 16,
-  },
   panelDescription: {
     fontSize: 14,
     lineHeight: 22,
     color: "#d1d5db",
     textAlign: "center",
   },
-  panelActions: {
-    flexDirection: "row",
-    gap: 16,
-    marginTop: 24,
-  },
-  panelBtn: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-  btnCancel: {
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
-  },
-  btnCancelText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  btnContinue: {
-    backgroundColor: "#ef4444",
-  },
-  btnContinueText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
+  infoSheetBody: {
+    paddingHorizontal: 24,
   },
 });
 
