@@ -5,7 +5,6 @@ import Home from "../../app/tabs/Home";
 import Downloads from "../../app/tabs/Downloads";
 import Profile from "../../app/tabs/Profile";
 import TopNav from "./TopNav";
-import AnimatedTabBar from "./AnimatedTabBar";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const Tab = createBottomTabNavigator();
@@ -17,7 +16,6 @@ function BottomNav() {
   return (
     <Tab.Navigator
       initialRouteName="Home"
-      tabBar={(props) => <AnimatedTabBar {...props} />}
       screenOptions={{
         headerShown: true,
         headerTransparent: true,

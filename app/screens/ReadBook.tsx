@@ -4,10 +4,12 @@ import { Easing } from "react-native";
 import Pdf, { Source } from "react-native-pdf";
 import React, {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useCallback,
+  memo,
 } from "react";
 import {
   View,
@@ -74,12 +76,14 @@ const CARD_HORIZONTAL_MARGIN =
   (SCREEN_WIDTH - PLAYER_CONTAINER_PADDING * 2 - CARD_WIDTH) / 2;
 const SHEET_HEIGHT = 400;
 const TOC_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 350);
+const SLIDER_TRACK_HEIGHT = 132;
+
+const INITIAL_CONTENT_OFFSET = { x: 0, y: MORPH_DISTANCE };
 
 const ramPdfUriMap = new Map<string, string>();
 const ramBookMetaMap = new Map<string, any>();
 const ramUrlMap = new Map<string, string>();
 const ramRealPagesMap = new Map<string, number>();
-const ramLastPageMap = new Map<string, number>();
 const activeDownloadJobs = new Map<string, Promise<string | null>>();
 
 const normalizeMediaUrl = (url?: string | null): string => {
@@ -124,6 +128,44 @@ const ANNOTATION_COLORS = [
   { id: "pink", value: "#FF5376" },
   { id: "black", value: "#000000" },
 ];
+
+// Midpoint Quadratic Bezier Curve Generator for smooth ovals, circles & handwriting
+const buildSmoothSvgPath = (
+  points: AnnotationPoint[],
+  width: number,
+  height: number
+): string => {
+  const len = points.length;
+  if (len === 0) return "";
+
+  const p0x = (points[0].x * width).toFixed(1);
+  const p0y = (points[0].y * height).toFixed(1);
+
+  if (len === 1) {
+    return `M ${p0x} ${p0y} L ${p0x} ${p0y}`;
+  }
+
+  if (len === 2) {
+    const p1x = (points[1].x * width).toFixed(1);
+    const p1y = (points[1].y * height).toFixed(1);
+    return `M ${p0x} ${p0y} L ${p1x} ${p1y}`;
+  }
+
+  let d = `M ${p0x} ${p0y}`;
+  for (let i = 1; i < len - 1; i++) {
+    const cx = points[i].x * width;
+    const cy = points[i].y * height;
+    const nx = points[i + 1].x * width;
+    const ny = points[i + 1].y * height;
+    const midX = ((cx + nx) * 0.5).toFixed(1);
+    const midY = ((cy + ny) * 0.5).toFixed(1);
+    d += ` Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${midX} ${midY}`;
+  }
+
+  const last = points[len - 1];
+  d += ` L ${(last.x * width).toFixed(1)} ${(last.y * height).toFixed(1)}`;
+  return d;
+};
 
 type Props = {
   route: {
@@ -225,6 +267,261 @@ const isStrictlyStandaloneBook = (
 
   return true;
 };
+
+interface MemoizedPdfCanvasProps {
+  pdfRef: React.MutableRefObject<any>;
+  source: Source;
+  initialPage: number;
+  onPageChanged: (page: number, numberOfPages: number) => void;
+  onLoadComplete: (numberOfPages: number) => void;
+  onPageSingleTap: () => void;
+  onScaleChanged: (scale: number) => void;
+}
+
+const MemoizedPdfCanvas = memo(
+  ({
+    pdfRef,
+    source,
+    initialPage,
+    onPageChanged,
+    onLoadComplete,
+    onPageSingleTap,
+    onScaleChanged,
+  }: MemoizedPdfCanvasProps) => {
+    const callbacksRef = useRef({
+      onPageChanged,
+      onLoadComplete,
+      onPageSingleTap,
+      onScaleChanged,
+    });
+
+    callbacksRef.current = {
+      onPageChanged,
+      onLoadComplete,
+      onPageSingleTap,
+      onScaleChanged,
+    };
+
+    const handlePageChanged = useCallback((page: number, total: number) => {
+      callbacksRef.current.onPageChanged(page, total);
+    }, []);
+
+    const handleLoadComplete = useCallback((total: number) => {
+      callbacksRef.current.onLoadComplete(total);
+    }, []);
+
+    const handleSingleTap = useCallback(() => {
+      callbacksRef.current.onPageSingleTap();
+    }, []);
+
+    const handleScaleChanged = useCallback((scale: number) => {
+      callbacksRef.current.onScaleChanged(scale);
+    }, []);
+
+    const handleError = useCallback((err: any) => {
+      console.warn("Master PDF render warning:", err);
+    }, []);
+
+    return (
+      <Pdf
+        ref={pdfRef}
+        source={source}
+        page={initialPage}
+        horizontal={true}
+        enablePaging={true}
+        fitPolicy={0}
+        spacing={0}
+        minScale={1.0}
+        maxScale={4.0}
+        enableAntialiasing={true}
+        enableAnnotationRendering={false}
+        onPageChanged={handlePageChanged}
+        onLoadComplete={handleLoadComplete}
+        onPageSingleTap={handleSingleTap}
+        onScaleChanged={handleScaleChanged}
+        onError={handleError}
+        style={styles.singlePdfView}
+      />
+    );
+  },
+  (prevProps, nextProps) =>
+    prevProps.source.uri === nextProps.source.uri &&
+    prevProps.initialPage === nextProps.initialPage
+);
+
+const CompletedStrokesSvg = memo(
+  ({
+    strokes,
+    width,
+    height,
+  }: {
+    strokes: AnnotationStroke[];
+    width: number;
+    height: number;
+  }) => {
+    return (
+      <>
+        {strokes.map((stroke, index) => {
+          const d = buildSmoothSvgPath(stroke.points, width, height);
+          if (!d) return null;
+          return (
+            <Path
+              key={`stroke-${index}`}
+              d={d}
+              fill="none"
+              stroke={stroke.color}
+              strokeWidth={stroke.strokeWidth}
+              strokeOpacity={stroke.opacity}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          );
+        })}
+      </>
+    );
+  }
+);
+
+// ⚡ Pure UI-Thread 120fps Vertical Size Slider (Zero JS Re-renders during drag)
+interface VerticalSizeSliderProps {
+  visible: boolean;
+  minSize: number;
+  maxSize: number;
+  currentSize: number;
+  color: string;
+  onChangeSize: (newSize: number) => void;
+  bottomOffset: number;
+}
+
+const VerticalSizeSlider = memo(
+  ({
+    visible,
+    minSize,
+    maxSize,
+    currentSize,
+    color,
+    onChangeSize,
+    bottomOffset,
+  }: VerticalSizeSliderProps) => {
+    const initialRatio = Math.max(
+      0,
+      Math.min(1, (currentSize - minSize) / (maxSize - minSize))
+    );
+    const ratio = useSharedValue(initialRatio);
+    const startRatio = useSharedValue(initialRatio);
+    const thumbScale = useSharedValue(1);
+
+    useEffect(() => {
+      const nextRatio = Math.max(
+        0,
+        Math.min(1, (currentSize - minSize) / (maxSize - minSize))
+      );
+      ratio.value = withTiming(nextRatio, { duration: 90 });
+    }, [currentSize, minSize, maxSize]);
+
+    const commitSizeToJS = useCallback(
+      (r: number) => {
+        const computed = minSize + r * (maxSize - minSize);
+        const rounded = Math.round(computed * 2) / 2;
+        onChangeSize(rounded);
+      },
+      [minSize, maxSize, onChangeSize]
+    );
+
+    const panGesture = useMemo(
+      () =>
+        Gesture.Pan()
+          .minDistance(0)
+          .onBegin((e) => {
+            "worklet";
+            const clampedY = Math.max(0, Math.min(SLIDER_TRACK_HEIGHT, e.y));
+            const newR = 1 - clampedY / SLIDER_TRACK_HEIGHT;
+            ratio.value = newR;
+            startRatio.value = newR;
+            thumbScale.value = withTiming(1.22, { duration: 100 });
+          })
+          .onUpdate((e) => {
+            "worklet";
+            // Pure UI-thread calculation: 0 JS bridge calls while dragging!
+            const deltaRatio = -e.translationY / SLIDER_TRACK_HEIGHT;
+            const nextR = Math.max(0, Math.min(1, startRatio.value + deltaRatio));
+            ratio.value = nextR;
+          })
+          .onFinalize(() => {
+            "worklet";
+            thumbScale.value = withTiming(1, { duration: 120 });
+            runOnJS(commitSizeToJS)(ratio.value);
+          }),
+      [commitSizeToJS]
+    );
+
+    const fillAnimatedStyle = useAnimatedStyle(() => ({
+      height: ratio.value * SLIDER_TRACK_HEIGHT,
+    }));
+
+    const thumbAnimatedStyle = useAnimatedStyle(() => {
+      const topPos = (1 - ratio.value) * SLIDER_TRACK_HEIGHT;
+      return {
+        transform: [
+          { translateY: topPos - 10 },
+          { scale: thumbScale.value },
+        ],
+      };
+    });
+
+    const previewDotAnimatedStyle = useAnimatedStyle(() => {
+      const size = minSize + ratio.value * (maxSize - minSize);
+      const clampedPreview = Math.max(4, Math.min(28, size));
+      return {
+        width: clampedPreview,
+        height: clampedPreview,
+        borderRadius: clampedPreview / 2,
+      };
+    });
+
+    if (!visible) return null;
+
+    return (
+      <View
+        style={[
+          styles.verticalSliderCard,
+          { bottom: bottomOffset },
+        ]}>
+        <View style={styles.sliderPreviewBox}>
+          <Reanimated.View
+            style={[
+              {
+                backgroundColor: color === "#000000" ? "#ffffff" : color,
+              },
+              previewDotAnimatedStyle,
+            ]}
+          />
+        </View>
+
+        <GestureDetector gesture={panGesture}>
+          <View style={styles.sliderGestureArea}>
+            <View style={styles.sliderTrackBg}>
+              <Reanimated.View
+                style={[
+                  styles.sliderTrackFill,
+                  { backgroundColor: pallete.accent },
+                  fillAnimatedStyle,
+                ]}
+              />
+            </View>
+            <Reanimated.View
+              style={[
+                styles.sliderThumb,
+                { borderColor: pallete.accent },
+                thumbAnimatedStyle,
+              ]}
+            />
+          </View>
+        </GestureDetector>
+      </View>
+    );
+  }
+);
 
 interface TocDrawerProps {
   isOpen: boolean;
@@ -541,13 +838,46 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [isDownloadedRecently, setIsDownloadedRecently] = useState(false);
 
+  // Annotation & Stroke Size State
   const [isAnnotating, setIsAnnotating] = useState(false);
   const [selectedTool, setSelectedTool] = useState<AnnotationTool>("marker");
   const [selectedColor, setSelectedColor] = useState<string>(ANNOTATION_COLORS[0].value);
+  const [markerStrokeSize, setMarkerStrokeSize] = useState<number>(3.5);
+  const [highlighterStrokeSize, setHighlighterStrokeSize] = useState<number>(22);
+  const [showSizeSlider, setShowSizeSlider] = useState<boolean>(false);
+
   const [currentPageStrokes, setCurrentPageStrokes] = useState<AnnotationStroke[]>([]);
-  const [activeStrokePoints, setActiveStrokePoints] = useState<AnnotationPoint[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const hasUnsavedChangesRef = useRef(false);
+  useEffect(() => {
+    hasUnsavedChangesRef.current = hasUnsavedChanges;
+  }, [hasUnsavedChanges]);
+
   const [isSavedRecently, setIsSavedRecently] = useState(false);
+
+  const activeSvgPathRef = useRef<any>(null);
+
+  // ⚡ Seamless Zero-Blink Stroke Handover:
+  // Jab naya stroke `currentPageStrokes` me commit ho kar render ho jaye,
+  // tabhi us exact frame par live `activeSvgPathRef` ko clear karo!
+  useLayoutEffect(() => {
+    activeSvgPathRef.current?.setNativeProps({ d: "" });
+  }, [currentPageStrokes]);
+
+  const currentToolSize =
+    selectedTool === "highlighter" ? highlighterStrokeSize : markerStrokeSize;
+  const currentToolOpacity = selectedTool === "highlighter" ? 0.32 : 0.96;
+
+  const handleSizeChange = useCallback(
+    (newSize: number) => {
+      if (selectedTool === "highlighter") {
+        setHighlighterStrokeSize(newSize);
+      } else {
+        setMarkerStrokeSize(newSize);
+      }
+    },
+    [selectedTool]
+  );
 
   const [customModal, setCustomModal] = useState<{
     visible: boolean;
@@ -567,7 +897,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const fullHeight = SCREEN_HEIGHT + insets.top + insets.bottom;
   const cardHeight = fullHeight * CARD_SCALE;
 
-  const targetCenterX = SCREEN_WIDTH / 2;
   const targetCenterY =
     CONTAINER_PADDING_TOP +
     SCROLLVIEW_MARGIN_TOP +
@@ -600,13 +929,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           if (parsed.pages && parsed.pages[pageKey]) {
             setCurrentPageStrokes(parsed.pages[pageKey]);
             setHasUnsavedChanges(false);
+            hasUnsavedChangesRef.current = false;
             return;
           }
         }
         setCurrentPageStrokes([]);
         setHasUnsavedChanges(false);
+        hasUnsavedChangesRef.current = false;
       } catch (e) {
-        console.error("Error loading annotations:", e);
+        console.warn("Error loading annotations:", e);
         setCurrentPageStrokes([]);
       }
     },
@@ -621,9 +952,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     }
   }, [currentPage, activeChapterId, isLocked, loadAnnotationsForPage]);
 
+  // ⚡ Save karte hi automatically Annotation Mode UI band ho jayega
   const saveAnnotations = async () => {
     if (!activeChapterId) return;
     try {
+      setShowSizeSlider(false);
       const key = getStorageKey(activeChapterId);
       const raw = await AsyncStorage.getItem(key);
       let data: ChapterAnnotations = raw
@@ -633,13 +966,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       data.pages[String(currentPage)] = currentPageStrokes;
       await AsyncStorage.setItem(key, JSON.stringify(data));
       setHasUnsavedChanges(false);
+      hasUnsavedChangesRef.current = false;
 
       setIsSavedRecently(true);
       setTimeout(() => {
         setIsSavedRecently(false);
-      }, 1000);
+        setIsAnnotating(false);
+      }, 240);
     } catch (e) {
-      console.error("Failed to save annotations:", e);
+      console.warn("Failed to save annotations:", e);
     }
   };
 
@@ -647,10 +982,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (currentPageStrokes.length === 0) return;
     setCurrentPageStrokes((prev) => prev.slice(0, prev.length - 1));
     setHasUnsavedChanges(true);
+    hasUnsavedChangesRef.current = true;
   };
 
   const handleClear = () => {
     if (currentPageStrokes.length === 0) return;
+    setShowSizeSlider(false);
     setCustomModal({
       visible: true,
       title: "Clear Annotations",
@@ -659,19 +996,23 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       onConfirm: () => {
         setCurrentPageStrokes([]);
         setHasUnsavedChanges(true);
+        hasUnsavedChangesRef.current = true;
         setCustomModal((prev) => ({ ...prev, visible: false }));
       },
     });
   };
 
-  const handleExitAnnotationMode = () => {
-    if (hasUnsavedChanges) {
+  const handleExitAnnotationMode = useCallback(() => {
+    setShowSizeSlider(false);
+    if (hasUnsavedChangesRef.current) {
       setCustomModal({
         visible: true,
         title: "Unsaved Annotations",
         description: "You have unsaved strokes. Do you want to discard changes?",
         confirmText: "Discard",
         onConfirm: () => {
+          setHasUnsavedChanges(false);
+          hasUnsavedChangesRef.current = false;
           loadAnnotationsForPage(activeChapterId, currentPage);
           setIsAnnotating(false);
           setCustomModal((prev) => ({ ...prev, visible: false }));
@@ -680,7 +1021,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     } else {
       setIsAnnotating(false);
     }
-  };
+  }, [activeChapterId, currentPage, loadAnnotationsForPage]);
 
   const activeStrokeRef = useRef<{
     tool: AnnotationTool;
@@ -692,60 +1033,109 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
 
+  const toolConfigRef = useRef({
+    isAnnotating,
+    selectedTool,
+    selectedColor,
+    currentToolSize,
+    currentToolOpacity,
+    fullHeight,
+  });
+  toolConfigRef.current = {
+    isAnnotating,
+    selectedTool,
+    selectedColor,
+    currentToolSize,
+    currentToolOpacity,
+    fullHeight,
+  };
+
   const panResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => isAnnotating,
-        onMoveShouldSetPanResponder: () => isAnnotating,
+        onStartShouldSetPanResponder: () => toolConfigRef.current.isAnnotating,
+        onMoveShouldSetPanResponder: () => toolConfigRef.current.isAnnotating,
         onPanResponderGrant: (evt) => {
-          if (!isAnnotating) return;
+          const cfg = toolConfigRef.current;
+          if (!cfg.isAnnotating) return;
+          setShowSizeSlider(false);
+
           const { locationX, locationY } = evt.nativeEvent;
           const normX = Math.max(0, Math.min(1, locationX / SCREEN_WIDTH));
-          const normY = Math.max(0, Math.min(1, locationY / fullHeight));
-
-          const strokeWidth = selectedTool === "highlighter" ? 22 : 3;
-          const opacity = selectedTool === "highlighter" ? 0.3 : 0.95;
+          const normY = Math.max(0, Math.min(1, locationY / cfg.fullHeight));
 
           const initialStroke = {
-            tool: selectedTool,
-            color: selectedColor,
-            opacity,
-            strokeWidth,
+            tool: cfg.selectedTool,
+            color: cfg.selectedColor,
+            opacity: cfg.currentToolOpacity,
+            strokeWidth: cfg.currentToolSize,
             points: [{ x: normX, y: normY }],
           };
 
           activeStrokeRef.current = initialStroke;
           lastPointRef.current = { x: normX, y: normY };
-          setActiveStrokePoints([{ x: normX, y: normY }]);
+
+          const d = buildSmoothSvgPath(
+            initialStroke.points,
+            SCREEN_WIDTH,
+            cfg.fullHeight
+          );
+          activeSvgPathRef.current?.setNativeProps({ d });
         },
         onPanResponderMove: (evt) => {
-          if (!isAnnotating || !activeStrokeRef.current || !lastPointRef.current) return;
+          const cfg = toolConfigRef.current;
+          if (
+            !cfg.isAnnotating ||
+            !activeStrokeRef.current ||
+            !lastPointRef.current
+          ) {
+            return;
+          }
+
           const { locationX, locationY } = evt.nativeEvent;
           const normX = Math.max(0, Math.min(1, locationX / SCREEN_WIDTH));
-          const normY = Math.max(0, Math.min(1, locationY / fullHeight));
+          const normY = Math.max(0, Math.min(1, locationY / cfg.fullHeight));
 
           const dx = normX - lastPointRef.current.x;
           const dy = normY - lastPointRef.current.y;
 
-          if (dx * dx + dy * dy > 0.00002) {
+          if (dx * dx + dy * dy > 0.000004) {
             lastPointRef.current = { x: normX, y: normY };
             activeStrokeRef.current.points.push({ x: normX, y: normY });
-            setActiveStrokePoints([...activeStrokeRef.current.points]);
+
+            const d = buildSmoothSvgPath(
+              activeStrokeRef.current.points,
+              SCREEN_WIDTH,
+              cfg.fullHeight
+            );
+            activeSvgPathRef.current?.setNativeProps({ d });
           }
         },
         onPanResponderRelease: () => {
-          if (!isAnnotating || !activeStrokeRef.current) return;
+          const cfg = toolConfigRef.current;
+          if (!cfg.isAnnotating || !activeStrokeRef.current) return;
           const completed = activeStrokeRef.current;
-          if (completed.points.length > 0) {
-            setCurrentPageStrokes((prev) => [...prev, completed]);
-            setHasUnsavedChanges(true);
-          }
+
           activeStrokeRef.current = null;
           lastPointRef.current = null;
-          setActiveStrokePoints([]);
+
+          // Note: Yahan activeSvgPathRef clear NAHI kar rahe!
+          // Woh `useLayoutEffect` me clear hoga jab `currentPageStrokes` commit ho chuka hoga -> Zero Blink!
+          if (completed.points.length > 0) {
+            setHasUnsavedChanges(true);
+            hasUnsavedChangesRef.current = true;
+            setCurrentPageStrokes((prev) => [...prev, completed]);
+          } else {
+            activeSvgPathRef.current?.setNativeProps({ d: "" });
+          }
+        },
+        onPanResponderTerminate: () => {
+          activeStrokeRef.current = null;
+          lastPointRef.current = null;
+          activeSvgPathRef.current?.setNativeProps({ d: "" });
         },
       }),
-    [isAnnotating, selectedTool, selectedColor, fullHeight]
+    []
   );
 
   const saveRecentReadProgress = useCallback(
@@ -793,7 +1183,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           resolvedTotal = targetPage;
         }
 
-       // ⚡ Ensure karein ki exit karte waqt active questions array wipe na ho
         const activeQuestionsList =
           questions && questions.length > 0
             ? questions
@@ -804,7 +1193,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         const updatedBookContent = {
           ...book,
           _id: activeChapterId,
-          questions: activeQuestionsList, // 👈 Safe questions persistence
+          questions: activeQuestionsList,
           total: resolvedTotal,
           comments: Array.isArray(book?.comments)
             ? book.comments.length
@@ -827,15 +1216,20 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         await AsyncStorage.setItem("recentReads", JSON.stringify(filtered));
         DeviceEventEmitter.emit("RECENT_READS_UPDATED", filtered);
       } catch (error) {
-        console.error("Error updating recent reads:", error);
+        console.warn("Error updating recent reads:", error);
       }
     },
-    [activeChapterId, book]
+    [activeChapterId, book, questions]
   );
 
+  // ⚡ Hardware Back / Gesture Back Handler (Properly checks `hasUnsavedChangesRef` in Annotation Mode)
   const handleBackAction = useCallback(() => {
     if (customModal.visible) {
       setCustomModal((prev) => ({ ...prev, visible: false }));
+      return true;
+    }
+    if (showSizeSlider) {
+      setShowSizeSlider(false);
       return true;
     }
     if (showDetailsPanel) {
@@ -875,9 +1269,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     return false;
   }, [
     customModal.visible,
+    showSizeSlider,
     showDetailsPanel,
     isTocOpen,
     isAnnotating,
+    hasUnsavedChanges,
+    handleExitAnnotationMode,
     showComments,
     showQnaPanel,
     isLocked,
@@ -978,6 +1375,23 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     []
   );
 
+  const extractValidQuestions = useCallback((rawList: any): IQuestion[] => {
+    if (!Array.isArray(rawList)) return [];
+    return rawList
+      .map((q: any) => (q?.content ? q.content : q))
+      .filter(
+        (q: any) =>
+          q &&
+          typeof q === "object" &&
+          typeof q._id === "string" &&
+          q._id.length > 0 &&
+          typeof q.question === "string" &&
+          q.question.trim().length > 0 &&
+          Array.isArray(q.options) &&
+          q.options.length > 0
+      );
+  }, []);
+
   const loadChapterAndPdfFast = useCallback(
     async (targetId: string, isCancelledRef?: { current: boolean }) => {
       if (!targetId || targetId === "undefined") return;
@@ -993,6 +1407,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       try {
         if (mountedLocalUri) {
           setPdfPath(mountedLocalUri);
+        }
+
+        if (initialBookParam?.questions) {
+          const initQs = extractValidQuestions(initialBookParam.questions);
+          if (initQs.length > 0 && !isCancelledRef?.current) {
+            setQuestions((prev) => (prev && prev.length > 0 ? prev : initQs));
+          }
         }
 
         const [[, diskUri], [, diskUrl], [, cachedChRaw], [, savedRealPages]] =
@@ -1013,22 +1434,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
         if (cachedChRaw) {
           const parsedCh = JSON.parse(cachedChRaw);
-          // Only set questions from cache if they are fully-populated objects
-          const cachedQuestions: IQuestion[] = Array.isArray(parsedCh.questions)
-            ? parsedCh.questions.filter(
-                (q: any) =>
-                  q &&
-                  typeof q === "object" &&
-                  typeof q._id === "string" &&
-                  q._id.length > 0 &&
-                  typeof q.question === "string" &&
-                  q.question.trim().length > 0 &&
-                  Array.isArray(q.options) &&
-                  q.options.length > 0
-              )
-            : [];
+          const cachedQuestions = extractValidQuestions(parsedCh.questions);
 
-          // Store only clean data in RAM cache
           const cleanParsedCh = { ...parsedCh, questions: cachedQuestions };
           ramBookMetaMap.set(targetId, cleanParsedCh);
 
@@ -1094,23 +1501,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       if (!isConnected) return;
 
       try {
-        const token = accessToken;
-        const headers: Record<string, string> = {
-          "Cache-Control": "no-cache",
-          Pragma: "no-cache",
-        };
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-
-        // ⚡ FIX: baseURL mein /api/user pehle se hai, isliye sirf /chapter/${targetId} call hoga
-        let chapter = await api
-          .get(`/chapter/${targetId}`, {
-            headers,
-            params: { _t: Date.now() },
-          })
-          .catch((err) => {
-            console.error("Chapter fetch error:", err?.response?.status || err?.message);
-            return null;
-          });
+        const chapter = await api.get(`/chapter/${targetId}`).catch(() => null);
 
         if (chapter?.data?.data) {
           const freshData: BookPopulated = chapter.data.data;
@@ -1128,11 +1519,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
 
-          // ⚡ MongoDB questions safely filter karein
-          const rawQList = Array.isArray(freshData.questions) ? freshData.questions : [];
-          const freshQuestions: IQuestion[] = rawQList
-            .map((q: any) => (q?.content ? q.content : q))
-            .filter((q: any) => q && typeof q === "object" && Boolean(q.question && q.options));
+          const freshQuestions = extractValidQuestions(freshData.questions);
 
           const verifiedCount = ramRealPagesMap.get(targetId) || 0;
           const mergedBook = {
@@ -1150,7 +1537,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               likes: freshData.likes ?? prev?.likes ?? 0,
             }));
 
-            // ⚡ DB ka exact question count set karein
             setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
           }
 
@@ -1195,9 +1581,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
             if (seriesId) {
               try {
-                const sRes = await api.get(`/series/${seriesId}`, {
-                  headers: token ? { Authorization: `Bearer ${token}` } : {},
-                });
+                const sRes = await api.get(`/series/${seriesId}`).catch(() => null);
                 if (sRes?.data?.data && !isCancelledRef?.current) {
                   setSeriesData(sRes.data.data);
                 }
@@ -1205,20 +1589,14 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             }
           }
         }
-      } catch (err: any) {
-        console.warn("Background chapter sync warning:", err?.message);
-      }
+      } catch (err: any) {}
     },
-    [accessToken, isConnected, initialBookParam, downloadPdfToDisk]
+    [isConnected, initialBookParam, downloadPdfToDisk, extractValidQuestions]
   );
 
- useEffect(() => {
+  useEffect(() => {
     if (!activeChapterId) return;
     const isCancelledRef = { current: false };
-
-    // ⚡ Purana stale cache wipe karein
-    AsyncStorage.removeItem(`cached_ch_${activeChapterId}`).catch(() => {});
-    ramBookMetaMap.delete(activeChapterId);
 
     const ramUri = ramPdfUriMap.get(activeChapterId) || null;
     const verifiedPages = ramRealPagesMap.get(activeChapterId) || 0;
@@ -1228,8 +1606,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     setCurrentPage(incomingPage);
     currentPageRef.current = incomingPage;
 
-    // ⚡ Yahan dummy initial questions mat set karo (jis se 1 sec flash hota hai)
-    setQuestions(null);
+    const initialValidQs = extractValidQuestions(initialBookParam?.questions);
+    setQuestions(initialValidQs.length > 0 ? initialValidQs : null);
 
     setShowQnaPanel(false);
     setSolvedIds(new Set());
@@ -1237,9 +1615,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     setRelatedStandaloneBooks([]);
     setIsLocked(true);
     setIsAnnotating(false);
+    setShowSizeSlider(false);
     setShowDetailsPanel(false);
     setIsTocOpen(false);
     setCurrentPageStrokes([]);
+    setHasUnsavedChanges(false);
+    hasUnsavedChangesRef.current = false;
     currentScrollYRef.current = MORPH_DISTANCE;
     scrollY.setValue(MORPH_DISTANCE);
     borderDriver.setValue(MORPH_DISTANCE);
@@ -1250,11 +1631,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       isCancelledRef.current = true;
     };
   }, [activeChapterId]);
+
   useEffect(() => {
     removeAllTracks();
   }, []);
 
-  // Related standalone books resolver
   useEffect(() => {
     if (!book || book.series || !accessToken) {
       setRelatedStandaloneBooks([]);
@@ -1344,9 +1725,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
         if (catId && isConnected) {
           try {
-            const catRes = await api.get(`/chapter/category/${catId}`, {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
+            const catRes = await api.get(`/chapter/category/${catId}`).catch(() => null);
             if (catRes?.data?.data && Array.isArray(catRes.data.data)) {
               rawPool = [...rawPool, ...catRes.data.data];
             }
@@ -1355,9 +1734,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
         if (rawPool.length < 6 && isConnected) {
           try {
-            const feedRes = await api.get("/feed", {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
+            const feedRes = await api.get("/feed").catch(() => null);
             const payload = feedRes?.data?.data ?? feedRes?.data;
             if (payload) {
               if (Array.isArray(payload.series)) {
@@ -1493,13 +1870,48 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     (newPage: number, numberOfPages?: number) => {
       if (newPage <= 0) return;
       if (numberOfPages && numberOfPages > 0) {
-        setTotalPages(numberOfPages);
+        setTotalPages((prev) => (prev === numberOfPages ? prev : numberOfPages));
       }
       currentPageRef.current = newPage;
-      setCurrentPage(newPage);
+      setCurrentPage((prev) => (prev === newPage ? prev : newPage));
       void saveRecentReadProgress(newPage, numberOfPages);
     },
     [saveRecentReadProgress]
+  );
+
+  const onPdfLoadComplete = useCallback(
+    (numberOfPages: number) => {
+      if (numberOfPages > 0) {
+        ramRealPagesMap.set(activeChapterId, numberOfPages);
+        totalPagesRef.current = numberOfPages;
+        setTotalPages(numberOfPages);
+        AsyncStorage.setItem(
+          `pdf_real_pages_${activeChapterId}`,
+          String(numberOfPages)
+        ).catch(() => {});
+      }
+      if (currentPageRef.current > 1 && currentPageRef.current !== incomingPage) {
+        pdfRef.current?.setPage(currentPageRef.current);
+      }
+      void saveRecentReadProgress(currentPageRef.current, numberOfPages);
+    },
+    [activeChapterId, incomingPage, saveRecentReadProgress]
+  );
+
+  const onPdfPageSingleTap = useCallback(() => {
+    if (!isAnnotating && !isTocOpen && !showDetailsPanel) {
+      setShowPdfControls((prev) => !prev);
+    }
+  }, [isAnnotating, isTocOpen, showDetailsPanel]);
+
+  const onPdfScaleChanged = useCallback(
+    (currentScale: number) => {
+      if (!isAnnotating) {
+        const shouldShow = currentScale <= 1.05;
+        setShowPdfControls((prev) => (prev === shouldShow ? prev : shouldShow));
+      }
+    },
+    [isAnnotating]
   );
 
   const goToPage = useCallback(
@@ -1534,7 +1946,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
         if (y >= MORPH_DISTANCE - 10 && !isLocked) {
           setIsLocked(true);
-          if (isAnnotating) setIsAnnotating(false);
+          if (isAnnotating) {
+            setIsAnnotating(false);
+            setShowSizeSlider(false);
+          }
         } else if (y < 20 && isLocked) {
           setIsLocked(false);
         }
@@ -1550,7 +1965,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       setIsLocked(false);
     } else if (target === MORPH_DISTANCE) {
       setIsLocked(true);
-      if (isAnnotating) setIsAnnotating(false);
+      if (isAnnotating) {
+        setIsAnnotating(false);
+        setShowSizeSlider(false);
+      }
     }
     scrollRef.current?.scrollTo({ y: target, animated: true });
   };
@@ -1617,13 +2035,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const openToc = () => setIsTocOpen(true);
   const closeToc = () => setIsTocOpen(false);
 
-  const toggleCanvasTheme = () => {
+  const toggleCanvasTheme = useCallback(() => {
     setCanvasTheme((prev) => {
       const nextTheme = prev === "dark" ? "light" : "dark";
       AsyncStorage.setItem("pdf_canvas_theme", nextTheme).catch(() => {});
       return nextTheme;
     });
-  };
+  }, []);
 
   const isDark = canvasTheme === "dark";
   const currentBgColor = isDark ? "#12121c" : "#f4f4f6";
@@ -1653,14 +2071,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     extrapolate: "clamp",
   });
 
-  const translateXTo = targetCenterX - SCREEN_WIDTH / 2;
   const translateYTo = targetCenterY - fullHeight / 2;
-
-  const translateX = scrollY.interpolate({
-    inputRange: [0, MORPH_DISTANCE],
-    outputRange: [0, translateXTo],
-    extrapolate: "clamp",
-  });
 
   const translateY = scrollY.interpolate({
     inputRange: [-100, 0, MORPH_DISTANCE, MORPH_DISTANCE + 1000],
@@ -1735,11 +2146,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (!isConnected || !accessToken) return;
 
     try {
-      await api.post(
-        "/chapter/like",
-        { chapterId: activeChapterId },
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
+      await api.post("/chapter/like", { chapterId: activeChapterId });
       reload().catch(() => {});
     } catch (err) {
       console.warn("Background like sync queued/failed:", err);
@@ -1815,72 +2222,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         throw new Error("Download URI missing");
       }
     } catch (e) {
-      console.error("In-place download error:", e);
+      console.warn("In-place download error:", e);
       setIsDownloading(false);
       setDownloadProgress(0);
       showToast({ title: "Failed to download chapter" });
     }
-  };
-
-  const renderQuestionCard = ({ item }: { item: IQuestion }) => {
-    if (!item || !item._id) return null;
-    return (
-      <QuestionCard
-        onAttempted={(isCorrect: boolean) => {
-          setSolvedIds((prev) => {
-            const next = new Set(prev);
-            next.add(item._id);
-            return next;
-          });
-        }}
-        onCommentClick={() => {
-          setCommentedQueId(item._id);
-          setShowComments(true);
-        }}
-        key={item._id}
-        question={item}
-      />
-    );
-  };
-
-  const renderStrokes = (strokes: AnnotationStroke[]) => {
-    return strokes.map((stroke, index) => {
-      const pointsString = stroke.points
-        .map((p) => `${p.x * SCREEN_WIDTH},${p.y * fullHeight}`)
-        .join(" ");
-
-      return (
-        <Polyline
-          key={`stroke-${index}`}
-          points={pointsString}
-          fill="none"
-          stroke={stroke.color}
-          strokeWidth={stroke.strokeWidth}
-          strokeOpacity={stroke.opacity}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      );
-    });
-  };
-
-  const renderActiveStroke = () => {
-    if (activeStrokePoints.length === 0) return null;
-    const pointsString = activeStrokePoints
-      .map((p) => `${p.x * SCREEN_WIDTH},${p.y * fullHeight}`)
-      .join(" ");
-
-    return (
-      <Polyline
-        points={pointsString}
-        fill="none"
-        stroke={selectedColor}
-        strokeWidth={selectedTool === "highlighter" ? 22 : 3}
-        strokeOpacity={selectedTool === "highlighter" ? 0.3 : 0.95}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    );
   };
 
   const displayAuthor =
@@ -1903,13 +2249,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       style={[
         styles.container,
         {
-          backgroundColor:
-            !isLocked && canvasTheme === "light"
-              ? currentBgColor
-              : pallete.bgmain,
+          backgroundColor: !isLocked ? currentBgColor : pallete.bgmain,
         },
       ]}>
-      {/* Morphing Master Reader Canvas */}
+      {/* Morphing Master Reader Canvas (Removed static hardware texture freeze so theme background updates instantly) */}
       <Animated.View
         pointerEvents={
           showComments || showDetailsPanel || isTocOpen
@@ -1923,7 +2266,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           {
             height: fullHeight,
             transform: [
-              { translateX },
               { translateY },
               { scaleX: scale },
               { scaleY: scale },
@@ -1941,48 +2283,22 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             },
           ]}>
           {pdfSource ? (
-            <View style={{ width: SCREEN_WIDTH, height: fullHeight }}>
-              <Pdf
+            <View
+              style={[
+                styles.pdfBackdropContainer,
+                {
+                  height: fullHeight,
+                },
+              ]}>
+              <MemoizedPdfCanvas
                 key={pdfSource.uri}
-                ref={pdfRef}
+                pdfRef={pdfRef}
                 source={pdfSource}
-                page={incomingPage}
-                horizontal={true}
-                enablePaging={true}
-                fitPolicy={0}
-                enableAntialiasing={true}
-                enableAnnotationRendering={false}
+                initialPage={incomingPage}
                 onPageChanged={onPageChangedHandler}
-                onLoadComplete={(numberOfPages) => {
-                  if (numberOfPages > 0) {
-                    ramRealPagesMap.set(activeChapterId, numberOfPages);
-                    totalPagesRef.current = numberOfPages;
-                    setTotalPages(numberOfPages);
-                    AsyncStorage.setItem(
-                      `pdf_real_pages_${activeChapterId}`,
-                      String(numberOfPages)
-                    ).catch(() => {});
-                  }
-                  if (currentPageRef.current > 1) {
-                    pdfRef.current?.setPage(currentPageRef.current);
-                  }
-                  void saveRecentReadProgress(
-                    currentPageRef.current,
-                    numberOfPages
-                  );
-                }}
-                onPageSingleTap={() => {
-                  if (!isAnnotating && !isTocOpen && !showDetailsPanel) {
-                    setShowPdfControls((prev) => !prev);
-                  }
-                }}
-                onScaleChanged={(currentScale) => {
-                  if (!isAnnotating) {
-                    setShowPdfControls(currentScale <= 1.05);
-                  }
-                }}
-                style={[styles.singlePdfView, { backgroundColor: currentBgColor }]}
-                onError={(err) => console.log("Master PDF render error:", err)}
+                onLoadComplete={onPdfLoadComplete}
+                onPageSingleTap={onPdfPageSingleTap}
+                onScaleChanged={onPdfScaleChanged}
               />
 
               {!isLocked && (
@@ -1994,8 +2310,21 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                     width={SCREEN_WIDTH}
                     height={fullHeight}
                     style={StyleSheet.absoluteFillObject}>
-                    {renderStrokes(currentPageStrokes)}
-                    {renderActiveStroke()}
+                    <CompletedStrokesSvg
+                      strokes={currentPageStrokes}
+                      width={SCREEN_WIDTH}
+                      height={fullHeight}
+                    />
+                    <Path
+                      ref={activeSvgPathRef}
+                      d=""
+                      fill="none"
+                      stroke={selectedColor}
+                      strokeWidth={currentToolSize}
+                      strokeOpacity={currentToolOpacity}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
                   </Svg>
                 </View>
               )}
@@ -2041,7 +2370,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       {/* Main Page Scroll */}
       <Animated.ScrollView
         ref={scrollRef}
-        contentOffset={{ x: 0, y: MORPH_DISTANCE }}
+        contentOffset={INITIAL_CONTENT_OFFSET}
         onScroll={handleScroll}
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={handleScrollEndDrag}
@@ -2480,6 +2809,16 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             </TouchableOpacity>
           </View>
 
+          <VerticalSizeSlider
+            visible={showSizeSlider}
+            minSize={selectedTool === "highlighter" ? 10 : 1.5}
+            maxSize={selectedTool === "highlighter" ? 42 : 16}
+            currentSize={currentToolSize}
+            color={selectedColor}
+            onChangeSize={handleSizeChange}
+            bottomOffset={insets.bottom + 68}
+          />
+
           <View
             style={[
               styles.annotationBottomBar,
@@ -2526,33 +2865,74 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
             <View style={styles.annotDivider} />
 
-            <View style={styles.annotColorsGroup}>
-              {ANNOTATION_COLORS.map((col) => {
-                const isSelected = selectedColor === col.value;
-                return (
-                  <TouchableOpacity
-                    key={col.id}
-                    onPress={() => setSelectedColor(col.value)}
-                    activeOpacity={0.8}
-                    style={[
-                      styles.colorDotWrapper,
-                      isSelected && styles.colorDotWrapperActive,
-                    ]}>
-                    <View
-                      style={[styles.colorDot, { backgroundColor: col.value }]}
-                    />
-                  </TouchableOpacity>
-                );
-              })}
+            <View style={styles.annotRightControls}>
+              <View style={styles.annotColorsGroup}>
+                {ANNOTATION_COLORS.map((col) => {
+                  const isSelected = selectedColor === col.value;
+                  return (
+                    <TouchableOpacity
+                      key={col.id}
+                      onPress={() => setSelectedColor(col.value)}
+                      activeOpacity={0.8}
+                      style={[
+                        styles.colorDotWrapper,
+                        isSelected && styles.colorDotWrapperActive,
+                      ]}>
+                      <View
+                        style={[styles.colorDot, { backgroundColor: col.value }]}
+                      />
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.sizeIconButton,
+                  showSizeSlider && styles.sizeIconButtonActive,
+                ]}
+                onPress={() => setShowSizeSlider((prev) => !prev)}
+                activeOpacity={0.8}>
+                <Svg
+                  width={18}
+                  height={18}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke={showSizeSlider ? "#ffffff" : "#d1d5db"}
+                  strokeWidth="2">
+                  <Circle cx="12" cy="12" r="9" strokeOpacity="0.45" />
+                  <Circle
+                    cx="12"
+                    cy="12"
+                    r="4"
+                    fill={showSizeSlider ? "#ffffff" : pallete.accent}
+                    stroke="none"
+                  />
+                </Svg>
+                <Text style={styles.sizeBadgeLabel}>
+                  {Math.round(currentToolSize)}
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
       )}
 
-      {/* Confirmation Modal */}
-      {customModal.visible && (
-        <View style={styles.customModalOverlay}>
-          <View style={styles.customModalContainer}>
+      {/* ⚡ Smooth Native Fade Dialog Modal for Clear Page & Unsaved Changes */}
+      <Modal
+        visible={customModal.visible}
+        transparent={true}
+        animationType="fade"
+        statusBarTranslucent={true}
+        onRequestClose={() => setCustomModal((prev) => ({ ...prev, visible: false }))}>
+        <TouchableOpacity
+          style={styles.customModalOverlay}
+          activeOpacity={1}
+          onPress={() => setCustomModal((prev) => ({ ...prev, visible: false }))}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.customModalContainer}
+            onPress={() => {}}>
             <Text style={styles.customModalTitle}>{customModal.title}</Text>
             <Text style={styles.customModalDesc}>{customModal.description}</Text>
 
@@ -2561,7 +2941,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 style={styles.modalCancelBtn}
                 onPress={() => setCustomModal((prev) => ({ ...prev, visible: false }))}
                 activeOpacity={0.8}>
-                <Text style={styles.modalCancelText}>{customModal.cancelText || "Cancel"}</Text>
+                <Text style={styles.modalCancelText}>
+                  {customModal.cancelText || "Cancel"}
+                </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -2571,9 +2953,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 <Text style={styles.modalConfirmText}>{customModal.confirmText}</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
-      )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* High-priority Top-Level Overlay Components */}
       <TocDrawer
@@ -2589,7 +2971,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         book={book}
         totalPages={totalCountResolved}
       />
-   {/* FULLSCREEN QNA MODAL */}
+
+      {/* FULLSCREEN QNA MODAL */}
       <Modal
         visible={showQnaPanel}
         animationType="slide"
@@ -2601,7 +2984,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             backgroundColor: "#08090a",
             paddingTop: insets.top + 8,
           }}>
-          {/* Header */}
           <View style={styles.qnaHeader}>
             <Text style={styles.qnaHeaderTitle}>Questions</Text>
             <TouchableOpacity
@@ -2611,7 +2993,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             </TouchableOpacity>
           </View>
 
-          {/* Cards Area */}
           <View style={{ flex: 1, justifyContent: "center" }}>
             {questions && questions.length > 0 ? (
               <FlatList
@@ -2623,7 +3004,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 pagingEnabled
                 showsHorizontalScrollIndicator={false}
                 renderItem={({ item }: { item: IQuestion }) => {
-                  // Guard: skip any item that slipped through without required fields
                   if (
                     !item ||
                     typeof item !== "object" ||
@@ -2656,7 +3036,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                             setCommentedQueId(item._id);
                             setShowQnaComments(true);
                           }}
-                          onAttempted={(isCorrect: boolean) => {
+                          onAttempted={() => {
                             setSolvedIds((prev) => {
                               const next = new Set(prev);
                               next.add(String(item._id));
@@ -2678,7 +3058,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             )}
           </View>
 
-          {/* Bottom Left Solved Indicator */}
           <View style={styles.qnaIndicatorBottomLeft}>
             <Text style={styles.qnaProgressText}>
               {solvedIds.size} / {questions?.length || 0}
@@ -2696,7 +3075,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         isQuestion={false}
       />
 
-      {/* QnA question-specific comments drawer */}
       <CommentsDrawer
         visible={showQnaComments}
         reload={() => loadChapterAndPdfFast(activeChapterId)}
@@ -2947,9 +3325,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1,
   },
+  pdfBackdropContainer: {
+    width: SCREEN_WIDTH,
+  },
   singlePdfView: {
+    flex: 1,
     width: SCREEN_WIDTH,
     height: "100%",
+   backgroundColor: "#01000000",
   },
   bookDetails: { marginTop: 16 },
   bookTitle: {
@@ -3010,10 +3393,6 @@ const styles = StyleSheet.create({
   relatedGridCardWrapper: {
     width: "48%",
     marginBottom: 8,
-  },
-  pollSection: {
-    marginBottom: 20,
-    overflow: "hidden",
   },
   tocBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -3212,11 +3591,6 @@ const styles = StyleSheet.create({
   annotSaveActionSuccess: {
     backgroundColor: "rgba(0, 210, 180, 0.25)",
   },
-  annotTopText: {
-    color: "#ffffff",
-    fontSize: 13,
-    fontWeight: "600",
-  },
   annotationBottomBar: {
     position: "absolute",
     bottom: 0,
@@ -3226,18 +3600,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: "rgba(255,255,255,0.08)",
   },
   annotToolsGroup: {
     flexDirection: "row",
-    gap: 10,
+    gap: 8,
   },
   toolChip: {
-    width: 42,
-    height: 40,
+    width: 40,
+    height: 38,
     borderRadius: 8,
     backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
@@ -3253,15 +3627,20 @@ const styles = StyleSheet.create({
     width: 1,
     height: 24,
     backgroundColor: "rgba(255,255,255,0.1)",
-    marginHorizontal: 10,
+    marginHorizontal: 8,
+  },
+  annotRightControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
   annotColorsGroup: {
     flexDirection: "row",
-    gap: 12,
+    gap: 8,
     alignItems: "center",
   },
   colorDotWrapper: {
-    padding: 3,
+    padding: 2.5,
     borderRadius: 16,
     borderWidth: 1.5,
     borderColor: "transparent",
@@ -3270,29 +3649,105 @@ const styles = StyleSheet.create({
     borderColor: "#ffffff",
   },
   colorDot: {
+    width: 19,
+    height: 19,
+    borderRadius: 9.5,
+  },
+  sizeIconButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    height: 36,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  sizeIconButtonActive: {
+    backgroundColor: pallete.accent,
+    borderColor: pallete.accent,
+  },
+  sizeBadgeLabel: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "700",
+    minWidth: 14,
+    textAlign: "center",
+  },
+  verticalSliderCard: {
+    position: "absolute",
+    right: 16,
+    width: 52,
+    backgroundColor: "rgba(18, 18, 26, 0.96)",
+    borderRadius: 26,
+    paddingVertical: 14,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 16,
+    elevation: 25,
+  },
+  sliderPreviewBox: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  sliderGestureArea: {
+    width: 44,
+    height: SLIDER_TRACK_HEIGHT,
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  sliderTrackBg: {
+    width: 6,
+    height: SLIDER_TRACK_HEIGHT,
+    borderRadius: 3,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    overflow: "hidden",
+    justifyContent: "flex-end",
+  },
+  sliderTrackFill: {
+    width: "100%",
+    borderRadius: 3,
+  },
+  sliderThumb: {
+    position: "absolute",
+    top: 0,
     width: 20,
     height: 20,
     borderRadius: 10,
+    backgroundColor: "#ffffff",
+    borderWidth: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 5,
   },
   customModalOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.72)",
-    zIndex: 900,
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.65)",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 28,
   },
   customModalContainer: {
     width: "100%",
-    backgroundColor: "rgba(22, 22, 28, 0.98)",
-    borderRadius: 16,
+    backgroundColor: "#181820",
+    borderRadius: 18,
     padding: 22,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
     shadowColor: "#000",
-    shadowOpacity: 0.4,
-    shadowRadius: 18,
-    elevation: 8,
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 16,
   },
   customModalTitle: {
     fontSize: 17,
@@ -3301,10 +3756,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   customModalDesc: {
-    fontSize: 13,
+    fontSize: 13.5,
     color: "#9ca3af",
-    lineHeight: 18,
-    marginBottom: 20,
+    lineHeight: 19,
+    marginBottom: 22,
   },
   customModalButtons: {
     flexDirection: "row",
@@ -3312,10 +3767,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   modalCancelBtn: {
-    paddingVertical: 9,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.07)",
   },
   modalCancelText: {
     color: "#e5e7eb",
@@ -3410,9 +3865,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   modalConfirmBtn: {
-    paddingVertical: 9,
-    paddingHorizontal: 16,
-    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
     backgroundColor: "#eb4040",
   },
   modalConfirmText: {

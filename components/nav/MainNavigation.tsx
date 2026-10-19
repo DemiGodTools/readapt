@@ -1,4 +1,4 @@
-import { createNavigationContainerRef, NavigationContainer } from "@react-navigation/native";
+import { createNavigationContainerRef, NavigationContainer, DarkTheme } from "@react-navigation/native";
 import { createStackNavigator } from "@react-navigation/stack";
 import {
   SafeAreaProvider,
@@ -42,6 +42,15 @@ export const navigationRef = createNavigationContainerRef()
 // FIX: Move this out here so it never gets recreated on re-renders
 const Stack = createStackNavigator<RootStackParamList>();
 
+const navTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: "#090314",
+    card: "rgb(12, 7, 26)",
+  },
+};
+
 export default function MainNavigation() {
   const {isLoggedIn, isLoading} = useAuth();
   const {user, loadingUser} = useUser()
@@ -79,12 +88,13 @@ export default function MainNavigation() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer ref={navigationRef}>
+      <NavigationContainer ref={navigationRef} theme={navTheme}>
         <Stack.Navigator
           initialRouteName={initialPage}
           screenOptions={({ navigation }) => ({
             cardStyle: {
               paddingBottom: 0,
+              backgroundColor: "#090314",
             },
             headerShown: true,
             headerTransparent: false,

@@ -1,0 +1,12 @@
+diff --git a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
+index e9a1d16..afe3334 100644
+--- a/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
++++ b/node_modules/react-native-pdf/android/src/main/java/org/wonday/pdf/PdfView.java
+@@ -338,6 +338,7 @@ public class PdfView extends PDFView implements OnPageChangeListener,OnLoadCompl
+                 .password(this.password)
+                 .enableAntialiasing(this.enableAntialiasing)
+                 .pageFitPolicy(this.fitPolicy)
++                .fitEachPage(true)
+                 .pageSnap(this.pageSnap)
+                 .autoSpacing(this.autoSpacing)
+                 .pageFling(this.pageFling)
