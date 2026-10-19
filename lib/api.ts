@@ -18,17 +18,18 @@ export const configureApiInterceptor = (
   showToast = toastFn;
 };
 
-// ⚡ Request Interceptor: SecureStore se token nikal kar real JWT attach karein
+// Request Interceptor: SecureStore se token uthayega
 api.interceptors.request.use(async (config) => {
-  if (!isConnected) {
+  const method = config.method?.toLowerCase();
+
+  if (!isConnected && method !== "get") {
     if (showToast) {
-      showToast("You are offline. Request cannot be completed.");
+      showToast("You are offline. Action cannot be completed.");
     }
     return Promise.reject(new axios.Cancel("Offline request blocked."));
   }
 
   try {
-    // 1. Pehle SecureStore check karein (jahan Login.tsx token save karta hai)
     const stored = await SecureStore.getItemAsync("accessToken");
     if (stored) {
       const parsed = JSON.parse(stored);
@@ -36,24 +37,13 @@ api.interceptors.request.use(async (config) => {
       if (realJwt && typeof realJwt === "string") {
         config.headers.Authorization = `Bearer ${realJwt}`;
       }
-    } else {
-      // 2. Fallback AsyncStorage
-      const asyncToken = await AsyncStorage.getItem("accessToken");
-      if (asyncToken) {
-        config.headers.Authorization = `Bearer ${asyncToken}`;
-      }
     }
-  } catch (err) {
-    // Token extraction failure par continue
-  }
+  } catch (err) {}
 
   return config;
 });
 
-// Response Interceptor: Pure errors pass karein taaki retry ho sake
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
