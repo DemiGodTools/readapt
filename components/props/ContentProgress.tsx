@@ -15,7 +15,6 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
-  withSpring,
   Easing,
 } from "react-native-reanimated";
 import pallete from "../../lib/Colors";
@@ -138,11 +137,17 @@ const Contentprogress: React.FC<Props> = memo(
     }));
 
     const handlePressIn = () => {
-      scaleAnim.value = withSpring(0.975, { damping: 15, stiffness: 300 });
+      scaleAnim.value = withTiming(0.98, {
+        duration: 90,
+        easing: Easing.out(Easing.quad),
+      });
     };
 
     const handlePressOut = () => {
-      scaleAnim.value = withSpring(1, { damping: 15, stiffness: 300 });
+      scaleAnim.value = withTiming(1, {
+        duration: 140,
+        easing: Easing.out(Easing.quad),
+      });
     };
 
     const handlePress = () => {
