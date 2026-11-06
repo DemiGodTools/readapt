@@ -1,6 +1,5 @@
 import React, { memo, useEffect } from "react";
 import {
-  Image,
   Text,
   View,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
 import Svg, { Path } from "react-native-svg";
 import { useNavigation } from "@react-navigation/native";
 import { RootStackParamList } from "../nav/MainNavigation";
+import CachedImage from "./CachedImage";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import Animated, {
   useSharedValue,
@@ -42,7 +42,7 @@ const toSeconds = (val: any): number => {
     return val > 10000 ? Math.floor(val / 1000) : Math.floor(val);
   }
   const str = String(val).trim();
-  if (str === "00:10" || str === "10") return 0;
+  if (!str) return 0;
   if (str.includes(":")) {
     const parts = str.split(":").map((p) => parseFloat(p) || 0);
     if (parts.length === 2) return parts[0] * 60 + parts[1];
@@ -100,11 +100,11 @@ const Contentprogress: React.FC<Props> = memo(
       if (totalSec > 0 && totalSec < currentSec) totalSec = currentSec;
 
       displayCurrent = formatClock(currentSec);
-      displayTotal = totalSec > 0 ? formatClock(totalSec) : "--:--";
+      displayTotal = totalSec > 0 ? formatClock(totalSec) : (currentSec > 0 ? formatClock(currentSec) : "00:00");
       progressPct =
         totalSec > 0
           ? Math.min(100, Math.max(0, (currentSec / totalSec) * 100))
-          : 0;
+          : (currentSec > 0 ? 100 : 0);
     } else {
       targetPage = Math.max(1, parseInt(String(readtill), 10) || 1);
       const parsedTotal = parseInt(String(total), 10) || 0;
@@ -202,7 +202,12 @@ const Contentprogress: React.FC<Props> = memo(
           <View style={styles.itemContent}>
             {/* Thumbnail */}
             <View style={styles.thumbWrapper}>
-              <Image source={{ uri: cover }} style={styles.listThumb} />
+              <CachedImage
+                uri={cover}
+                style={styles.listThumb}
+                transition={0}
+                letterSize={18}
+              />
               <View
                 style={[
                   styles.thumbBadge,
@@ -234,7 +239,7 @@ const Contentprogress: React.FC<Props> = memo(
                   <>
                     <Text style={styles.progressRead}>{displayCurrent}</Text>
                     <Text style={styles.progressTotal}>
-                      {` / ${displayTotal} mins`}
+                      {` / ${displayTotal}`}
                     </Text>
                   </>
                 ) : (

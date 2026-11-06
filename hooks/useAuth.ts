@@ -1,81 +1,106 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import * as SecureStore from "expo-secure-store";
-import * as Network from "expo-network";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { DeviceEventEmitter } from "react-native";
+
+export const notifyAuthChange = () => {
+  DeviceEventEmitter.emit("AUTH_STATE_CHANGED");
+};
 
 const useAuth = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [accessToken, setAccessToken] = useState("");
   const [isLoading, setisLoading] = useState(true);
 
-  const checkLogin = async () => {
-    const storedToken = await SecureStore.getItemAsync("accessToken");
+  const checkLogin = useCallback(async () => {
+    try {
+      let storedToken: string | null = null;
+      try {
+        storedToken = await SecureStore.getItemAsync("accessToken");
+      } catch (e) {
+        console.warn("SecureStore read error, falling back to AsyncStorage:", e);
+      }
 
-    if (!storedToken) {
-      setisLoading(false);
-      setIsLoggedIn(false);
-      return;
-    }
-    const acessToken: { token: string; expiry: string } =
-      JSON.parse(storedToken);
+      if (!storedToken) {
+        try {
+          storedToken = await AsyncStorage.getItem("accessToken");
+        } catch {}
+      }
 
-    // if (acessToken) {
-    //   console.log(acessToken.token,"accessToken");
-    //   console.log(acessToken.expiry,"expiry");
-    // }
+      if (!storedToken) {
+        setisLoading(false);
+        setIsLoggedIn(false);
+        setAccessToken("");
+        return;
+      }
 
-    if (!acessToken) {
-      setIsLoggedIn(false);
-      console.log("acess token not found");
-      return;
-    }
-    // console.log("token found")
+      let tokenString = "";
+      let expiryTime = 0;
 
-    const expiryTime = parseInt(acessToken.expiry);
-    const now = Date.now();
+      try {
+        const parsed = JSON.parse(storedToken);
+        if (parsed && typeof parsed === "object") {
+          tokenString = parsed.token || "";
+          if (parsed.expiry) {
+            expiryTime = parseInt(parsed.expiry, 10);
+          }
+        } else if (typeof parsed === "string") {
+          tokenString = parsed;
+        }
+      } catch {
+        tokenString = storedToken;
+      }
 
-    if (now > expiryTime) {
-      console.log("you should exxpire")
-      await SecureStore.deleteItemAsync("accessToken");
-      setIsLoggedIn(false);
-      setisLoading(false);
-      return;
-    } else {
-      setAccessToken(acessToken.token);
+      if (!tokenString || typeof tokenString !== "string" || !tokenString.trim()) {
+        setIsLoggedIn(false);
+        setAccessToken("");
+        setisLoading(false);
+        return;
+      }
+
+      const now = Date.now();
+      if (expiryTime && !isNaN(expiryTime) && expiryTime > 0 && now > expiryTime) {
+        console.log("Token expired, clearing session");
+        await SecureStore.deleteItemAsync("accessToken").catch(() => {});
+        await AsyncStorage.removeItem("accessToken").catch(() => {});
+        setIsLoggedIn(false);
+        setAccessToken("");
+        setisLoading(false);
+        return;
+      }
+
+      const cleanToken = tokenString.trim();
+      setAccessToken(cleanToken);
       setIsLoggedIn(true);
+
+      // Keep both storages synchronized
+      const tokenPayload = JSON.stringify({
+        token: cleanToken,
+        expiry: expiryTime || now + 1000 * 60 * 60 * 24 * 30,
+      });
+      AsyncStorage.setItem("accessToken", tokenPayload).catch(() => {});
+    } catch (err) {
+      console.warn("checkLogin error:", err);
+      setIsLoggedIn(false);
+      setAccessToken("");
+    } finally {
+      setisLoading(false);
     }
-    setisLoading(false);
-
-    // try {
-    //   console.log("Checking login status with backend...");
-    //   const res = await fetch(
-    //     "http://10.0.2.2:3000/user/login/verify",
-    //     {
-    //       method: "POST",
-    //       headers: { Authorization: `Bearer ${acessToken.token}` },
-    //     }
-    //   );
-
-    //   if (res.ok) {
-
-    //     setIsLoggedIn(true);
-    //     setisLoading(false);
-    //     console.log("Login check successful");
-    //   } else {
-    //     setisLoading(false);
-    //     console.log("Login check failed:", res.statusText);
-    //     setIsLoggedIn(false);
-    //   }
-    // } catch (err) {
-    //   setisLoading(false);
-    //   console.error("Login check failed:", err.message);
-    //   setIsLoggedIn(false);
-    // }
-  };
-  useEffect(() => {
-    checkLogin();
   }, []);
 
-  return {accessToken, isLoggedIn, isLoading, checkLogin};
+  useEffect(() => {
+    checkLogin();
+
+    const sub = DeviceEventEmitter.addListener("AUTH_STATE_CHANGED", () => {
+      checkLogin();
+    });
+
+    return () => {
+      sub.remove();
+    };
+  }, [checkLogin]);
+
+  return { accessToken, isLoggedIn, isLoading, checkLogin };
 };
 
 export default useAuth;

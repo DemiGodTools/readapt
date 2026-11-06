@@ -1,29 +1,27 @@
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import {
   Text,
   View,
   StyleSheet,
   TouchableOpacity,
-  Image,
+  Pressable,
   ScrollView,
   Dimensions,
-  FlatList,
+  Platform,
+  Vibration,
   ActivityIndicator,
+  Share,
+  DeviceEventEmitter,
+  BackHandler,
 } from "react-native";
-import axios from "axios";
-import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
-import Svg, { Path, Circle, Polyline, Line, G } from "react-native-svg";
+import Svg, { Path, Circle, Polyline, Line, Rect } from "react-native-svg";
 import { LinearGradient } from "expo-linear-gradient";
-import { ISeries, ISeriesContent } from "../../types/Series";
-import { IChapter } from "../../types/Chapter";
-import PopButton from "../../components/props/PopButton";
-import useAuth from "../../hooks/useAuth";
-import { api } from "../../lib/api";
-import { useToast } from "../../hooks/useToast";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import CachedImage, { isRenderableUrl } from "../../components/props/CachedImage";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useNavigation, useFocusEffect } from "@react-navigation/native";
-
-const { width } = Dimensions.get("window");
-
+import * as SecureStore from "expo-secure-store";
 import {
   Gesture,
   GestureDetector,
@@ -32,332 +30,307 @@ import {
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
-  withSpring,
   withTiming,
+  Easing,
   runOnJS,
 } from "react-native-reanimated";
+
 import pallete from "../../lib/Colors";
-import ContentCard from "../../components/props/ContentCard";
-import { useModal } from "../../hooks/useModal";
-import { IUser } from "../../types/User";
-import { IRecentRead } from "../../types/Storage";
+import { api } from "../../lib/api";
+import useAuth from "../../hooks/useAuth";
 import { useUser } from "../../hooks/useUser";
-import Offline from "../../components/state/Offline";
+import { useToast } from "../../hooks/useToast";
 import { useNetworkStatus } from "../../hooks/useNetwork";
+import { canUserAccessChapter } from "../../lib/entitlements";
+import { RootStackParamList } from "../../components/nav/MainNavigation";
+import { ISeries } from "../../types/Series";
+import ContentCard from "../../components/props/ContentCard";
+import Offline from "../../components/state/Offline";
 
-const SHEET_HEIGHT = 320;
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+const COMPLETED_QNA_KEY_PREFIX = "@completed_qna_chapters_";
 
-const activeSeriesRequests = new Map<string, Promise<any>>();
+// --- SVG Icons ---
+const BackIcon = () => (
+  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M19 12H5M5 12L12 19M5 12L12 5"
+      stroke="#ffffff"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);
 
-interface DetailsPanelProps {
-  isOpen: boolean;
-  onClose: () => void;
-  data?: {
-    chapters?: ISeriesContent[];
-    published?: string;
-    description?: string;
-  };
-}
+const ShareIcon = () => (
+  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M4 12V20C4 20.5304 4.21071 21.0391 4.58579 21.4142C4.96086 21.7893 5.46957 22 6 22H18C18.5304 22 19.0391 21.7893 19.4142 21.4142C19.7893 21.0391 20 20.5304 20 20V12"
+      stroke="#ffffff"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <Polyline points="16 6 12 2 8 6" stroke="#ffffff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+    <Line x1="12" y1="2" x2="12" y2="15" stroke="#ffffff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
 
-const DetailsPanel = ({ isOpen, onClose, data }: DetailsPanelProps) => {
-  const translateY = useSharedValue(SHEET_HEIGHT);
+const ExitDoorIcon = () => (
+  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"
+      stroke="#f87171"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <Polyline
+      points="16 17 21 12 16 7"
+      stroke="#f87171"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <Line
+      x1="21"
+      y1="12"
+      x2="9"
+      y2="12"
+      stroke="#f87171"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);
 
-  useEffect(() => {
-    if (isOpen) {
-      translateY.value = withSpring(0, { damping: 100 });
-    } else {
-      translateY.value = withTiming(SHEET_HEIGHT);
-    }
-  }, [isOpen]);
+const BookIcon = ({ color = "#94a3b8" }: { color?: string }) => (
+  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"
+      stroke={color}
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <Path
+      d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"
+      stroke={color}
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);
 
-  const handleClose = () => {
-    translateY.value = withTiming(SHEET_HEIGHT, {}, () => {
-      runOnJS(onClose)();
-    });
-  };
+const UsersIcon = ({ color = "#94a3b8" }: { color?: string }) => (
+  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2}>
+    <Path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+    <Circle cx="9" cy="7" r="4" />
+    <Path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+    <Path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </Svg>
+);
 
-  const dragGesture = Gesture.Pan()
-    .onChange((event) => {
-      if (event.translationY > 0) {
-        translateY.value = event.translationY;
-      }
-    })
-    .onEnd((event) => {
-      if (event.translationY > 80 || event.velocityY > 500) {
-        runOnJS(handleClose)();
-      } else {
-        translateY.value = withSpring(0, { damping: 105 });
-      }
-    });
+const LockSmallIcon = () => (
+  <Svg width={15} height={15} viewBox="0 0 24 24" fill="none">
+    <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke="#94a3b8" strokeWidth={2} />
+    <Path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="#94a3b8" strokeWidth={2} strokeLinecap="round" />
+  </Svg>
+);
 
-  const animatedStyles = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-  }));
+const ChevronRightIcon = ({ color = "#2dd4bf", size = 18 }: { color?: string; size?: number }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M9 18L15 12L9 6"
+      stroke={color}
+      strokeWidth={2.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);
 
-  type ChapterItem = Extract<ISeriesContent, { contentModel: "Chapter" }>;
+const CloseIcon = () => (
+  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+    <Path d="M18 6L6 18M6 6L18 18" stroke="#94a3b8" strokeWidth={2} strokeLinecap="round" />
+  </Svg>
+);
 
-  const { totalChapters, totalPdfChapters, totalAudioChapters } = useMemo(() => {
-    const chapters: ChapterItem[] =
-      (data?.chapters?.filter(
-        (item): item is ChapterItem => item.contentModel === "Chapter"
-      ) as ChapterItem[]) ?? [];
+const AlertTriangleIcon = () => (
+  <Svg width={32} height={32} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M10.29 3.86L1.82 18A2 2 0 003.55 21H20.45A2 2 0 0022.18 18L13.71 3.86A2 2 0 0010.29 3.86Z"
+      stroke="#f59e0b"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <Line x1="12" y1="9" x2="12" y2="13" stroke="#f59e0b" strokeWidth={2} strokeLinecap="round" />
+    <Circle cx="12" cy="17" r="1" fill="#f59e0b" />
+  </Svg>
+);
 
-    const pdfs = chapters.filter((item) => item.content?.type === "pdf");
-    const audios = chapters.filter((item) => item.content?.type === "audio");
-
-    return {
-      totalChapters: chapters,
-      totalPdfChapters: pdfs,
-      totalAudioChapters: audios,
-    };
-  }, [data?.chapters]);
-
-  if (!isOpen) return null;
-
-  return (
-    <GestureHandlerRootView style={StyleSheet.absoluteFill}>
-      <TouchableOpacity
-        style={panelStyles.backdrop}
-        activeOpacity={1}
-        onPress={handleClose}
-      />
-
-      <GestureDetector gesture={dragGesture}>
-        <Animated.View style={[panelStyles.detailsPanel, animatedStyles]}>
-          <View style={panelStyles.dragHandle} />
-
-          <View style={panelStyles.panelSRow}>
-            <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{totalChapters.length}</Text>
-              <Text style={panelStyles.pLabel}>Chapters</Text>
-            </TouchableOpacity>
-
-            <View style={panelStyles.pDivider} />
-
-            <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{totalPdfChapters.length}</Text>
-              <Text style={panelStyles.pLabel}>PDFs</Text>
-            </TouchableOpacity>
-
-            <View style={panelStyles.pDivider} />
-
-            <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{totalAudioChapters.length}</Text>
-              <Text style={panelStyles.pLabel}>Audios</Text>
-            </TouchableOpacity>
-
-            <View style={panelStyles.pDivider} />
-
-            <TouchableOpacity activeOpacity={0.8} style={panelStyles.pItem}>
-              <Text style={panelStyles.pVal}>{data?.published}</Text>
-              <Text style={panelStyles.pLabel}>Published</Text>
-            </TouchableOpacity>
-          </View>
-
-          <TouchableOpacity activeOpacity={0.9}>
-            <Text style={panelStyles.panelDescription}>
-              {data?.description ??
-                "This comprehensive series covers everything from fundamentals to advanced analysis."}
-            </Text>
-          </TouchableOpacity>
-        </Animated.View>
-      </GestureDetector>
-    </GestureHandlerRootView>
-  );
+const formatCompactNumber = (num?: number): string => {
+  if (!num || isNaN(num)) return "0";
+  if (num >= 1000000) return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (num >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  return num.toString();
 };
 
-const panelStyles = StyleSheet.create({
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.4)",
-  },
-  detailsPanel: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: pallete.panelbg,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: pallete.paddingside,
-    paddingTop: 24,
-    paddingBottom: 40,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255, 255, 255, 0.1)",
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: -10 },
-    shadowOpacity: 0.6,
-    shadowRadius: 40,
-    elevation: 20,
-  },
-  dragHandle: {
-    width: 40,
-    height: 5,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    borderRadius: 10,
-    alignSelf: "center",
-    position: "absolute",
-    top: 10,
-  },
-  panelSRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 20,
-    marginTop: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
-    paddingBottom: 16,
-  },
-  pItem: {
-    flexDirection: "column",
-    alignItems: "center",
-    gap: 4,
-  },
-  pVal: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: pallete.textwhite,
-  },
-  pLabel: {
-    fontSize: 10,
-    color: pallete.textgray,
-    textTransform: "uppercase",
-  },
-  pDivider: {
-    width: 1,
-    height: 20,
-    backgroundColor: "rgba(255, 255, 255, 0.1)",
-  },
-  panelDescription: {
-    fontSize: 13,
-    lineHeight: 20.8,
-    color: "#d1d5db",
-  },
-});
+const getInitials = (name?: string): string => {
+  if (!name || !name.trim()) return "U";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase();
+  }
+  return parts[0].charAt(0).toUpperCase();
+};
 
-interface SeriesOverviewProps {
-  route: {
-    params: {
-      seriesId?: string;
-    };
-  };
-}
+const getOptimizedThumb = (url?: string, width = 800, height = 500): string => {
+  if (!url) {
+    return "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?q=80&w=800&auto=format&fit=crop";
+  }
+  if (url.includes("cloudinary.com") && url.includes("/upload/")) {
+    return url.replace("/upload/", `/upload/c_fill,w_${width},h_${height},q_auto,f_auto/`);
+  }
+  return url;
+};
 
-const SeriesOverview = ({ route }: SeriesOverviewProps) => {
-  const navigation = useNavigation();
-  const { accessToken } = useAuth();
-  const { showToast } = useToast();
-  const { showModal } = useModal();
-  const { user, reload } = useUser();
-  const { isConnected } = useNetworkStatus();
-
+// ============================================================================
+// MAIN COMPONENT: SeriesOverview
+// ============================================================================
+export default function SeriesOverview() {
+  const insets = useSafeAreaInsets();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<any>();
   const currentSeriesId = route.params?.seriesId;
 
+  const { accessToken } = useAuth();
+  const { user, reload, updateUser } = useUser();
+  const { showToast } = useToast();
+  const { isConnected } = useNetworkStatus();
+
+  // State
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
-  const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [completeChapters, setCompleteChapters] = useState(0);
-  const [isJoined, setIsJoined] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isJoined, setIsJoined] = useState(() => user?.joinedSeries === currentSeriesId);
   const [joinedSeriesTitle, setJoinedSeriesTitle] = useState<string | null>(null);
-  const [recommendedChapter, setRecommendedChapter] = useState<IChapter | null>(null);
+  const [completeChapters, setCompleteChapters] = useState(0);
+  const [completedChapterIds, setCompletedChapterIds] = useState<string[]>([]);
+  const [recommendedBook, setRecommendedBook] = useState<any>(null);
+  const [loadingRecommendedBook, setLoadingRecommendedBook] = useState<boolean>(true);
 
-  const isMountedRef = useRef(true);
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      reload().catch(() => {});
-    }, [reload])
+  // Tabs: 'chapters' (or Levels) | 'about'
+  // When user is joined, default tab is 'chapters'; when not joined, default tab is 'about'
+  const [activeTab, setActiveTab] = useState<"chapters" | "about">(() =>
+    user?.joinedSeries === currentSeriesId ? "chapters" : "about"
   );
 
+  // Bottom Sheets
+  const [isSwitchSheetVisible, setIsSwitchSheetVisible] = useState(false);
+  const [isExitSheetVisible, setIsExitSheetVisible] = useState(false);
+  const [isMembersSheetVisible, setIsMembersSheetVisible] = useState(false);
+
+  const isFramework = seriesData?.type === "framework";
+  const accentColor = isFramework ? "#38bdf8" : "#2dd4bf";
+
+  // Reanimated Sheet translations
+  const switchSheetY = useSharedValue(SCREEN_HEIGHT);
+  const exitSheetY = useSharedValue(SCREEN_HEIGHT);
+  const membersSheetY = useSharedValue(SCREEN_HEIGHT);
+
+  // 1. Fetch Series Details (0ms instant cache hydration + API sync)
   const loadSeries = useCallback(async () => {
     if (!currentSeriesId) return;
-
     const cacheKey = `cache_series_${currentSeriesId}`;
 
     try {
       const cached = await AsyncStorage.getItem(cacheKey);
-      if (cached && isMountedRef.current) {
-        const parsed: ISeries = JSON.parse(cached);
-        setSeriesData(parsed);
+      if (cached) {
+        setSeriesData(JSON.parse(cached));
+        setLoading(false);
       }
     } catch {}
 
-    if (!accessToken || !isConnected) return;
-
-    if (activeSeriesRequests.has(currentSeriesId)) {
-      try {
-        const data = await activeSeriesRequests.get(currentSeriesId);
-        if (data && isMountedRef.current) {
-          setSeriesData(data);
-        }
-      } catch {}
+    if (!isConnected) {
+      setLoading(false);
       return;
     }
 
-    const fetchPromise = api
-      .get(`/series/${currentSeriesId}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      })
-      .then((res) => {
-        const fresh = res?.data?.data;
-        if (fresh) {
-          AsyncStorage.setItem(cacheKey, JSON.stringify(fresh)).catch(() => {});
-          if (isMountedRef.current) {
-            setSeriesData(fresh);
+    try {
+      let token = accessToken;
+      if (!token) {
+        const stored =
+          (await SecureStore.getItemAsync("accessToken")) ||
+          (await AsyncStorage.getItem("accessToken"));
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            token = parsed?.token || (typeof parsed === "string" ? parsed : "");
+          } catch {
+            token = stored;
           }
         }
-        return fresh;
-      })
-      .catch((err) => {
-        if (!axios.isCancel(err)) {
-          console.warn("Background series sync failed:", err?.message);
-        }
-        return null;
-      })
-      .finally(() => {
-        activeSeriesRequests.delete(currentSeriesId);
-      });
+      }
 
-    activeSeriesRequests.set(currentSeriesId, fetchPromise);
+      const res = await api.get(`/series/${currentSeriesId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      const fresh = res?.data?.data;
+      if (fresh) {
+        setSeriesData(fresh);
+        AsyncStorage.setItem(cacheKey, JSON.stringify(fresh)).catch(() => {});
+      }
+    } catch (err: any) {
+      console.warn("Series load failed:", err?.message);
+    } finally {
+      setLoading(false);
+    }
   }, [currentSeriesId, accessToken, isConnected]);
 
   useEffect(() => {
     loadSeries();
   }, [loadSeries]);
 
+  // Sync joined status with user object
   useEffect(() => {
-    setIsJoined(user?.joinedSeries === seriesData?._id);
-  }, [user?.joinedSeries, seriesData?._id]);
+    const currentlyJoined =
+      user?.joinedSeries === currentSeriesId ||
+      (Boolean(seriesData?._id) && user?.joinedSeries === seriesData?._id);
+    setIsJoined(currentlyJoined);
+    if (currentlyJoined) {
+      setActiveTab("chapters");
+    } else {
+      setActiveTab("about");
+    }
+  }, [user?.joinedSeries, seriesData?._id, currentSeriesId]);
 
+  // Fetch title of other joined series if user is enrolled in another one
   useEffect(() => {
     let cancel = false;
-    const fetchCurrentJoinedSeries = async () => {
+    const fetchOtherJoinedTitle = async () => {
+      const otherId = user?.joinedSeries;
       if (
-        user?.joinedSeries &&
-        user.joinedSeries !== seriesData?._id &&
-        accessToken &&
+        otherId &&
+        otherId !== currentSeriesId &&
+        otherId !== seriesData?._id &&
         isConnected
       ) {
         try {
-          const cacheTitleKey = `series_title_${user.joinedSeries}`;
-          const cachedTitle = await AsyncStorage.getItem(cacheTitleKey);
-          if (cachedTitle && !cancel) {
-            setJoinedSeriesTitle(cachedTitle);
+          const cacheKey = `series_title_${otherId}`;
+          const cached = await AsyncStorage.getItem(cacheKey);
+          if (cached && !cancel) {
+            setJoinedSeriesTitle(cached);
             return;
           }
 
-          const { data } = await api.get(`/series/${user.joinedSeries}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          if (data?.data?.title && !cancel) {
-            setJoinedSeriesTitle(data.data.title);
-            AsyncStorage.setItem(cacheTitleKey, data.data.title).catch(() => {});
+          const res = await api.get(`/series/${otherId}`);
+          if (res?.data?.data?.title && !cancel) {
+            setJoinedSeriesTitle(res.data.data.title);
+            AsyncStorage.setItem(cacheKey, res.data.data.title).catch(() => {});
           }
         } catch {}
       } else {
@@ -365,16 +338,15 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
       }
     };
 
-    fetchCurrentJoinedSeries();
+    fetchOtherJoinedTitle();
     return () => {
       cancel = true;
     };
-  }, [user?.joinedSeries, seriesData?._id, accessToken, isConnected]);
+  }, [user?.joinedSeries, seriesData?._id, currentSeriesId, isConnected]);
 
+  // Chapter items
   const chapterItems = useMemo(() => {
-    return (
-      seriesData?.chapters?.filter((item) => item.contentModel === "Chapter") || []
-    );
+    return seriesData?.chapters?.filter((item) => item.contentModel === "Chapter") || [];
   }, [seriesData?.chapters]);
 
   const totalChapters = chapterItems.length;
@@ -382,658 +354,1872 @@ const SeriesOverview = ({ route }: SeriesOverviewProps) => {
   const chapterIdsSet = useMemo(() => {
     const ids = new Set<string>();
     chapterItems.forEach((item) => {
-      if (item.content?._id) ids.add(item.content._id);
+      if (item.content?._id) ids.add(String(item.content._id));
+      else if (typeof item.content === "string") ids.add(String(item.content));
     });
     return ids;
   }, [chapterItems]);
 
-  useEffect(() => {
+  // 2. Strict Q&A Progress Calculation:
+  // A chapter only counts towards progress when user completes all Q&A!
+  const calculateQnaProgress = useCallback(async () => {
     if (chapterIdsSet.size === 0) return;
-    let cancel = false;
-
-    const calcProgress = async () => {
-      try {
-        const readChapters = await AsyncStorage.getItem("recentReads");
-        if (!readChapters || cancel) return;
-        const recentReads: IRecentRead[] = JSON.parse(readChapters);
-        let completed = 0;
-        recentReads.forEach((r) => {
-          if (r.content?._id && chapterIdsSet.has(r.content._id)) {
-            completed++;
+    try {
+      const storageKey = `${COMPLETED_QNA_KEY_PREFIX}${user?._id || user?.userId || "guest"}`;
+      const raw = await AsyncStorage.getItem(storageKey);
+      if (raw) {
+        const completedIds: string[] = JSON.parse(raw);
+        setCompletedChapterIds(completedIds);
+        let count = 0;
+        completedIds.forEach((id) => {
+          if (chapterIdsSet.has(String(id))) {
+            count++;
           }
         });
-        if (!cancel) setCompleteChapters(completed);
+        setCompleteChapters(count);
+      } else {
+        setCompletedChapterIds([]);
+        setCompleteChapters(0);
+      }
+    } catch {}
+  }, [chapterIdsSet, user?._id, user?.userId]);
+
+  useEffect(() => {
+    calculateQnaProgress();
+  }, [calculateQnaProgress]);
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("CHAPTER_QNA_COMPLETED", () => {
+      calculateQnaProgress();
+    });
+    return () => sub.remove();
+  }, [calculateQnaProgress]);
+
+  useEffect(() => {
+    let cancel = false;
+    const resolveRecommendation = async () => {
+      if (!seriesData) return;
+
+      const recBookRef = seriesData.recommendationBookId;
+
+      // 1. If recommendationBookId is already populated as an object
+      if (recBookRef && typeof recBookRef === "object" && (recBookRef.title || recBookRef._id)) {
+        if (!cancel) {
+          setRecommendedBook(recBookRef);
+          setLoadingRecommendedBook(false);
+        }
+        return;
+      }
+
+      // 2. If recommendationBookId is an ID string
+      if (recBookRef && typeof recBookRef === "string") {
+        setLoadingRecommendedBook(true);
+        try {
+          const res = await api.get(`/chapter/${recBookRef}`);
+          const bookData = res?.data?.data || res?.data?.chapter || res?.data;
+          if (bookData && !cancel) {
+            setRecommendedBook(bookData);
+            setLoadingRecommendedBook(false);
+            return;
+          }
+        } catch {}
+      }
+
+      // 3. Fallback: fetch from popular chapters
+      setLoadingRecommendedBook(true);
+      try {
+        const res = await api.get("/chapter/popular");
+        const list = res?.data?.data;
+        if (Array.isArray(list) && list.length > 0) {
+          const candidate = list.find((c: any) => !chapterIdsSet.has(String(c._id || c.id))) || list[0];
+          if (candidate && !cancel) {
+            setRecommendedBook(candidate);
+            setLoadingRecommendedBook(false);
+            return;
+          }
+        }
       } catch {}
+
+      // 4. Secondary fallback
+      try {
+        const res = await api.get("/chapter");
+        const list = res?.data?.data;
+        if (Array.isArray(list) && list.length > 0) {
+          const candidate = list.find((c: any) => !chapterIdsSet.has(String(c._id || c.id))) || list[0];
+          if (candidate && !cancel) {
+            setRecommendedBook(candidate);
+          }
+        }
+      } catch {}
+
+      if (!cancel) {
+        setLoadingRecommendedBook(false);
+      }
     };
 
-    calcProgress();
+    resolveRecommendation();
     return () => {
       cancel = true;
     };
-  }, [chapterIdsSet]);
+  }, [seriesData?.recommendationBookId, seriesData?._id, chapterIdsSet]);
 
-  const joinedCount = seriesData?.joinedBy?.length || 0;
-  const coverUrl = seriesData?.cover;
+  // First Chapter for Fresh User
+  const firstChapter = useMemo<any>(() => {
+    if (!chapterItems || chapterItems.length === 0) return null;
+    const raw = chapterItems[0]?.content;
+    return typeof raw === "object" ? raw : chapterItems[0];
+  }, [chapterItems]);
 
-  const renderFormattedTitle = () => {
-    const raw = seriesData?.title || "";
-    const cleanTitle = raw
-      .replace(/^learn\s+/i, "")
-      .replace(/\s+\d+-\d+$/i, "")
-      .trim();
+  // Current active level/chapter for expanded progress state
+  const currentActiveIdx = useMemo(() => {
+    return Math.min(completeChapters, Math.max(0, totalChapters - 1));
+  }, [completeChapters, totalChapters]);
 
-    if (seriesData?.type === "framework") {
-      return (
-        <Text style={styles.seriesTitle}>
-          <Text style={{ color: pallete.textwhite }}>LEARN </Text>
-          <Text style={{ color: "#38bdf8" }}>{cleanTitle.toUpperCase()} </Text>
-          <Text style={{ color: pallete.textwhite }}>1-{totalChapters}</Text>
-        </Text>
-      );
-    }
+  const currentActiveChapter = useMemo<any>(() => {
+    if (!chapterItems || chapterItems.length === 0) return null;
+    const raw = chapterItems[currentActiveIdx]?.content;
+    return typeof raw === "object" ? raw : chapterItems[currentActiveIdx];
+  }, [chapterItems, currentActiveIdx]);
 
-    return <Text style={styles.seriesTitle}>{cleanTitle}</Text>;
+  // Bottom Sheets Animations (Smooth non-bouncy timing)
+  const openSwitchSheet = () => {
+    setIsSwitchSheetVisible(true);
+    switchSheetY.value = withTiming(0, {
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+    });
   };
 
-  const joinSeries = async () => {
+  const closeSwitchSheet = () => {
+    switchSheetY.value = withTiming(
+      SCREEN_HEIGHT,
+      { duration: 200, easing: Easing.in(Easing.quad) },
+      () => {
+        runOnJS(setIsSwitchSheetVisible)(false);
+      }
+    );
+  };
+
+  const switchSheetGesture = Gesture.Pan()
+    .onChange((event) => {
+      if (event.translationY > 0) switchSheetY.value = event.translationY;
+    })
+    .onEnd((event) => {
+      if (event.translationY > 80 || event.velocityY > 600) {
+        runOnJS(closeSwitchSheet)();
+      } else {
+        switchSheetY.value = withTiming(0, { duration: 180 });
+      }
+    });
+
+  const switchSheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: switchSheetY.value }],
+  }));
+
+  const openExitSheet = () => {
+    try {
+      Vibration.vibrate(6);
+    } catch {}
+    setIsExitSheetVisible(true);
+    exitSheetY.value = withTiming(0, {
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+    });
+  };
+
+  const closeExitSheet = () => {
+    exitSheetY.value = withTiming(
+      SCREEN_HEIGHT,
+      { duration: 200, easing: Easing.in(Easing.quad) },
+      () => {
+        runOnJS(setIsExitSheetVisible)(false);
+      }
+    );
+  };
+
+  const exitSheetGesture = Gesture.Pan()
+    .onChange((event) => {
+      if (event.translationY > 0) exitSheetY.value = event.translationY;
+    })
+    .onEnd((event) => {
+      if (event.translationY > 80 || event.velocityY > 600) {
+        runOnJS(closeExitSheet)();
+      } else {
+        exitSheetY.value = withTiming(0, { duration: 180 });
+      }
+    });
+
+  const exitSheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: exitSheetY.value }],
+  }));
+
+  const openMembersSheet = () => {
+    if (!isJoined) return;
+    try {
+      Vibration.vibrate(6);
+    } catch {}
+    setIsMembersSheetVisible(true);
+    membersSheetY.value = withTiming(0, {
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+    });
+  };
+
+  const closeMembersSheet = () => {
+    membersSheetY.value = withTiming(
+      SCREEN_HEIGHT,
+      { duration: 200, easing: Easing.in(Easing.quad) },
+      () => {
+        runOnJS(setIsMembersSheetVisible)(false);
+      }
+    );
+  };
+
+  // Handle Android hardware back button: close bottom sheets if open instead of leaving screen
+  useEffect(() => {
+    const handleHardwareBack = () => {
+      if (isMembersSheetVisible) {
+        closeMembersSheet();
+        return true;
+      }
+      if (isExitSheetVisible) {
+        closeExitSheet();
+        return true;
+      }
+      if (isSwitchSheetVisible) {
+        closeSwitchSheet();
+        return true;
+      }
+      return false;
+    };
+
+    const backSub = BackHandler.addEventListener("hardwareBackPress", handleHardwareBack);
+    return () => backSub.remove();
+  }, [isMembersSheetVisible, isExitSheetVisible, isSwitchSheetVisible]);
+
+  const membersSheetGesture = Gesture.Pan()
+    .onChange((event) => {
+      if (event.translationY > 0) membersSheetY.value = event.translationY;
+    })
+    .onEnd((event) => {
+      if (event.translationY > 80 || event.velocityY > 600) {
+        runOnJS(closeMembersSheet)();
+      } else {
+        membersSheetY.value = withTiming(0, { duration: 180 });
+      }
+    });
+
+  const membersSheetAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: membersSheetY.value }],
+  }));
+
+  // Resolve active auth token helper
+  const getCleanAuthToken = async () => {
+    let token = accessToken;
+    if (!token) {
+      const stored =
+        (await SecureStore.getItemAsync("accessToken")) ||
+        (await AsyncStorage.getItem("accessToken"));
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          token = parsed?.token || (typeof parsed === "string" ? parsed : "");
+        } catch {
+          token = stored;
+        }
+      }
+    }
+    return token ? token.trim() : "";
+  };
+
+  // Join Action
+  const handleJoinPress = () => {
+    try {
+      Vibration.vibrate(6);
+    } catch {}
+
     if (!isConnected) {
-      showToast({ title: "You are offline! Please connect to the Internet" });
+      showToast({ title: "You are offline. Please connect to the Internet." });
       return;
     }
+
+    const otherJoined = user?.joinedSeries;
+    const targetId = seriesData?._id || currentSeriesId;
+
+    if (otherJoined && otherJoined !== targetId) {
+      openSwitchSheet();
+      return;
+    }
+
+    executeJoinSeries();
+  };
+
+  const executeJoinSeries = async () => {
+    const targetId = seriesData?._id || currentSeriesId;
+    if (!targetId) return;
+
+    // Optimistic UI updates
+    setIsJoined(true);
+    updateUser({ joinedSeries: targetId });
+    setActiveTab("chapters");
+
     try {
-      setIsJoined(true);
-      const data = await api.post(
+      const token = await getCleanAuthToken();
+      const res = await api.post(
         "/series/join",
-        { seriesId: seriesData?._id },
-        { headers: { Authorization: `Bearer ${accessToken}` } }
+        { seriesId: targetId },
+        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
       );
 
-      if (!data.data.success) {
+      if (res.status === 200 || res.status === 201 || res.data?.success !== false) {
+        showToast({
+          title: `Enrolled in ${seriesData?.title || "series"}!`,
+        });
+        setSeriesData((prev) => {
+          if (!prev) return prev;
+          const currentJoined = prev.joinedBy || [];
+          const alreadyIn = currentJoined.some((m: any) =>
+            typeof m === "object"
+              ? m._id === user?._id || m.userId === user?.userId
+              : m === user?._id
+          );
+          if (alreadyIn) return prev;
+          const newUserObj = user
+            ? {
+                _id: user._id || "me",
+                name: user.name || "You",
+                userId: user.userId || "you",
+                image: user.image || "",
+              }
+            : "me";
+          return {
+            ...prev,
+            joinedBy: [newUserObj, ...currentJoined],
+          };
+        });
+        reload();
+      } else {
         setIsJoined(false);
-        showToast({ title: "Something went wrong" });
-        return;
+        updateUser({ joinedSeries: user?.joinedSeries });
+        showToast({ title: res.data?.message || "Failed to join series" });
       }
-      reload();
-    } catch {
+    } catch (err: any) {
+      console.warn("Join series error:", err?.response?.data || err?.message);
       setIsJoined(false);
-      showToast({ title: "Something went wrong" });
+      updateUser({ joinedSeries: user?.joinedSeries });
+      showToast({
+        title: err?.response?.data?.message || "Failed to join series",
+      });
     }
   };
 
-  const exitSeries = async () => {
-    if (!isConnected) {
-      showToast({ title: "You are offline! Please connect to the Internet" });
+  // Exit Series Action
+  const executeExitSeries = async () => {
+    const targetId = seriesData?._id || currentSeriesId;
+    closeExitSheet();
+
+    setIsJoined(false);
+    updateUser({ joinedSeries: undefined });
+    setActiveTab("about");
+    setSeriesData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        joinedBy: (prev.joinedBy || []).filter((m: any) =>
+          typeof m === "object"
+            ? m._id !== user?._id && m.userId !== user?.userId
+            : m !== user?._id
+        ),
+      };
+    });
+
+    try {
+      const token = await getCleanAuthToken();
+      await api.post(
+        "/series/exit",
+        { seriesId: targetId },
+        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+      );
+      showToast({ title: "Exited series." });
+      reload();
+    } catch (err: any) {
+      console.warn("Exit series error:", err?.response?.data || err?.message);
+      showToast({ title: "Exited series." });
+      reload();
+    }
+  };
+
+  // Start Chapter Handler
+  const handleStartChapter = (targetChapter: any) => {
+    try {
+      Vibration.vibrate(6);
+    } catch {}
+
+    if (!targetChapter) {
+      showToast({ title: "No chapters available yet" });
       return;
     }
-    try {
-      setIsJoined(false);
-      const data = await api.post(
-        "/series/exit",
-        { seriesId: seriesData?._id },
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      if (!data.data.success) {
-        setIsJoined(true);
-        showToast({ title: data.data.message || "Something went wrong" });
-        return;
-      }
-      reload();
-    } catch {
-      setIsJoined(true);
-      showToast({ title: "Something went wrong" });
+
+    const accessCheck = canUserAccessChapter(user, targetChapter.for ?? 0);
+    if (!accessCheck.allowed) {
+      showToast({
+        title: accessCheck.reason || "Upgrade your subscription to access this content.",
+      });
+      return;
+    }
+
+    const targetId = String(targetChapter._id || targetChapter.id);
+    const mediaType = targetChapter.type ?? "pdf";
+
+    if (mediaType === "pdf") {
+      navigation.navigate("ReadBook", {
+        bookId: targetId,
+        initialBookData: targetChapter,
+        showQnaRequirementToast: true,
+      } as any);
+    } else {
+      navigation.navigate("AudioRdr", {
+        bookId: targetId,
+        initialBookData: targetChapter,
+        showQnaRequirementToast: true,
+      } as any);
     }
   };
 
-  const renderContentCard = useCallback(
-    ({ item, index }: { item: any; index: number }) => {
-      const rawContent = item?.content;
-      const isPopulated = typeof rawContent === "object" && rawContent !== null;
-      const realChapterId =
-        (isPopulated && rawContent._id) ||
-        (typeof rawContent === "string" && rawContent) ||
-        item?._id;
+  // Share Handler
+  const handleShare = async () => {
+    try {
+      await Share.share({
+        title: seriesData?.title || "Readapt Series",
+        message: `Check out "${seriesData?.title}" on Readapt! Build actionable skills with curated series.`,
+      });
+    } catch {}
+  };
 
-      const chapterData: any = isPopulated
-        ? {
-            ...rawContent,
-            _id: String(realChapterId),
-            series: rawContent.series || seriesData?._id || seriesData,
-          }
-        : {
-            ...item,
-            _id: String(realChapterId),
-            series: seriesData?._id || seriesData,
-          };
+  // Real Joined Members list parsed from seriesData.joinedBy
+  const memberList = useMemo(() => {
+    const rawJoined = seriesData?.joinedBy || [];
+    const list: Array<{
+      id: string;
+      name: string;
+      username: string;
+      image?: string;
+      isCurrentUser?: boolean;
+    }> = [];
 
-      return (
-        <ContentCard
-          key={chapterData?._id || index}
-          book={chapterData}
-          index={index}
-          seriesType={seriesData?.type === "framework" ? "framework" : "normal"}
-        />
+    rawJoined.forEach((m: any, idx: number) => {
+      if (!m) return;
+      if (typeof m === "object") {
+        const id = String(m._id || m.id || idx);
+        const name = m.name || "Learner";
+        const username = String(m.userId || m.username || name.toLowerCase().replace(/\s+/g, ""));
+        const image = m.image || m.avatar || m.pp || "";
+        const isCurrent =
+          Boolean(user?._id && String(user._id) === id) ||
+          Boolean(user?.userId && user.userId === username);
+
+        list.push({
+          id,
+          name,
+          username,
+          image,
+          isCurrentUser: isCurrent,
+        });
+      }
+    });
+
+    return list;
+  }, [seriesData?.joinedBy, user?._id, user?.userId]);
+
+  // Current User Card data for top of list (if user is joined)
+  const currentUserData = useMemo(() => {
+    if (!isJoined || !user) return null;
+    return {
+      id: String(user._id || "current-user"),
+      name: user.name || "You",
+      username: String(user.userId || user.name?.toLowerCase().replace(/\s+/g, "") || "you"),
+      image: user.image || "",
+    };
+  }, [isJoined, user]);
+
+  // Other members excluding current user to prevent duplicates
+  const otherMembers = useMemo(() => {
+    return memberList.filter((m) => !m.isCurrentUser);
+  }, [memberList]);
+
+  // Total count of joined learners: strictly the real number of joined users
+  const totalJoinedCount = useMemo(() => {
+    const rawJoined = seriesData?.joinedBy;
+    if (Array.isArray(rawJoined)) {
+      const currentUserId = user?._id ? String(user._id) : null;
+      const userInRaw = currentUserId && rawJoined.some((m: any) =>
+        typeof m === "object" ? String(m._id) === currentUserId : String(m) === currentUserId
       );
-    },
-    [seriesData]
-  );
 
-  const renderRecommendationCard = useCallback(() => {
-    if (seriesData?.type !== "framework") return null;
-
-    const firstChapter = seriesData?.chapters?.find(
-      (item) => item.contentModel === "Chapter"
-    );
-    const fallbackCover =
-      (firstChapter?.content as IChapter)?.cover || coverUrl;
-
-    const recText =
-      (seriesData as any)?.recommendationText ||
-      "Explore another perspective on Power.";
-    const recCover = recommendedChapter?.cover || fallbackCover;
-    const recTitle =
-      recommendedChapter?.title || "Recommended Reading";
-
-    return (
-      <View style={styles.recommendationSection}>
-        <TouchableOpacity
-          activeOpacity={0.88}
-          style={styles.recommendCard}
-          onPress={() => {
-            const rawRec = (seriesData as any)?.recommendationBookId;
-            const recId =
-              recommendedChapter?._id ||
-              (typeof rawRec === "object" ? rawRec?._id : rawRec);
-
-            const recData =
-              recommendedChapter || (typeof rawRec === "object" ? rawRec : null);
-
-            if (recId) {
-              (navigation as any).navigate("ReadBook", {
-                bookId: String(recId),
-                initialBookData: recData,
-              });
-            } else {
-              showToast({ title: "Content coming soon" });
-            }
-          }}>
-          <View style={styles.recommendBgAmbient}>
-            <Image
-              source={{ uri: recCover }}
-              style={styles.ambientImage}
-              blurRadius={6}
-            />
-            <LinearGradient
-              colors={[
-                "rgba(5, 10, 24, 0.94)",
-                "rgba(7, 18, 38, 0.82)",
-                "rgba(10, 25, 47, 0.65)",
-              ]}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
-              style={styles.recommendBgOverlay}
-            />
-          </View>
-
-          <View style={styles.recommendCoverWrap}>
-            <Image
-              source={{ uri: recCover }}
-              style={styles.recommendCover}
-              resizeMode="cover"
-            />
-          </View>
-
-          <View style={styles.recommendInfo}>
-            <Text style={styles.recommendTag}>RECOMMENDATION READING</Text>
-            <Text style={styles.recommendTitle} numberOfLines={1}>
-              {recTitle}
-            </Text>
-            <Text style={styles.recommendDesc} numberOfLines={2}>
-              {recText}
-            </Text>
-          </View>
-
-          <View style={styles.recommendArrow}>
-            <Svg
-              width={20}
-              height={20}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#94a3b8"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round">
-              <Polyline points="9 18 15 12 9 6" />
-            </Svg>
-          </View>
-        </TouchableOpacity>
-      </View>
-    );
-  }, [
-    seriesData?.type,
-    seriesData?.chapters,
-    seriesData?.recommendationText,
-    seriesData?.recommendationBookId,
-    coverUrl,
-    recommendedChapter,
-    navigation,
-    showToast,
-  ]);
+      // If user is currently joined locally but not yet present in rawJoined array
+      if (isJoined && !userInRaw) {
+        return rawJoined.length + 1;
+      }
+      return rawJoined.length;
+    }
+    return isJoined ? 1 : 0;
+  }, [seriesData?.joinedBy, isJoined, user?._id]);
 
   if (!seriesData && !isConnected) {
     return (
-      <View
-        style={[
-          styles.body,
-          { paddingTop: 100, alignItems: "center", justifyContent: "center" },
-        ]}>
+      <View style={[styles.body, { paddingTop: insets.top + 60, alignItems: "center" }]}>
         <Offline />
       </View>
     );
   }
 
-  if (!seriesData) {
+  if (loading && !seriesData) {
     return (
-      <View
-        style={[
-          styles.body,
-          { paddingTop: 100, alignItems: "center", justifyContent: "center" },
-        ]}>
-        <ActivityIndicator color={pallete.accent} />
+      <View style={[styles.body, { justifyContent: "center", alignItems: "center" }]}>
+        <ActivityIndicator size="large" color={accentColor} />
       </View>
     );
   }
 
+  const progressPercent = Math.round((completeChapters / Math.max(1, totalChapters)) * 100);
+
   return (
-    <View style={styles.body}>
-      <ScrollView style={styles.body} bounces={true}>
-        <View style={styles.seriesHero}>
-          <Image
-            source={{ uri: coverUrl }}
-            style={styles.heroImage}
-            resizeMode="cover"
+    <GestureHandlerRootView style={styles.body}>
+      {/* ============================================================ */}
+      {/* TOP HEADER NAVIGATION                                         */}
+      {/* ============================================================ */}
+      <View style={[styles.topHeader, { paddingTop: Math.max(insets.top + 6, 20) }]}>
+        <TouchableOpacity
+          style={styles.headerIconBtn}
+          activeOpacity={0.7}
+          onPress={() => navigation.goBack()}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <BackIcon />
+        </TouchableOpacity>
+
+        <Text style={styles.headerTitleText}>
+          {isFramework ? "Framework Series" : "Series"}
+        </Text>
+
+        <View style={styles.headerRightActions}>
+          <TouchableOpacity
+            style={styles.headerIconBtn}
+            activeOpacity={0.7}
+            onPress={handleShare}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <ShareIcon />
+          </TouchableOpacity>
+
+          {/* Exit icon only for users who are currently joined in this series */}
+          {isJoined && (
+            <TouchableOpacity
+              style={styles.headerIconBtn}
+              activeOpacity={0.7}
+              onPress={openExitSheet}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <ExitDoorIcon />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      {/* ============================================================ */}
+      {/* SCROLLABLE MAIN CONTENT BODY                                 */}
+      {/* ============================================================ */}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: isJoined ? insets.bottom + 60 : insets.bottom + 100 },
+        ]}
+      >
+        {/* 1. HERO COVER: Full-width edge-to-edge, NO box container, NO border radius */}
+        <View style={styles.heroCoverWrapper}>
+          <CachedImage
+            uri={
+              isRenderableUrl(seriesData?.cover)
+                ? getOptimizedThumb(seriesData?.cover, 800, 500)
+                : null
+            }
+            label={seriesData?.title}
+            style={styles.heroCoverImage}
+            letterSize={110}
+            priority="high"
           />
           <LinearGradient
-            colors={["transparent", "rgba(5, 5, 5, 0.4)", pallete.bgmain]}
-            locations={[0, 0.6, 1]}
-            style={styles.heroOverlay}
+            colors={["transparent", "rgba(9, 3, 20, 0.4)", "#090314"]}
+            locations={[0, 0.55, 1]}
+            style={styles.heroGradientOverlay}
           />
-        </View>
 
-        <View style={styles.seriesInfo}>
-          {renderFormattedTitle()}
-
-          <Text style={styles.seriesAuthor}>
-            by {seriesData?.author || (seriesData?.chapters?.[0]?.content as IChapter)?.author || "READAPT"}
-          </Text>
-
-          <PopButton
-            styles={styles.joinedBadge}
-            activeStyles={styles.joinedBadgeActive}>
-            <Svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke={seriesData?.type === "framework" ? "#38bdf8" : pallete.accent}
-              strokeWidth="2">
-              <Path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <Circle cx="9" cy="7" r="4" />
-              <Path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-              <Path d="M16 3.13a4 4 0 0 1 0 7.75" />
-            </Svg>
-            <Text style={styles.badgeText}>
-              {joinedCount}{" "}
-              <Text style={{ color: pallete.textgray }}>Joined</Text>
+          <View style={styles.heroFloatingDetails}>
+            <Text style={styles.heroSeriesTitle} numberOfLines={2}>
+              {seriesData?.title}
             </Text>
-          </PopButton>
+            <Text style={styles.heroAuthorText}>
+              {seriesData?.author || "READAPT"}
+            </Text>
+          </View>
         </View>
 
-        <PopButton styles={styles.progressBox}>
-          <Text style={styles.progressText}>
-            {completeChapters} of {totalChapters}{" "}
-            <Text
-              style={{
-                color:
-                  seriesData?.type === "framework"
-                    ? "#38bdf8"
-                    : pallete.textwhite,
-                fontWeight: "700",
-              }}>
-              {seriesData?.type === "framework" ? "levels" : "chapters"}
-            </Text>{" "}
-            complete
-          </Text>
+        {/* 2. STATS & BADGE ROW (Matches Image 1 - NO star rating!) */}
+        <View style={styles.statsRowContainer}>
+          <View style={styles.statsInfoLeft}>
+            {/* Chapters / Levels Pill */}
+            <View style={styles.statPill}>
+              <BookIcon color="#94a3b8" />
+              <Text style={styles.statPillText}>
+                {totalChapters} {isFramework ? "Levels" : "Chapters"}
+              </Text>
+            </View>
 
-          <View style={styles.progressBarContainer}>
-            <View style={styles.pBarTrack}>
+            {/* Joined Count Pill: Clickable ONLY if user has joined this series */}
+            <TouchableOpacity
+              style={[styles.statPill, !isJoined && styles.joinedBadgeDisabled]}
+              activeOpacity={isJoined ? 0.7 : 1}
+              onPress={isJoined ? openMembersSheet : undefined}
+              disabled={!isJoined}
+            >
+              <UsersIcon color={isJoined ? accentColor : "#94a3b8"} />
+              <Text
+                style={[
+                  styles.statPillText,
+                  isJoined && { color: accentColor },
+                ]}
+              >
+                {formatCompactNumber(totalJoinedCount)} joined
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Type Badge (Right) */}
+          {isFramework ? (
+            <View style={styles.frameworkPurpleBadge}>
+              <Text style={styles.frameworkBadgeText}>Framework</Text>
+            </View>
+          ) : (
+            <View style={styles.seriesGreenBadge}>
+              <Text style={styles.seriesBadgeText}>Series</Text>
+            </View>
+          )}
+        </View>
+
+        {/* 3. IF NOT JOINED: ABOUT CARD WITH LOCKED NOTICE (Matches Image 1) */}
+        {!isJoined && (
+          <View style={styles.aboutCardContainer}>
+            <Text style={styles.aboutCardTitle}>
+              About This {isFramework ? "Framework" : "Series"}
+            </Text>
+            <Text style={styles.aboutCardDescription}>
+              {seriesData?.description || "Curated lessons to build actionable mastery."}
+            </Text>
+
+            <View style={styles.cardDivider} />
+
+            {/* Locked Notice Box */}
+            <View style={styles.lockedNoticeBox}>
+              <LockSmallIcon />
+              <Text style={styles.lockedNoticeText}>
+                {totalChapters} Locked {isFramework ? "Levels" : "Chapters"}. Join the series to unlock and start learning.
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* 4. IF JOINED: PROGRESS CARD & TABS */}
+        {isJoined && (
+          <>
+            {completeChapters === 0 ? (
+              /* Fresh User (0 completed): NO progress bar UI, NO play icon. Clean heading & chapter row */
+              <TouchableOpacity
+                style={[
+                  styles.freshStartCard,
+                  { borderColor: isFramework ? "rgba(56, 189, 248, 0.25)" : "rgba(45, 212, 191, 0.25)" },
+                ]}
+                activeOpacity={0.8}
+                onPress={() => handleStartChapter(firstChapter)}
+              >
+                <View style={styles.freshStartLeft}>
+                  <Text
+                    style={[
+                      styles.freshHeadingText,
+                      { color: accentColor },
+                    ]}
+                  >
+                    {isFramework ? "Level 1" : "Chapter 1"}
+                  </Text>
+                  <Text style={styles.freshChapterNameText} numberOfLines={1}>
+                    {firstChapter?.title || "Introduction"}
+                  </Text>
+                </View>
+                <ChevronRightIcon color={accentColor} size={20} />
+              </TouchableOpacity>
+            ) : (
+              /* Started Progress Card: Clean crisp border radius, expanded bottom with level name, Q&A ratio, chevron */
               <View
                 style={[
-                  styles.pBarFill,
+                  styles.progressCardContainer,
                   {
-                    width: `${
-                      totalChapters > 0
-                        ? (completeChapters / totalChapters) * 100
-                        : 0
-                    }%`,
-                    backgroundColor:
-                      seriesData?.type === "framework"
-                        ? "#38bdf8"
-                        : pallete.accent,
+                    borderColor: isFramework
+                      ? "rgba(56, 189, 248, 0.2)"
+                      : "rgba(45, 212, 191, 0.2)",
                   },
                 ]}
-              />
+              >
+                {/* Top Progress Info */}
+                <View style={styles.progressTextRow}>
+                  <Text style={styles.progressRatioText}>
+                    {completeChapters} of {totalChapters}{" "}
+                    <Text style={{ color: accentColor, fontWeight: "700" }}>
+                      {isFramework ? "levels" : "chapters"}
+                    </Text>{" "}
+                    complete
+                  </Text>
+                  <Text style={[styles.progressPercentText, { color: accentColor }]}>
+                    {progressPercent}%
+                  </Text>
+                </View>
+
+                {/* Crisp Progress Bar Track (no sloppy curvy borders) */}
+                <View style={styles.progressBarTrack}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: `${progressPercent}%`,
+                        backgroundColor: accentColor,
+                      },
+                    ]}
+                  />
+                </View>
+
+                {/* Expanded Bottom Row: Current Level Name, Q&A status, Chevron */}
+                <TouchableOpacity
+                  style={styles.progressExpandedBottom}
+                  activeOpacity={0.7}
+                  onPress={() => handleStartChapter(currentActiveChapter)}
+                >
+                  <View style={styles.expandedBottomLeft}>
+                    <Text style={[styles.expandedLevelTag, { color: accentColor }]}>
+                      {isFramework ? `Level ${currentActiveIdx + 1}` : `Chapter ${currentActiveIdx + 1}`}
+                    </Text>
+                    <Text style={styles.expandedLevelTitle} numberOfLines={1}>
+                      {currentActiveChapter?.title || "Continue journey"}
+                    </Text>
+                    <Text style={styles.expandedQnaText}>
+                      Q&A 0/{currentActiveChapter?.questions?.length || 3} attempted
+                    </Text>
+                  </View>
+                  <ChevronRightIcon color={accentColor} size={18} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* TABS NAVIGATION */}
+            <View style={styles.tabsRow}>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === "chapters" && styles.tabBtnActive]}
+                activeOpacity={0.7}
+                onPress={() => setActiveTab("chapters")}
+              >
+                <Text
+                  style={[
+                    styles.tabBtnText,
+                    activeTab === "chapters" && { color: accentColor, fontWeight: "700" },
+                  ]}
+                >
+                  {isFramework ? "Levels" : "Chapters"}
+                </Text>
+                {activeTab === "chapters" && (
+                  <View style={[styles.tabIndicator, { backgroundColor: accentColor }]} />
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === "about" && styles.tabBtnActive]}
+                activeOpacity={0.7}
+                onPress={() => setActiveTab("about")}
+              >
+                <Text
+                  style={[
+                    styles.tabBtnText,
+                    activeTab === "about" && { color: accentColor, fontWeight: "700" },
+                  ]}
+                >
+                  About
+                </Text>
+                {activeTab === "about" && (
+                  <View style={[styles.tabIndicator, { backgroundColor: accentColor }]} />
+                )}
+              </TouchableOpacity>
             </View>
 
-            <View style={styles.actionIcons}>
-              <PopButton
-                styles={styles.actBtn}
-                onPress={() => {
-                  setIsDetailOpen(true);
-                }}>
-                <Svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke={pallete.textgray}
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round">
-                  <Circle cx="12" cy="12" r="10" />
-                  <Line x1="12" y1="16" x2="12" y2="12" />
-                  <Line x1="12" y1="8" x2="12.01" y2="8" />
-                </Svg>
-              </PopButton>
+            {/* TAB 1: 2-COLUMNS GRID FOR CHAPTERS / LEVELS */}
+            {activeTab === "chapters" && (
+              <>
+                <View style={styles.chaptersGridContainer}>
+                  {chapterItems.map((item, index) => {
+                    const raw = item?.content;
+                    const chapterData: any = typeof raw === "object" ? raw : item;
+                    const prevItem = index > 0 ? chapterItems[index - 1] : null;
+                    const prevRaw = prevItem?.content;
+                    const prevId = String(
+                      (typeof prevRaw === "object" ? (prevRaw as any)?._id || (prevRaw as any)?.id : prevRaw) || ""
+                    );
+                    // Sequential level locking: Level 1 always unlocked. Level N locked until Level N-1 is completed!
+                    const isLocked = isFramework && index > 0 && (!prevId || !completedChapterIds.includes(prevId));
+                    const isCompleted = completedChapterIds.includes(
+                      String(chapterData?._id || chapterData?.id || "")
+                    );
 
-              {user?.joinedSeries === seriesData?._id ? (
-                <PopButton
-                  styles={[styles.actBtn, styles.exitBtn]}
-                  onPress={() =>
-                    showModal({
-                      title: "Are you sure to exit from this series?",
-                      onConfirm: exitSeries,
-                    })
-                  }>
-                  <Svg fill="none" width="18" height="18" viewBox="0 0 16 16">
-                    <G id="SVGRepo_bgCarrier" strokeWidth="0" />
-                    <G
-                      id="SVGRepo_tracerCarrier"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <G id="SVGRepo_iconCarrier">
-                      <G fill={pallete.false}>
-                        <Path d="M1 8a6 6 0 018.514-5.45.75.75 0 01-.629 1.363 4.5 4.5 0 100 8.175.75.75 0 11.63 1.361A6 6 0 011 8z" />
-                        <Path d="M11.245 4.695a.75.75 0 00-.05 1.06l1.36 1.495H6.75a.75.75 0 000 1.5h5.805l-1.36 1.495a.75.75 0 001.11 1.01l2.5-2.75a.748.748 0 00-.002-1.012l-2.498-2.748a.75.75 0 00-1.06-.05z" />
-                      </G>
-                    </G>
-                  </Svg>
-                </PopButton>
-              ) : (
-                <PopButton
-                  styles={[styles.actBtn, styles.joinBtn]}
-                  onPress={() => {
-                    const confirmMsg = joinedSeriesTitle
-                      ? `Joining this series will automatically remove you from "${joinedSeriesTitle}". Do you want to proceed?`
-                      : "Are you sure you want to join this series?";
+                    return (
+                      <ContentCard
+                        key={chapterData?._id || index}
+                        book={{
+                          ...chapterData,
+                          series: seriesData?._id || seriesData,
+                        }}
+                        index={index}
+                        seriesType={isFramework ? "framework" : "normal"}
+                        isFramework={isFramework}
+                        isLocked={isLocked}
+                        isCompleted={isCompleted}
+                      />
+                    );
+                  })}
+                </View>
 
-                    showModal({
-                      title: confirmMsg,
-                      onConfirm: joinSeries,
-                    });
-                  }}>
-                  <Svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke={pallete.true}
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round">
-                    <Path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                    <Polyline points="10 17 15 12 10 7" />
-                    <Line x1="15" y1="12" x2="3" y2="12" />
-                  </Svg>
-                </PopButton>
-              )}
-            </View>
-          </View>
-        </PopButton>
+                {/* RECOMMENDATION CARD AT BOTTOM WHEN ALL LEVELS COMPLETED */}
+                {completeChapters >= chapterItems.length && chapterItems.length > 0 && (
+                  <View style={styles.recommendationSection}>
+                    <View style={styles.recommendationHeader}>
+                      <View style={[styles.recommendationBadge, { backgroundColor: `${accentColor}18` }]}>
+                        <Text style={[styles.recommendationBadgeText, { color: accentColor }]}>
+                          Curriculum Mastered
+                        </Text>
+                      </View>
+                      <Text style={styles.recommendationTitle}>
+                        Recommended Next Read
+                      </Text>
+                      <Text style={styles.recommendationSubtitle}>
+                        {seriesData?.recommendationText ||
+                          `You've mastered all ${chapterItems.length} levels! Continue growing with this curated recommendation.`}
+                      </Text>
+                    </View>
 
-        <View style={styles.gridSection}>
-          <View style={styles.booksGrid}>
-            <FlatList
-              data={chapterItems}
-              renderItem={renderContentCard}
-              keyExtractor={(item, idx) => item?.content?._id || idx.toString()}
-              numColumns={2}
-              scrollEnabled={false}
-              columnWrapperStyle={{
-                justifyContent: "space-between",
-                paddingHorizontal: 15,
-              }}
-              contentContainerStyle={{
-                paddingHorizontal: 0,
-              }}
-              ListFooterComponent={renderRecommendationCard}
-            />
-          </View>
-        </View>
+                    {loadingRecommendedBook ? (
+                      <View style={styles.recBookCardLoading}>
+                        <ActivityIndicator size="small" color={accentColor} />
+                        <Text style={styles.recLoadingText}>Finding next recommendation...</Text>
+                      </View>
+                    ) : recommendedBook ? (
+                      <View style={styles.recommendedBookCard}>
+                        <CachedImage
+                          uri={
+                            isRenderableUrl(recommendedBook.cover)
+                              ? getOptimizedThumb(recommendedBook.cover, 300, 420)
+                              : null
+                          }
+                          label={recommendedBook.title}
+                          style={styles.recommendedBookCover}
+                          letterSize={30}
+                        />
+                        <View style={styles.recommendedBookDetails}>
+                          <View style={styles.recTypeBadge}>
+                            <Text style={[styles.recTypeBadgeText, { color: accentColor }]}>
+                              {recommendedBook.type === "audio" ? "AUDIO BOOK" : "BOOK"}
+                            </Text>
+                          </View>
+                          <Text style={styles.recommendedBookTitle} numberOfLines={2}>
+                            {recommendedBook.title}
+                          </Text>
+                          <Text style={styles.recommendedBookAuthor} numberOfLines={1}>
+                            {recommendedBook.author || "READAPT"}
+                          </Text>
+
+                          <TouchableOpacity
+                            style={[styles.recStartButton, { backgroundColor: accentColor }]}
+                            activeOpacity={0.8}
+                            onPress={() => handleStartChapter(recommendedBook)}
+                          >
+                            <Text style={styles.recStartButtonText}>
+                              {recommendedBook.type === "audio" ? "Start Listening" : "Read Book"}
+                            </Text>
+                            <ChevronRightIcon color="#090314" size={16} />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ) : null}
+                  </View>
+                )}
+              </>
+            )}
+
+            {/* TAB 2: ABOUT TAB CONTENT */}
+            {activeTab === "about" && (
+              <View style={styles.aboutTabWrapper}>
+                <Text style={styles.aboutSectionHeading}>
+                  About This {isFramework ? "Framework" : "Series"}
+                </Text>
+                <Text style={styles.aboutDescriptionText}>
+                  {seriesData?.description ||
+                    "This curated series provides practical frameworks, structured lessons, and actionable insights to help you build real mastery."}
+                </Text>
+              </View>
+            )}
+          </>
+        )}
       </ScrollView>
 
-      <DetailsPanel
-        isOpen={isDetailOpen}
-        onClose={() => {
-          setIsDetailOpen(false);
-        }}
-        data={{
-          chapters: seriesData?.chapters,
-          published: (seriesData as any)?.createdAt
-            ? new Date((seriesData as any).createdAt).toLocaleDateString()
-            : "",
-          description: seriesData?.description,
-        }}
-      />
-    </View>
+      {/* ============================================================ */}
+      {/* 5. FIXED BOTTOM JOIN BUTTON (When NOT joined, matches Image 1) */}
+      {/* ============================================================ */}
+      {!isJoined && (
+        <View style={[styles.bottomBarFixed, { paddingBottom: Math.max(insets.bottom + 8, 18) }]}>
+          <TouchableOpacity
+            style={[
+              styles.bottomJoinBtn,
+              { backgroundColor: isFramework ? "#38bdf8" : "#00d2a0" },
+            ]}
+            activeOpacity={0.85}
+            onPress={handleJoinPress}
+          >
+            <Text style={styles.bottomJoinBtnText}>
+              Join the {isFramework ? "framework" : "series"} and start learning
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ============================================================ */}
+      {/* 6. SWITCH SERIES BOTTOM SHEET (Clean Black Theme, Draggable) */}
+      {/* ============================================================ */}
+      {isSwitchSheetVisible && (
+        <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+          <Pressable style={styles.sheetBackdrop} onPress={closeSwitchSheet} />
+          <GestureDetector gesture={switchSheetGesture}>
+            <Animated.View style={[styles.bottomSheetPanel, switchSheetAnimatedStyle]}>
+              <View style={styles.sheetDragHandle} />
+
+              <View style={styles.sheetHeaderIconWrap}>
+                <AlertTriangleIcon />
+              </View>
+
+              <Text style={styles.sheetTitle}>Switch Active Series?</Text>
+              <Text style={styles.sheetMessage}>
+                You are currently enrolled in{" "}
+                <Text style={{ color: accentColor, fontWeight: "700" }}>
+                  "{joinedSeriesTitle || "another series"}"
+                </Text>
+                . By joining{" "}
+                <Text style={{ color: "#ffffff", fontWeight: "700" }}>
+                  "{seriesData?.title}"
+                </Text>
+                , you will exit from your current active series. Your progress is saved.
+              </Text>
+
+              <View style={styles.sheetActionsRow}>
+                <TouchableOpacity
+                  style={styles.sheetDismissBtn}
+                  activeOpacity={0.7}
+                  onPress={closeSwitchSheet}
+                >
+                  <Text style={styles.sheetDismissBtnText}>Dismiss</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.sheetContinueBtn, { backgroundColor: accentColor }]}
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    closeSwitchSheet();
+                    executeJoinSeries();
+                  }}
+                >
+                  <Text style={styles.sheetContinueBtnText}>Continue & Switch</Text>
+                </TouchableOpacity>
+              </View>
+            </Animated.View>
+          </GestureDetector>
+        </View>
+      )}
+
+      {/* ============================================================ */}
+      {/* 7. EXIT SERIES CONFIRMATION SHEET (Clean Black Theme, Draggable) */}
+      {/* ============================================================ */}
+      {isExitSheetVisible && (
+        <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+          <Pressable style={styles.sheetBackdrop} onPress={closeExitSheet} />
+          <GestureDetector gesture={exitSheetGesture}>
+            <Animated.View style={[styles.bottomSheetPanel, exitSheetAnimatedStyle]}>
+              <View style={styles.sheetDragHandle} />
+
+              <View style={[styles.sheetHeaderIconWrap, { backgroundColor: "rgba(239, 68, 68, 0.12)" }]}>
+                <ExitDoorIcon />
+              </View>
+
+              <Text style={styles.sheetTitle}>Exit Series?</Text>
+              <Text style={styles.sheetMessage}>
+                Are you sure you want to exit{" "}
+                <Text style={{ color: "#ffffff", fontWeight: "700" }}>
+                  "{seriesData?.title}"
+                </Text>
+                ? Your progress and completed Q&A will remain intact, but you won't be actively enrolled.
+              </Text>
+
+              <View style={styles.sheetActionsRow}>
+                <TouchableOpacity
+                  style={styles.sheetDismissBtn}
+                  activeOpacity={0.7}
+                  onPress={closeExitSheet}
+                >
+                  <Text style={styles.sheetDismissBtnText}>Dismiss</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.sheetContinueBtn, { backgroundColor: "#ef4444" }]}
+                  activeOpacity={0.8}
+                  onPress={executeExitSeries}
+                >
+                  <Text style={[styles.sheetContinueBtnText, { color: "#ffffff" }]}>Exit Series</Text>
+                </TouchableOpacity>
+              </View>
+            </Animated.View>
+          </GestureDetector>
+        </View>
+      )}
+
+      {/* ============================================================ */}
+      {/* 8. JOINED MEMBERS BOTTOM SHEET (Clean Flat Rows, No Cards)   */}
+      {/* ============================================================ */}
+      {isMembersSheetVisible && (
+        <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+          <Pressable style={styles.sheetBackdrop} onPress={closeMembersSheet} />
+          <Animated.View style={[styles.membersBottomSheetPanel, membersSheetAnimatedStyle]}>
+            {/* Top Draggable Area (Handle + Header, No close icon) */}
+            <GestureDetector gesture={membersSheetGesture}>
+              <View style={styles.sheetTopDragArea}>
+                <View style={styles.sheetHandleContainer}>
+                  <View style={styles.membersSheetDragHandle} />
+                </View>
+
+                <View style={styles.membersSheetHeader}>
+                  <View style={styles.membersSheetHeaderLeft}>
+                    <Text style={styles.membersSheetTitle}>Joined Members</Text>
+                    <View style={[styles.membersTotalPill, { backgroundColor: `${accentColor}18` }]}>
+                      <Text style={[styles.membersTotalText, { color: accentColor }]}>
+                        {formatCompactNumber(totalJoinedCount)} Members
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            </GestureDetector>
+
+            {/* Members Flat Row List (No cards, no colored borders) */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={[
+                styles.membersVerticalListContent,
+                { paddingBottom: Math.max(insets.bottom + 20, 36) },
+              ]}
+            >
+              {/* Top "You" Row: Pure flat row with pp, name, username, and YOU tag */}
+              {currentUserData && (
+                <View style={styles.memberRowItem}>
+                  <View style={styles.avatarWrap}>
+                    <CachedImage
+                      uri={currentUserData.image}
+                      label={currentUserData.name}
+                      style={styles.memberAvatarImg}
+                      letterSize={15}
+                      transition={0}
+                      placeholder={
+                        <View
+                          style={[
+                            styles.memberAvatarFallback,
+                            { backgroundColor: `${accentColor}25` },
+                          ]}
+                        >
+                          <Text style={[styles.avatarInitialText, { color: accentColor }]}>
+                            {getInitials(currentUserData.name)}
+                          </Text>
+                        </View>
+                      }
+                    />
+                  </View>
+
+                  <View style={styles.memberInfoCol}>
+                    <View style={styles.memberNameRow}>
+                      <Text style={styles.memberNameText} numberOfLines={1}>
+                        {currentUserData.name}
+                      </Text>
+                      <View
+                        style={[
+                          styles.youBadgePill,
+                          { backgroundColor: `${accentColor}20` },
+                        ]}
+                      >
+                        <Text style={[styles.youBadgeText, { color: accentColor }]}>
+                          YOU
+                        </Text>
+                      </View>
+                    </View>
+                    <Text
+                      style={[styles.memberUsernameText, { color: accentColor }]}
+                      numberOfLines={1}
+                    >
+                      @{currentUserData.username.replace(/^@/, "")}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Other Members Flat Rows: Pure flat row with pp, name, username */}
+              {otherMembers.map((m) => (
+                <View key={m.id} style={styles.memberRowItem}>
+                  <View style={styles.avatarWrap}>
+                    <CachedImage
+                      uri={m.image}
+                      label={m.name}
+                      style={styles.memberAvatarImg}
+                      letterSize={15}
+                      transition={0}
+                      placeholder={
+                        <View style={styles.memberAvatarFallback}>
+                          <Text style={styles.avatarInitialText}>
+                            {getInitials(m.name)}
+                          </Text>
+                        </View>
+                      }
+                    />
+                  </View>
+
+                  <View style={styles.memberInfoCol}>
+                    <Text style={styles.memberNameText} numberOfLines={1}>
+                      {m.name}
+                    </Text>
+                    <Text style={styles.memberUsernameText} numberOfLines={1}>
+                      @{m.username.replace(/^@/, "")}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+
+              {/* Empty State */}
+              {otherMembers.length === 0 && !currentUserData && (
+                <View style={styles.emptyMembersWrap}>
+                  <UsersIcon color="#64748b" />
+                  <Text style={styles.emptyMembersTitle}>No learners joined yet</Text>
+                  <Text style={styles.emptyMembersSubtitle}>
+                    Be the first to join this {isFramework ? "framework" : "series"} and start learning!
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+          </Animated.View>
+        </View>
+      )}
+    </GestureHandlerRootView>
   );
-};
+}
 
 const styles = StyleSheet.create({
   body: {
     flex: 1,
     backgroundColor: pallete.bgmain,
   },
-  seriesHero: {
-    marginTop: 70,
-    width: "100%",
-    height: 220,
-    position: "relative",
-  },
-  heroImage: {
-    width: "100%",
-    height: "100%",
-    borderBottomLeftRadius: 10,
-    borderBottomRightRadius: 10,
-  },
-  heroOverlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  seriesInfo: {
-    paddingHorizontal: pallete.paddingside,
-    marginTop: -20,
-    position: "relative",
-    zIndex: 10,
-  },
-  seriesTitle: {
-    fontFamily: "Bebas Neue",
-    fontSize: 36,
-    lineHeight: 36,
-    color: pallete.textwhite,
-    marginBottom: 4,
-  },
-  seriesAuthor: {
-    color: pallete.textgray,
-    fontSize: 14,
-    marginBottom: 12,
-  },
-  joinedBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    alignSelf: "flex-start",
-    marginBottom: 24,
-  },
-  joinedBadgeActive: {
-    backgroundColor: "#ffffff1f",
-  },
-  badgeText: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#e5e7eb",
-  },
-  progressBox: {
-    backgroundColor: pallete.bgcard,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
-    borderRadius: 12,
-    padding: 16,
-    marginHorizontal: pallete.paddingside,
-    marginBottom: 30,
-  },
-  progressText: {
-    fontSize: 14,
-    color: pallete.textwhite,
-    marginBottom: 12,
-    fontWeight: "500",
-  },
-  progressBarContainer: {
+  topHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    backgroundColor: "#090314",
+    zIndex: 20,
   },
-  pBarTrack: {
+  headerIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitleText: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#ffffff",
+    letterSpacing: 0.1,
+  },
+  headerRightActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  scrollContent: {
+    paddingBottom: 60,
+  },
+
+  // 1. Hero Cover (Edge to edge, no side margins, no box container, no border radius)
+  heroCoverWrapper: {
+    width: SCREEN_WIDTH,
+    height: 240,
+    position: "relative",
+    backgroundColor: "#131927",
+  },
+  heroCoverImage: {
+    width: "100%",
+    height: "100%",
+  },
+  heroGradientOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroFloatingDetails: {
+    position: "absolute",
+    bottom: 16,
+    left: 18,
+    right: 18,
+  },
+  heroSeriesTitle: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: "#ffffff",
+    lineHeight: 30,
+    letterSpacing: 0.2,
+  },
+  heroAuthorText: {
+    fontSize: 13,
+    color: "#94a3b8",
+    marginTop: 4,
+    fontWeight: "500",
+  },
+
+  // 2. Stats & Badge Row (Matches Image 1)
+  statsRowContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 14,
+    paddingHorizontal: 18,
+  },
+  statsInfoLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  statPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+  },
+  statPillText: {
+    fontSize: 12.5,
+    fontWeight: "500",
+    color: "#94a3b8",
+  },
+  joinedBadgeDisabled: {
+    opacity: 0.8,
+  },
+  frameworkPurpleBadge: {
+    backgroundColor: "#7c3aed",
+    paddingHorizontal: 10,
+    paddingVertical: 4.5,
+    borderRadius: 8,
+  },
+  frameworkBadgeText: {
+    color: "#ffffff",
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  seriesGreenBadge: {
+    backgroundColor: "rgba(16, 185, 129, 0.2)",
+    paddingHorizontal: 10,
+    paddingVertical: 4.5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(16, 185, 129, 0.3)",
+  },
+  seriesBadgeText: {
+    color: "#10b981",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  // 3. About Card (Matches Image 1 when NOT joined)
+  aboutCardContainer: {
+    backgroundColor: "#111625",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    padding: 18,
+    marginHorizontal: 18,
+    marginTop: 16,
+  },
+  aboutCardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#ffffff",
+    marginBottom: 6,
+  },
+  aboutCardDescription: {
+    fontSize: 14,
+    color: "#cbd5e1",
+    lineHeight: 22,
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    marginVertical: 16,
+  },
+  lockedNoticeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.02)",
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  lockedNoticeText: {
     flex: 1,
-    height: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.1)",
-    borderRadius: 10,
+    fontSize: 12.5,
+    color: "#94a3b8",
+    lineHeight: 18,
+    textAlign: "center",
+  },
+
+  // Fixed Bottom Bar & Join Button (Matches Image 1)
+  bottomBarFixed: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "#090314",
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.06)",
+    zIndex: 30,
+  },
+  bottomJoinBtn: {
+    height: 50,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 4,
+  },
+  bottomJoinBtnText: {
+    color: "#090314",
+    fontSize: 15.5,
+    fontWeight: "700",
+  },
+
+  // Fresh Start Card (Clean modern border radius, no play icon, heading text)
+  freshStartCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#111625",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginHorizontal: 18,
+    marginTop: 18,
+    borderWidth: 1,
+  },
+  freshStartLeft: {
+    flex: 1,
+    marginRight: 12,
+  },
+  freshHeadingText: {
+    fontSize: 11.5,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  freshChapterNameText: {
+    fontSize: 14.5,
+    fontWeight: "600",
+    color: "#ffffff",
+  },
+
+  // Progress Card Container (Crisp modern border radius)
+  progressCardContainer: {
+    backgroundColor: "#111625",
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 18,
+    marginTop: 18,
+    borderWidth: 1,
+  },
+  progressTextRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  progressRatioText: {
+    fontSize: 13.5,
+    color: "#ffffff",
+    fontWeight: "500",
+  },
+  progressPercentText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  progressBarTrack: {
+    width: "100%",
+    height: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderRadius: 3,
     overflow: "hidden",
   },
-  pBarFill: {
+  progressBarFill: {
     height: "100%",
-    backgroundColor: pallete.accent,
-    borderRadius: 10,
+    borderRadius: 3,
   },
-  actionIcons: {
+  progressExpandedBottom: {
     flexDirection: "row",
-    gap: 10,
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.06)",
   },
-  actBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+  expandedBottomLeft: {
+    flex: 1,
+    marginRight: 10,
+  },
+  expandedLevelTag: {
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  expandedLevelTitle: {
+    fontSize: 13.5,
+    fontWeight: "600",
+    color: "#ffffff",
+    marginTop: 1,
+  },
+  expandedQnaText: {
+    fontSize: 11.5,
+    color: "#94a3b8",
+    marginTop: 2,
+    fontWeight: "500",
+  },
+
+  // Tabs Row
+  tabsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 22,
+    paddingHorizontal: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.08)",
+  },
+  tabBtn: {
+    paddingVertical: 12,
+    marginRight: 28,
+    position: "relative",
+  },
+  tabBtnActive: {},
+  tabBtnText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#64748b",
+  },
+  tabIndicator: {
+    position: "absolute",
+    bottom: -1,
+    left: 0,
+    right: 0,
+    height: 2.5,
+    borderRadius: 2,
+  },
+
+  // 2-Columns Grid Container for Chapters/Levels
+  chaptersGridContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+
+  // About Tab Content (When Joined)
+  aboutTabWrapper: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+  },
+  aboutSectionHeading: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#ffffff",
+    marginBottom: 8,
+  },
+  aboutDescriptionText: {
+    fontSize: 14,
+    color: "#cbd5e1",
+    lineHeight: 22,
+    letterSpacing: 0.1,
+  },
+
+  // Bottom Sheets (Pure dark black aesthetic, smooth timing)
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0, 0, 0, 0.72)",
+  },
+  bottomSheetPanel: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "#0d0718",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    paddingHorizontal: 22,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "ios" ? 38 : 24,
+    alignItems: "center",
+    zIndex: 100,
+  },
+  sheetDragHandle: {
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255, 255, 255, 0.25)",
+    marginBottom: 18,
+  },
+  sheetHeaderIconWrap: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#ffffff",
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  sheetMessage: {
+    fontSize: 13.5,
+    color: "#94a3b8",
+    textAlign: "center",
+    lineHeight: 20,
+    marginBottom: 22,
+  },
+  sheetActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    width: "100%",
+  },
+  sheetDismissBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.1)",
   },
-  joinBtn: {
-    backgroundColor: "rgba(113, 251, 182, 0.2)",
-    borderColor: pallete.true,
+  sheetDismissBtnText: {
+    color: "#ffffff",
+    fontSize: 14.5,
+    fontWeight: "600",
   },
-  exitBtn: {
-    backgroundColor: "rgba(251, 113, 133, 0.2)",
-    borderColor: pallete.false,
-  },
-  gridSection: {
-    paddingHorizontal: 4,
-    marginBottom: 40,
-  },
-  booksGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-around",
-    gap: 16,
-  },
-  recommendationSection: {
-    width: "100%",
-    paddingHorizontal: 15,
-    marginTop: 10,
-    marginBottom: 40,
-  },
-  recommendCard: {
-    position: "relative",
-    width: "100%",
-    backgroundColor: "#0b1120",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.7,
-    shadowRadius: 16,
-    elevation: 8,
-  },
-  recommendBgAmbient: {
-    ...StyleSheet.absoluteFillObject,
-    overflow: "hidden",
-  },
-  ambientImage: {
-    width: "100%",
-    height: "100%",
-    opacity: 0.42,
-    transform: [{ scale: 1.1 }],
-  },
-  recommendBgOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-  },
-  recommendCoverWrap: {
-    width: 60,
-    height: 80,
-    borderRadius: 6,
-    overflow: "hidden",
-  },
-  recommendCover: {
-    width: "100%",
-    height: "100%",
-  },
-  recommendInfo: {
+  sheetContinueBtn: {
     flex: 1,
-  },
-  recommendTag: {
-    color: pallete.accent,
-    fontSize: 10,
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  recommendTitle: {
-    color: pallete.textwhite,
-    fontSize: 14,
-    fontWeight: "700",
-    marginBottom: 4,
-  },
-  recommendDesc: {
-    color: pallete.textgray,
-    fontSize: 12,
-  },
-  recommendArrow: {
+    height: 46,
+    borderRadius: 12,
+    alignItems: "center",
     justifyContent: "center",
   },
-});
+  sheetContinueBtnText: {
+    color: "#090314",
+    fontSize: 14.5,
+    fontWeight: "700",
+  },
 
-export default SeriesOverview;
+  // Members Bottom Sheet
+  membersBottomSheetPanel: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: SCREEN_HEIGHT * 0.72,
+    backgroundColor: "#0d0718",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    zIndex: 100,
+    overflow: "hidden",
+  },
+  sheetTopDragArea: {
+    width: "100%",
+    backgroundColor: "#0d0718",
+  },
+  sheetHandleContainer: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  membersSheetDragHandle: {
+    width: 42,
+    height: 4.5,
+    borderRadius: 3,
+    backgroundColor: "rgba(255, 255, 255, 0.3)",
+    alignSelf: "center",
+  },
+  membersSheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
+  },
+  membersSheetHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  membersSheetTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  membersTotalPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  membersTotalText: {
+    fontSize: 11.5,
+    fontWeight: "700",
+  },
+  membersVerticalListContent: {
+    paddingHorizontal: 20,
+    paddingTop: 10,
+  },
+  memberRowItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 255, 255, 0.04)",
+  },
+  avatarWrap: {
+    position: "relative",
+  },
+  memberAvatarImg: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "#1f2937",
+  },
+  memberAvatarFallback: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarInitialText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#ffffff",
+  },
+  memberInfoCol: {
+    flex: 1,
+    marginLeft: 12,
+    justifyContent: "center",
+  },
+  memberNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  memberNameText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#ffffff",
+  },
+  youBadgePill: {
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 5,
+  },
+  youBadgeText: {
+    fontSize: 9.5,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  memberUsernameText: {
+    fontSize: 12,
+    color: "#94a3b8",
+    marginTop: 2,
+    fontWeight: "500",
+  },
+  emptyMembersWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 40,
+    gap: 8,
+  },
+  emptyMembersTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#cbd5e1",
+    marginTop: 6,
+  },
+  emptyMembersSubtitle: {
+    fontSize: 12.5,
+    color: "#64748b",
+    textAlign: "center",
+    maxWidth: 240,
+    lineHeight: 18,
+  },
+  recommendationSection: {
+    marginTop: 28,
+    marginBottom: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255, 255, 255, 0.08)",
+  },
+  recommendationHeader: {
+    paddingHorizontal: 20,
+    marginBottom: 12,
+  },
+  recommendationBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
+  recommendationBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  recommendationTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#ffffff",
+    marginBottom: 4,
+  },
+  recommendationSubtitle: {
+    fontSize: 12.5,
+    color: "#94a3b8",
+    lineHeight: 18,
+  },
+  recommendedBookCard: {
+    flexDirection: "row",
+    backgroundColor: "#111625",
+    borderRadius: 14,
+    padding: 14,
+    marginHorizontal: 20,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+    alignItems: "center",
+  },
+  recommendedBookCover: {
+    width: 80,
+    height: 112,
+    borderRadius: 8,
+    backgroundColor: "#1f2937",
+  },
+  recommendedBookDetails: {
+    flex: 1,
+    marginLeft: 14,
+    justifyContent: "center",
+  },
+  recTypeBadge: {
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginBottom: 6,
+  },
+  recTypeBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  recommendedBookTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#ffffff",
+    lineHeight: 20,
+    marginBottom: 4,
+  },
+  recommendedBookAuthor: {
+    fontSize: 12.5,
+    color: "#94a3b8",
+    fontWeight: "500",
+    marginBottom: 10,
+  },
+  recStartButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignSelf: "flex-start",
+    gap: 4,
+  },
+  recStartButtonText: {
+    color: "#090314",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  recBookCardLoading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#111625",
+    borderRadius: 14,
+    paddingVertical: 28,
+    marginHorizontal: 20,
+    marginTop: 10,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  recLoadingText: {
+    color: "#94a3b8",
+    fontSize: 13,
+    fontWeight: "500",
+  },
+});

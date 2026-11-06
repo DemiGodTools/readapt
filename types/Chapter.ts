@@ -1,3 +1,4 @@
+// File: types/Chapter.ts
 import { MediaType, SubscriptionPlan } from "../enums";
 
 export type IChapter = {
@@ -11,18 +12,20 @@ export type IChapter = {
   for: SubscriptionPlan;
   isTrending: boolean;
   comments: number;
+  questions?: any[];
   cover: string;
   category: string;
   series?: string;
   likes: number;
-  author: string,
-  total: number,
+  author: string;
+  total: number;
   isDownloadable: boolean;
   toc: {
     cut: string;
     title: string;
   }[];
-  lyrics?: string; // in such a format "[00:01:00] - line 1\n[00:02:00] - line 2"
+  lyrics?: string;
+  transcript?: string;
   createdAt: Date;
   updatedAt: Date;
-}
+};

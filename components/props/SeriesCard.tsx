@@ -2,7 +2,6 @@ import React, { useRef } from "react";
 import {
   View,
   Text,
-  Image,
   StyleSheet,
   Pressable,
   Animated,
@@ -13,6 +12,7 @@ import pallete from "../../lib/Colors";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../nav/MainNavigation";
+import CachedImage from "./CachedImage";
 
 type Props = {
   id: string;
@@ -21,13 +21,25 @@ type Props = {
   cover: string;
   chapterCount: number;
   type?: string;
+  cardWidth?: number;
+  style?: any;
 };
 
-const SeriesCard = ({ id, title, author, cover, chapterCount, type }: Props) => {
+const SeriesCard = ({
+  id,
+  title,
+  author,
+  cover,
+  chapterCount,
+  type,
+  cardWidth,
+  style,
+}: Props) => {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   const isFramework = type === "framework";
+  const isCompact = cardWidth !== undefined && cardWidth < 220;
 
   const handlePressIn = () => {
     Animated.spring(scaleAnim, {
@@ -49,9 +61,11 @@ const SeriesCard = ({ id, title, author, cover, chapterCount, type }: Props) => 
     navigation.navigate("SeriesOverview", { seriesId: id });
   };
 
- const renderTitle = () => {
+  const renderTitle = () => {
     return (
-      <Text style={styles.seriesTitle} numberOfLines={2}>
+      <Text
+        style={[styles.seriesTitle, isCompact && styles.compactTitle]}
+        numberOfLines={2}>
         {title}
       </Text>
     );
@@ -62,7 +76,15 @@ const SeriesCard = ({ id, title, author, cover, chapterCount, type }: Props) => 
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       onPress={handlePress}
-      style={styles.seriesCard}>
+      style={[
+        styles.seriesCard,
+        cardWidth !== undefined && {
+          width: cardWidth,
+          minWidth: cardWidth,
+          marginRight: 0,
+        },
+        style,
+      ]}>
       <Animated.View
         style={[styles.wrapper, { transform: [{ scale: scaleAnim }] }]}>
         {/* Stacked Layers */}
@@ -70,24 +92,31 @@ const SeriesCard = ({ id, title, author, cover, chapterCount, type }: Props) => 
           style={[
             styles.stackLayer1,
             isFramework && { backgroundColor: "#38bdf8" },
+            isCompact && styles.compactStack1,
           ]}
         />
         <View
           style={[
             styles.stackLayer2,
             isFramework && { backgroundColor: "#38bdf8" },
+            isCompact && styles.compactStack2,
           ]}
         />
 
         {/* Main Card */}
         <View style={styles.seriesMain}>
-          <Image source={{ uri: cover }} style={styles.seriesImage} />
+          <CachedImage
+            uri={cover}
+            label={title}
+            style={styles.seriesImage}
+            letterSize={44}
+          />
 
           {/* Badge */}
-          <View style={styles.seriesBadge}>
+          <View style={[styles.seriesBadge, isCompact && styles.compactBadge]}>
             <Svg
-              width={16}
-              height={16}
+              width={isCompact ? 12 : 16}
+              height={isCompact ? 12 : 16}
               viewBox="0 0 24 24"
               fill="none"
               stroke={isFramework ? "#38bdf8" : pallete.accent}
@@ -101,19 +130,25 @@ const SeriesCard = ({ id, title, author, cover, chapterCount, type }: Props) => 
               <Line x1="3" y1="12" x2="3.01" y2="12" />
               <Line x1="3" y1="18" x2="3.01" y2="18" />
             </Svg>
-            <Text style={styles.badgeText}>
+            <Text style={[styles.badgeText, isCompact && styles.compactBadgeText]}>
               {chapterCount} {isFramework ? "LVL" : "CH"}
             </Text>
           </View>
         </View>
 
         {/* Info */}
-        <View style={styles.seriesInfo}>
+        <View style={[styles.seriesInfo, isCompact && styles.compactInfo]}>
           {renderTitle()}
           <View style={styles.seriesMeta}>
-            <Text style={styles.metaText}>{author}</Text>
+            <Text
+              style={[styles.metaText, isCompact && styles.compactMetaText]}
+              numberOfLines={1}>
+              {author}
+            </Text>
             <View style={styles.dot} />
-            <Text style={styles.metaText}>
+            <Text
+              style={[styles.metaText, isCompact && styles.compactMetaText]}
+              numberOfLines={1}>
               {isFramework ? "Framework" : "Series"}
             </Text>
           </View>
@@ -147,6 +182,11 @@ const styles = StyleSheet.create({
     opacity: 0.18,
     zIndex: 1,
   },
+  compactStack1: {
+    top: -8,
+    height: 28,
+    borderRadius: 8,
+  },
   stackLayer2: {
     position: "absolute",
     top: -6,
@@ -158,6 +198,11 @@ const styles = StyleSheet.create({
     backgroundColor: pallete.accent,
     opacity: 0.12,
     zIndex: 2,
+  },
+  compactStack2: {
+    top: -4,
+    height: 14,
+    borderRadius: 8,
   },
   seriesMain: {
     aspectRatio: 16 / 9,
@@ -192,20 +237,39 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,.12)",
   },
+  compactBadge: {
+    right: 6,
+    bottom: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 7,
+  },
   badgeText: {
     color: "#fff",
     marginLeft: 6,
     fontWeight: "700",
     fontSize: 12,
   },
+  compactBadgeText: {
+    fontSize: 10,
+    marginLeft: 4,
+  },
   seriesInfo: {
     marginTop: 16,
+  },
+  compactInfo: {
+    marginTop: 10,
   },
   seriesTitle: {
     fontSize: 17,
     fontWeight: "700",
     color: pallete.textwhite,
     marginBottom: 6,
+  },
+  compactTitle: {
+    fontSize: 13,
+    lineHeight: 17,
+    marginBottom: 4,
   },
   seriesMeta: {
     flexDirection: "row",
@@ -214,6 +278,9 @@ const styles = StyleSheet.create({
   metaText: {
     fontSize: 13,
     color: pallete.textgray,
+  },
+  compactMetaText: {
+    fontSize: 11,
   },
   dot: {
     width: 4,

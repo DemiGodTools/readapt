@@ -1,3 +1,4 @@
+import { AppState, DeviceEventEmitter } from "react-native";
 import {
   createContext,
   useRef,
@@ -7,18 +8,13 @@ import {
   useCallback,
   useMemo,
 } from "react";
+import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IUser } from "../../types/User";
-import useAuth from "../../hooks/useAuth";
+import { notifyAuthChange } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
-import TrackPlayer, {
-  Capability,
-  Event,
-  State,
-  useProgress,
-  useTrackPlayerEvents,
-} from "react-native-track-player";
 import { useNetworkStatus } from "../../hooks/useNetwork";
+import { useGlobalAudioActions } from "../../hooks/useGlobalAudio";
 
 type ToastData = {
   title: string;
@@ -44,13 +40,13 @@ type ModalContextType = {
 };
 
 type AudioContextType = {
-  player: any;
-  status: any;
-  currentTrack: any;
-  playTrack: (track: any) => void;
+  playTrack: (track: any, initialPositionSec?: number) => void;
   togglePlay: () => void;
   pause: () => void;
   seekTo: (seconds: number) => void;
+  setPlaybackRate: (rate: number) => void;
+  setVolume: (vol: number) => number;
+  preloadTrack: (track: any) => void;
   removeAllTracks: () => void;
 };
 
@@ -60,308 +56,254 @@ export const ModalContext = createContext<ModalContextType | null>(null);
 export const UserContext = createContext<{
   user: IUser | null;
   loadingUser: boolean;
-  reload: () => Promise<void>;
+  reload: (tokenOverride?: string) => Promise<void>;
   updateUser: (patch: Partial<IUser>) => void;
+  logout: () => Promise<void>;
+  setAuthSession: (token: string, user?: IUser) => Promise<void>;
 } | null>(null);
 
-const DEMO_AUDIO_URL =
-  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
 const USER_CACHE_KEY = "cached_user_profile";
-
-let setupPromise: Promise<void> | null = null;
-
-const ensurePlayerSetup = async () => {
-  if (!setupPromise) {
-    setupPromise = (async () => {
-      try {
-        await TrackPlayer.setupPlayer({
-          autoHandleInterruptions: true,
-        });
-        await TrackPlayer.updateOptions({
-          capabilities: [
-            Capability.Play,
-            Capability.Pause,
-            Capability.Stop,
-            Capability.SeekTo,
-            Capability.JumpForward,
-            Capability.JumpBackward,
-          ],
-          compactCapabilities: [
-            Capability.Play,
-            Capability.Pause,
-            Capability.SeekTo,
-          ],
-          progressUpdateEventInterval: 0.25,
-        } as any);
-      } catch (error: any) {
-        if (
-          error?.message?.includes("already") ||
-          error?.code === "player_already_initialized"
-        ) {
-          return;
-        }
-        console.log("Audio setup error:", error);
-        setupPromise = null;
-        throw error;
-      }
-    })();
-  }
-  return setupPromise;
-};
 
 export const DataProvider = ({ children }: { children: ReactNode }) => {
   const [toast, setToast] = useState<ToastData | null>(null);
   const [modal, setModal] = useState<ModalData | null>(null);
   const [user, setUser] = useState<IUser | null>(null);
+  const [token, setToken] = useState<string>("");
+  const [loadingUser, setLoadingUser] = useState(true);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { isConnected } = useNetworkStatus();
+
+  // Static actions reference — prevents audio state updates from re-rendering the entire app!
+  const audioActions = useGlobalAudioActions();
+
+  const showToast = useCallback((data: ToastData) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast(data);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null);
+    }, data.time || 3000);
+  }, []);
+
+  const hideToast = useCallback(() => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast(null);
+  }, []);
+
+  const showModal = useCallback((data: ModalData) => {
+    setModal(data);
+  }, []);
+
+  const hideModal = useCallback(() => {
+    setModal(null);
+  }, []);
+
   const updateUser = useCallback((patch: Partial<IUser>) => {
     setUser((prev) => {
       if (!prev) return prev;
-      const next = { ...prev, ...patch };
-      AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(next)).catch(() => {});
-      return next;
+      const updated = { ...prev, ...patch };
+      AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(updated)).catch(
+        () => {}
+      );
+      return updated;
     });
   }, []);
-  const { accessToken } = useAuth();
-  const { isConnected } = useNetworkStatus();
-  const [loadingUser, setLoadingUser] = useState(true);
 
-  const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resolveToken = useCallback(async (): Promise<string | null> => {
+    let raw: string | null = null;
+    try {
+      raw = await SecureStore.getItemAsync("accessToken");
+    } catch {}
 
-  // App launch par disk se instant hydrate
-  useEffect(() => {
-    let isMounted = true;
-    AsyncStorage.getItem(USER_CACHE_KEY)
-      .then((cached) => {
-        if (cached && isMounted) {
-          setUser(JSON.parse(cached));
-          setLoadingUser(false);
-        }
-      })
-      .catch(() => {});
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  const hideToast = () => {
-    if (toastTimeout.current) {
-      clearTimeout(toastTimeout.current);
-      toastTimeout.current = null;
-    }
-    setToast(null);
-  };
-
-  const showToast = (toastData: ToastData) => {
-    if (toastTimeout.current) clearTimeout(toastTimeout.current);
-    setToast(toastData);
-    toastTimeout.current = setTimeout(() => {
-      setToast(null);
-      toastTimeout.current = null;
-    }, toastData.time ?? 3000);
-  };
-
-  const showModal = (modalData: ModalData) => setModal(modalData);
-  const hideModal = () => setModal(null);
-
-  const getUser = useCallback(async () => {
-    if (!accessToken) {
+    if (!raw) {
       try {
-        const cached = await AsyncStorage.getItem(USER_CACHE_KEY);
-        setUser(cached ? JSON.parse(cached) : null);
-      } catch {
-        setUser(null);
-      }
-      setLoadingUser(false);
-      return;
+        raw = await AsyncStorage.getItem("accessToken");
+      } catch {}
     }
+
+    if (!raw) return null;
 
     try {
-      const { data } = await api.get(`/get-self`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (data?.data) {
-        setUser(data.data);
-        AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(data.data)).catch(
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        return parsed.token || null;
+      }
+      return typeof parsed === "string" ? parsed : raw;
+    } catch {
+      return raw;
+    }
+  }, []);
+
+  const getUser = useCallback(
+    async (tokenOverride?: string) => {
+      try {
+        const activeToken = tokenOverride || (await resolveToken());
+
+        if (!activeToken) {
+          setUser(null);
+          setToken("");
+          setLoadingUser(false);
+          return;
+        }
+
+        setToken(activeToken);
+
+        const { data } = await api.get(`/get-self`, {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        });
+
+        if (data?.data) {
+          setUser(data.data);
+          AsyncStorage.setItem(
+            USER_CACHE_KEY,
+            JSON.stringify(data.data)
+          ).catch(() => {});
+          AsyncStorage.setItem(
+            "recent_session_account",
+            JSON.stringify({
+              name: data.data.name,
+              email: data.data.email,
+              image: data.data.image,
+            })
+          ).catch(() => {});
+        }
+      } catch {
+        try {
+          const cached = await AsyncStorage.getItem(USER_CACHE_KEY);
+          if (cached) setUser(JSON.parse(cached));
+        } catch {}
+      } finally {
+        setLoadingUser(false);
+      }
+    },
+    [resolveToken]
+  );
+
+  const setAuthSession = useCallback(
+    async (newToken: string, newUser?: IUser) => {
+      setToken(newToken);
+      if (newUser) {
+        setUser(newUser);
+        AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(newUser)).catch(
           () => {}
         );
+        AsyncStorage.setItem(
+          "recent_session_account",
+          JSON.stringify({
+            name: newUser.name,
+            email: newUser.email,
+            image: newUser.image,
+          })
+        ).catch(() => {});
       }
-    } catch {
-      try {
-        const cached = await AsyncStorage.getItem(USER_CACHE_KEY);
-        if (cached) setUser(JSON.parse(cached));
-      } catch {}
-    } finally {
-      setLoadingUser(false);
-    }
-  }, [accessToken]);
+      notifyAuthChange();
+      await getUser(newToken);
+    },
+    [getUser]
+  );
+
+  const logout = useCallback(async () => {
+    try {
+      const currentToken = token || (await resolveToken());
+      const headers = currentToken
+        ? { Authorization: `Bearer ${currentToken}` }
+        : {};
+      await api.post("/auth/logout", { email: user?.email }, { headers }).catch(
+        () => {}
+      );
+    } catch {}
+
+    // Preserve the user's name, email, and avatar in recent_session_account so Login screen displays the recent session button
+    try {
+      if (user) {
+        await AsyncStorage.setItem(
+          "recent_session_account",
+          JSON.stringify({
+            name: user.name,
+            email: user.email,
+            image: user.image,
+          })
+        ).catch(() => {});
+      }
+    } catch {}
+
+    try {
+      await SecureStore.deleteItemAsync("accessToken").catch(() => {});
+      await AsyncStorage.removeItem("accessToken").catch(() => {});
+      await AsyncStorage.removeItem(USER_CACHE_KEY).catch(() => {});
+      await AsyncStorage.removeItem("cached_feed_data").catch(() => {});
+      await AsyncStorage.removeItem("recentReads").catch(() => {});
+    } catch {}
+
+    setUser(null);
+    setToken("");
+    try {
+      audioActions.removeAllTracks();
+    } catch {}
+
+    notifyAuthChange();
+  }, [token, user, resolveToken, audioActions]);
 
   useEffect(() => {
     getUser();
   }, [getUser, isConnected]);
 
+  // Presence Heartbeat & AppState Listener (Instant logged in detection)
   useEffect(() => {
-    ensurePlayerSetup().catch(() => {});
-  }, []);
+    if (!token) return;
 
-  const [currentTrack, setCurrentTrack] = useState<any>(null);
-  const [playerState, setPlayerState] = useState<State>(State.None);
-  const { position, duration } = useProgress(250);
+    // 1. Send heartbeat every 3 minutes while app is in foreground
+    const interval = setInterval(() => {
+      api
+        .post(
+          "/heartbeat",
+          {},
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        )
+        .catch(() => {});
+    }, 3 * 60 * 1000);
 
-  useTrackPlayerEvents(
-    [Event.PlaybackState, Event.PlaybackError, Event.PlaybackQueueEnded],
-    (event) => {
-      if (event.type === Event.PlaybackState) {
-        setPlayerState(event.state);
-      } else if (event.type === Event.PlaybackError) {
-        console.log("TrackPlayer playback error:", event);
+    // 2. Refresh on app foreground
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        getUser();
       }
-    }
+    });
+
+    return () => {
+      clearInterval(interval);
+      sub.remove();
+    };
+  }, [token, getUser]);
+
+  const toastContextValue = useMemo(
+    () => ({ toast, showToast, hideToast }),
+    [toast, showToast, hideToast]
   );
 
-  const isPlayingNow = playerState === State.Playing;
-  const isBuffering =
-    playerState === State.Buffering || playerState === State.Loading;
-  const isLoaded =
-    !!currentTrack &&
-    playerState !== State.None &&
-    playerState !== State.Error;
+  const modalContextValue = useMemo(
+    () => ({ modal, showModal, hideModal }),
+    [modal, showModal, hideModal]
+  );
 
-  const status = useMemo(
+  const userContextValue = useMemo(
     () => ({
-      playing: isPlayingNow,
-      isLoaded,
-      isBuffering,
-      duration: duration || 0,
-      currentTime: position || 0,
-      playbackState: playerState,
+      user,
+      loadingUser,
+      reload: getUser,
+      updateUser,
+      logout,
+      setAuthSession,
     }),
-    [isPlayingNow, isLoaded, isBuffering, duration, position, playerState]
-  );
-
-  const player = useMemo(
-    () => ({
-      play: () => TrackPlayer.play().catch(() => {}),
-      pause: () => TrackPlayer.pause().catch(() => {}),
-      seekTo: (sec: number) => TrackPlayer.seekTo(sec).catch(() => {}),
-      setPlaybackRate: (rate: number) =>
-        TrackPlayer.setRate(rate).catch(() => {}),
-      replace: async (source: { uri: string } | string) => {
-        try {
-          await ensurePlayerSetup();
-          await TrackPlayer.reset();
-          const uri = typeof source === "string" ? source : source.uri;
-          await TrackPlayer.add({
-            id: uri,
-            url: uri,
-            media: uri,
-          });
-          await TrackPlayer.play();
-        } catch (_) {}
-      },
-      raw: TrackPlayer,
-    }),
-    []
-  );
-
-  const playTrack = useCallback(
-    async (track: any) => {
-      if (!track) return;
-      const isLocalFile =
-        typeof track.media === "string" && track.media.startsWith("file://");
-      if (!isConnected && !isLocalFile) {
-        showToast({ title: "Please connect to internet to play audio" });
-        return;
-      }
-      const targetUrl = track.media || DEMO_AUDIO_URL;
-
-      // If the exact same track is already loaded, don't restart it!
-      if (currentTrack?._id === track._id && isLoaded) {
-        if (!isPlayingNow) {
-          try {
-            await TrackPlayer.play();
-          } catch (_) {}
-        }
-        return;
-      }
-
-      try {
-        await ensurePlayerSetup();
-        await TrackPlayer.reset();
-        await TrackPlayer.add({
-          id: track._id ?? targetUrl,
-          url: targetUrl,
-          media: targetUrl,
-          title: track.title ?? "Audio",
-          artist: track.author ?? "Readapt",
-          artwork: track.cover,
-        });
-        await TrackPlayer.play();
-        setCurrentTrack(track);
-      } catch (error) {
-        console.log("Error playing track:", error);
-      }
-    },
-    [isConnected, currentTrack?._id, isLoaded, isPlayingNow, showToast]
-  );
-
-  const removeAllTracks = useCallback(async () => {
-    try {
-      await TrackPlayer.reset();
-      setCurrentTrack(null);
-    } catch (error) {
-      console.log("Error clearing tracks:", error);
-    }
-  }, []);
-
-  const togglePlay = useCallback(async () => {
-    if (!isLoaded) return;
-    try {
-      if (isPlayingNow) {
-        await TrackPlayer.pause();
-      } else {
-        await TrackPlayer.play();
-      }
-    } catch (_) {}
-  }, [isLoaded, isPlayingNow]);
-
-  const pause = useCallback(() => {
-    TrackPlayer.pause().catch(() => {});
-  }, []);
-
-  const seekTo = useCallback((sec: number) => {
-    TrackPlayer.seekTo(sec).catch(() => {});
-  }, []);
-
-  const value = useMemo(
-    () => ({
-      player,
-      status,
-      currentTrack,
-      playTrack,
-      togglePlay,
-      pause,
-      seekTo,
-      removeAllTracks,
-    }),
-    [
-      player,
-      status,
-      currentTrack,
-      playTrack,
-      togglePlay,
-      pause,
-      seekTo,
-      removeAllTracks,
-    ]
+    [user, loadingUser, getUser, updateUser, logout, setAuthSession]
   );
 
   return (
-    <AudioContext.Provider value={value}>
-      <ToastContext.Provider value={{ toast, showToast, hideToast }}>
-        <ModalContext.Provider value={{ modal, showModal, hideModal }}>
-          <UserContext.Provider
-            value={{ user, loadingUser, reload: getUser, updateUser }}>
+    <AudioContext.Provider value={audioActions}>
+      <ToastContext.Provider value={toastContextValue}>
+        <ModalContext.Provider value={modalContextValue}>
+          <UserContext.Provider value={userContextValue}>
             {children}
           </UserContext.Provider>
         </ModalContext.Provider>

@@ -1,3 +1,4 @@
+// File: Home.tsx
 import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import {
   View,
@@ -10,17 +11,33 @@ import {
   UIManager,
   Vibration,
   DeviceEventEmitter,
+  TouchableOpacity,
+  RefreshControl,
+  ActivityIndicator,
 } from "react-native";
+import { IThought } from "../../types/Thought";
 import pallete from "../../lib/Colors";
 import useAuth from "../../hooks/useAuth";
 import Carousel from "react-native-reanimated-carousel";
 import ContentCard from "../../components/props/ContentCard";
 import SeriesCard from "../../components/props/SeriesCard";
-import Svg, { Path, Rect, Line } from "react-native-svg";
+import BannerSlider from "../../components/props/BannerSlider";
+import Svg, {
+  Path,
+  Rect,
+  Line,
+  Defs,
+  LinearGradient as SvgGradient,
+  Stop,
+  Text as SvgText,
+} from "react-native-svg";
 import { api } from "../../lib/api";
 import ChapterCardSkelly from "../../components/props/ChapterCardSkelly";
 import SeriesCardSkelly from "../../components/props/SeriesCardSkelly";
 import { ISeries } from "../../types/Series";
+import { IS_EARLY_ACCESS_FREE } from "../../lib/entitlements";
+import { getRecentReads } from "../../lib/userStorage";
+import { IRecentRead } from "../../types/Storage";
 import { IChapter } from "../../types/Chapter";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useUser } from "../../hooks/useUser";
@@ -44,12 +61,16 @@ const CARD_GAP = 5;
 const SIDE_PADDING = 22;
 const CARD_WIDTH = (width - SIDE_PADDING * 2 - CARD_GAP) / 2;
 
-const AvailableIcon = () => (
-  <Svg width={18} height={18} viewBox="0 0 24 24">
-    <Rect x="3" y="3" width="7" height="7" rx="1.5" fill="#FFCA00" />
-    <Rect x="14" y="3" width="7" height="7" rx="1.5" fill="#FFCA00" />
-    <Rect x="3" y="14" width="7" height="7" rx="1.5" fill="#FFCA00" />
-    <Rect x="14" y="14" width="7" height="7" rx="1.5" fill="#FFCA00" />
+// --- Icons ---
+const QuickPicksIcon = () => (
+  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M13 2L3.5 13.5H11.5L10.5 22L20.5 10.5H12.5L13 2Z"
+      fill="#F59E0B"
+      stroke="#F59E0B"
+      strokeWidth={1}
+      strokeLinejoin="round"
+    />
   </Svg>
 );
 
@@ -98,11 +119,11 @@ function ContentSlider({ data }: { data: any[] }) {
       pagingEnabled
       snapEnabled
       mode="parallax"
-      onConfigurePanGesture={(gestureChain) =>
-        gestureChain.activeOffsetX([-15, 15]).failOffsetY([-10, 10])
+      onConfigurePanGesture={(gestureChain: any) =>
+        gestureChain.activeOffsetX([-10, 10]).failOffsetY([-10, 10])
       }
       modeConfig={{
-        parallaxScrollingScale: 0.92,
+        parallaxScrollingScale: 0.95,
         parallaxScrollingOffset: 0,
       }}
       renderItem={({ item, index }) => {
@@ -140,8 +161,8 @@ function SkellyCrousel() {
       data={[1, 2, 3, 4]}
       pagingEnabled
       snapEnabled
-      onConfigurePanGesture={(gestureChain) =>
-        gestureChain.activeOffsetX([-15, 15]).failOffsetY([-10, -10])
+      onConfigurePanGesture={(gestureChain: any) =>
+        gestureChain.activeOffsetX([-10, 10]).failOffsetY([-10, 10])
       }
       mode="parallax"
       modeConfig={{
@@ -157,10 +178,68 @@ function SkellyCrousel() {
   );
 }
 
+
+const HeroGradientTitle = ({ text }: { text: string }) => {
+  const upper = (text || "Good to see you again.").toUpperCase().trim();
+  const words = upper.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+
+  for (const w of words) {
+    if (!cur) {
+      cur = w;
+    } else if ((cur + " " + w).length <= 20) {
+      cur += " " + w;
+    } else {
+      lines.push(cur);
+      cur = w;
+    }
+  }
+  if (cur) lines.push(cur);
+
+  const fontSize = 34;
+  const lineHeight = 38;
+  const svgHeight = lines.length * lineHeight + 8;
+  const fontFamily = Platform.select({
+    ios: "Bebas Neue",
+    android: "sans-serif-condensed",
+    default: "Bebas Neue",
+  });
+
+  return (
+    <View style={{ width: "100%", minHeight: svgHeight, overflow: "visible" }}>
+      <Svg height={svgHeight} width="100%">
+        <Defs>
+          <SvgGradient id="thoughtTitleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <Stop offset="0%" stopColor="#FFFFFF" stopOpacity={1} />
+            <Stop offset="35%" stopColor="#F4F4F5" stopOpacity={1} />
+            <Stop offset="70%" stopColor="#A1A1AA" stopOpacity={1} />
+            <Stop offset="100%" stopColor="#27272A" stopOpacity={1} />
+          </SvgGradient>
+        </Defs>
+        {lines.map((line, idx) => (
+          <SvgText
+            key={idx}
+            fill="url(#thoughtTitleGrad)"
+            fontFamily={fontFamily}
+            fontSize={fontSize}
+            fontWeight="bold"
+            x="0"
+            y={lineHeight * (idx + 1) - 6}
+          >
+            {line}
+          </SvgText>
+        ))}
+      </Svg>
+    </View>
+  );
+};
+
 const HomeScreen = () => {
   const { accessToken } = useAuth();
   const [feedData, setFeedData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const { user, reload } = useUser();
   const [completeChapters, setCompleteChapters] = useState(0);
@@ -170,7 +249,6 @@ const HomeScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { isConnected } = useNetworkStatus();
 
-  // 1. Liked IDs Set
   const likedIdsSet = useMemo(() => {
     const ids = new Set<string>();
     const userLikes =
@@ -185,7 +263,6 @@ const HomeScreen = () => {
     return ids;
   }, [user]);
 
-  // Global series chapters filter
   const seriesChapterIdsSet = useMemo(() => {
     const ids = new Set<string>();
     const allSeriesList: any[] = [...(feedData?.series || [])];
@@ -223,14 +300,12 @@ const HomeScreen = () => {
 
   const loadRecentReads = useCallback(async () => {
     try {
-      const readChapters = await AsyncStorage.getItem("recentReads");
-      if (!readChapters) {
+      const recentReads = await getRecentReads(user?._id || user?.userId);
+      if (!recentReads || recentReads.length === 0) {
         setContinueReading(null);
         return;
       }
-
-      const recentReads: any[] = JSON.parse(readChapters);
-      const sorted = recentReads.sort((a, b) => {
+      const sorted = (recentReads as any[]).sort((a: any, b: any) => {
         const timeA = a?.readAt ? new Date(a.readAt).getTime() : 0;
         const timeB = b?.readAt ? new Date(b.readAt).getTime() : 0;
         return timeB - timeA;
@@ -238,9 +313,9 @@ const HomeScreen = () => {
 
       const validReads = await Promise.all(
         sorted
-          .filter((item) => item?.content?._id)
+          .filter((item: any) => item?.content?._id)
           .slice(0, 3)
-          .map(async (item) => {
+          .map(async (item: any) => {
             const chapterId = String(item.content._id);
             const isAudioItem = String(item?.content?.type || "")
               .toLowerCase()
@@ -249,7 +324,6 @@ const HomeScreen = () => {
             let resolvedTotal: any = "0";
 
             if (isAudioItem) {
-              // Audio priority: viewer-saved total/duration first, then content metadata
               resolvedTotal =
                 (item.total && Number(item.total) > 0 ? item.total : null) ??
                 (item.duration && Number(item.duration) > 0 ? item.duration : null) ??
@@ -258,7 +332,6 @@ const HomeScreen = () => {
                 item.content?.total ??
                 "0";
             } else {
-              // PDF priority: 1) Verified PDF Engine page count from storage, 2) item.total saved by ReadBook, 3) fallback content.total
               const verifiedEnginePages = await AsyncStorage.getItem(
                 `pdf_real_pages_${chapterId}`
               );
@@ -286,26 +359,13 @@ const HomeScreen = () => {
           })
       );
 
-      LayoutAnimation.configureNext({
-        duration: 220,
-        create: {
-          type: LayoutAnimation.Types.easeInEaseOut,
-          property: LayoutAnimation.Properties.opacity,
-        },
-        update: { type: LayoutAnimation.Types.spring, springDamping: 0.85 },
-        delete: {
-          type: LayoutAnimation.Types.easeInEaseOut,
-          property: LayoutAnimation.Properties.opacity,
-        },
-      });
-
       setContinueReading(validReads.length > 0 ? validReads : null);
 
       if (seriesData?.chapters) {
         const chapterIdsInSeries = seriesData.chapters.map(
           (item: any) => item.content?._id || item.content
         );
-        const readChaptersInSeries = recentReads.filter((readChapter) =>
+        const readChaptersInSeries = recentReads.filter((readChapter: any) =>
           chapterIdsInSeries.includes(readChapter?.content?._id)
         );
         setCompleteChapters(readChaptersInSeries.length);
@@ -313,16 +373,50 @@ const HomeScreen = () => {
     } catch {
       setContinueReading(null);
     }
-  }, [seriesData?.chapters]);
+  }, [seriesData?.chapters, user?._id, user?.userId]);
 
+  useEffect(() => {
+    loadRecentReads();
+  }, [user?._id, user?.userId, loadRecentReads]);
+
+  const fetchFeed = useCallback(async (isManual = false) => {
+    try {
+      const headers: Record<string, string> = {};
+      if (accessToken && typeof accessToken === "string" && accessToken.trim()) {
+        headers.Authorization = `Bearer ${accessToken.trim()}`;
+      }
+      const res = await api.get("/feed", { headers });
+      const payload = res?.data?.data ?? res?.data;
+      if (payload) {
+        setFeedData(payload);
+        AsyncStorage.setItem("cached_feed_data", JSON.stringify(payload)).catch(() => {});
+      }
+    } catch (err: any) {
+      console.error("Feed API Error Detail:", err?.message);
+    } finally {
+      setLoading(false);
+      if (isManual) setRefreshing(false);
+    }
+  }, [accessToken]);
+
+  // Pull-to-refresh handler (only user initiated)
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.all([
+      fetchFeed(true),
+      loadRecentReads(),
+      reload().catch(() => {}),
+    ]);
+    setRefreshing(false);
+  }, [fetchFeed, loadRecentReads, reload]);
+
+  // Focus effect: ONLY updates recent reading progress so feed never flickers or shuffles!
   useFocusEffect(
     useCallback(() => {
       loadRecentReads();
-      reload().catch(() => {});
-    }, [loadRecentReads, reload])
+    }, [loadRecentReads])
   );
 
-  // Instant listener when ReadBook or AudioRdr updates progress
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener("RECENT_READS_UPDATED", () => {
       loadRecentReads();
@@ -330,7 +424,7 @@ const HomeScreen = () => {
     return () => sub.remove();
   }, [loadRecentReads]);
 
-  // Native Instant Load: Cache Read
+  // Immediate 0-blink cache hydration on startup
   useEffect(() => {
     AsyncStorage.getItem("cached_feed_data")
       .then((raw) => {
@@ -343,27 +437,10 @@ const HomeScreen = () => {
       .catch(() => {});
   }, []);
 
-  // Network Fetch with Cache update
+  // Fetch feed strictly ONCE on app reopen/startup
   useEffect(() => {
-    const fetchFeed = async () => {
-      if (!accessToken) return;
-      try {
-        const res = await api.get("/feed", {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const payload = res?.data?.data ?? res?.data;
-        if (payload) {
-          setFeedData(payload);
-          AsyncStorage.setItem("cached_feed_data", JSON.stringify(payload)).catch(() => {});
-        }
-      } catch (err: any) {
-        console.error("Feed API Error Detail:", err?.message);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchFeed();
-  }, [accessToken, isConnected]);
+  }, []);
 
   useEffect(() => {
     const getSeries = async () => {
@@ -381,17 +458,102 @@ const HomeScreen = () => {
     getSeries();
   }, [user, accessToken, isConnected]);
 
-  // Section 1: Available
-  const availableStandalone = useMemo(() => {
+  // Section 1: Quick Picks (Strictly Books, max 4 cards)
+  const quickPicks = useMemo(() => {
     return (feedData?.available || [])
       .filter(isStrictlyStandalone)
+      .slice(0, 4)
       .map((item: any) => ({
         ...item,
         isLiked: likedIdsSet.has(item._id),
       }));
   }, [feedData?.available, isStrictlyStandalone, likedIdsSet]);
 
-  // Section 2: Trending Now (Strictly Max 5 Cards)
+  // Section: High Impact 3:4 Banner Slider Items (Admin Spotlight Banners or Intelligent Standalone Fallback)
+  const bannerList = useMemo(() => {
+    // ⚡ 1. Primary: Use dynamic admin banners returned from backend API
+    if (Array.isArray(feedData?.banners) && feedData.banners.length > 0) {
+      return feedData.banners.map((item: any) => ({
+        ...item,
+        _id: item._id || item.id || item.targetId,
+        cover: item.cover || item.image,
+        bannerType:
+          item.bannerType ||
+          (item.redirectionType === "series"
+            ? "series"
+            : item.redirectionType === "chapter"
+            ? "standalone_book"
+            : item.redirectionType === "screen" || item.targetScreen
+            ? "screen"
+            : item.type === "series"
+            ? "series"
+            : "standalone_book"),
+      }));
+    }
+
+    // ⚡ 2. Fallback: Generate curated standalone books & series only if no admin banners exist
+    const list: any[] = [];
+    const seenIds = new Set<string>();
+
+    // 1. Standalone Books ONLY (Strictly exclude chapters belonging to any series)
+    const standaloneCandidates = [
+      ...(feedData?.trending || []),
+      ...(feedData?.personalized || []),
+      ...(feedData?.available || []),
+    ].filter((item) => item?.cover && isStrictlyStandalone(item));
+
+    for (const book of standaloneCandidates) {
+      const id = String(book._id || "");
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        list.push({
+          ...book,
+          bannerType: "standalone_book",
+        });
+        if (list.length >= 3) break; // Top 3 curated standalone books
+      }
+    }
+
+    // 2. Series in banner (NEVER show user's joined series! Mark frameworks with special badge)
+    const userJoinedId = String(user?.joinedSeries || "").trim();
+    const seriesCandidates = (feedData?.series || []).filter((s: any) => {
+      const sId = String(s?._id || "");
+      return sId && sId !== userJoinedId && Boolean(s?.cover);
+    });
+
+    for (const s of seriesCandidates) {
+      const id = String(s._id);
+      if (!seenIds.has(id)) {
+        seenIds.add(id);
+        list.push({
+          ...s,
+          bannerType: "series",
+          isFramework: s.type === "framework",
+        });
+        if (list.filter((x) => x.bannerType === "series").length >= 2) break; // Up to 2 series
+      }
+    }
+
+    return list;
+  }, [
+    feedData?.banners,
+    feedData?.trending,
+    feedData?.personalized,
+    feedData?.available,
+    feedData?.series,
+    user?.joinedSeries,
+    isStrictlyStandalone,
+  ]);
+
+  // Section 2: Eligible Series (Based on user plan)
+  const availableSeries = useMemo(() => {
+    if (IS_EARLY_ACCESS_FREE) {
+      return (feedData?.series || []).slice(0, 6);
+    }
+    const userPlan = (user as any)?.subscription?.plan || 0;
+    return (feedData?.series || []).filter((s: any) => (s.for || 0) <= userPlan).slice(0, 3);
+  }, [feedData?.series, user]);
+
   const trendingStandaloneFive = useMemo(() => {
     return (feedData?.trending || [])
       .filter(isStrictlyStandalone)
@@ -402,7 +564,6 @@ const HomeScreen = () => {
       }));
   }, [feedData?.trending, isStrictlyStandalone, likedIdsSet]);
 
-  // Section 3: Series Section (Max 5 Series with Min 2 Framework Priority)
   const prioritizedSeriesFive = useMemo(() => {
     const rawSeries: ISeries[] = feedData?.series || [];
     if (!rawSeries.length) return [];
@@ -425,7 +586,6 @@ const HomeScreen = () => {
     return selected.slice(0, 5);
   }, [feedData?.series]);
 
-  // Section 4: Your Feed (Intelligent Sorting based on Category & Sub-Category, Max 4)
   const feedPersonalizedFour = useMemo(() => {
     const pool = (feedData?.personalized || feedData?.available || []).filter(isStrictlyStandalone);
     const userCategories = new Set(
@@ -451,7 +611,6 @@ const HomeScreen = () => {
     }));
   }, [feedData?.personalized, feedData?.available, isStrictlyStandalone, user, likedIdsSet]);
 
-  // Section 5: Feed Series Slider (Max 4 Series)
   const feedSeriesFour = useMemo(() => {
     return (feedData?.series || []).slice(0, 4);
   }, [feedData?.series]);
@@ -487,6 +646,10 @@ const HomeScreen = () => {
     );
   };
 
+  const handleViewAllTrending = () => {
+    navigation.navigate("TrendingBooks" as never);
+  };
+
   if (!seriesData && !feedData && !isConnected) {
     return (
       <View style={styles.container}>
@@ -502,18 +665,35 @@ const HomeScreen = () => {
         onScroll={handleScroll}
         scrollEventThrottle={16}
         contentContainerStyle={{ paddingBottom: 60 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#00D2B4"
+            colors={["#00D2B4", "#38bdf8", "#01796F"]}
+            progressBackgroundColor="#120726"
+            progressViewOffset={Platform.OS === "android" ? 85 : 0}
+          />
+        }
       >
-        {/* Hero Section */}
+        {refreshing && (
+          <View style={styles.refreshBanner}>
+            <ActivityIndicator size="small" color="#00D2B4" />
+            <Text style={styles.refreshBannerText}>Updating your feed...</Text>
+          </View>
+        )}
         <View style={styles.hero}>
-          <Text style={styles.heroTitle}>
-            {"Good to see you again.".toUpperCase()}
-          </Text>
+          <HeroGradientTitle
+            text={feedData?.thought?.title || "Good to see you again."}
+          />
           <Text style={styles.heroSubtitle}>
-            Discover stories that matter. Continue where you left off.
+            {feedData?.thought?.desc || "Discover stories that matter. Continue where you left off."}
           </Text>
         </View>
 
-        {/* Joined Series Overview Progress */}
+        {/* 3:4 Native Banner Slider */}
+        <BannerSlider banners={bannerList} loading={loading} />
+
         {user?.joinedSeries && seriesData && (
           <View style={styles.section}>
             <PopButton
@@ -589,7 +769,6 @@ const HomeScreen = () => {
           </View>
         )}
 
-        {/* Continue Learning */}
         {continueReading && continueReading.length > 0 && (
           <SectionHeader title="Continue Learning" icon={<ContinueIcon />} />
         )}
@@ -613,16 +792,47 @@ const HomeScreen = () => {
           </View>
         )}
 
-        {/* Available For You */}
-        <SectionHeader title="Available for you" icon={<AvailableIcon />} />
+        <SectionHeader title="Quick Picks" icon={<QuickPicksIcon />} />
         {loading ? (
           <SkellyCrousel />
         ) : (
-          <ContentSlider data={availableStandalone} />
+          <ContentSlider data={quickPicks} />
         )}
 
-        {/* Series Section (Max 5, min 2 Framework) */}
-        <SectionHeader title="Series" icon={<SeriesIcon />} />
+        {availableSeries && availableSeries.length > 0 && (
+          <>
+            <View style={{ marginTop: 8 }} />
+            <Carousel
+              loop={false}
+              width={280 + 16}
+              height={260}
+              style={{ ...styles.horizontalList, width }}
+              data={availableSeries}
+              pagingEnabled
+              snapEnabled
+              onConfigurePanGesture={(gestureChain: any) =>
+                gestureChain.activeOffsetX([-10, 10]).failOffsetY([-10, 10])
+              }
+              mode="parallax"
+              modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
+              renderItem={({ item }: { item: any }) => (
+                <View style={{ width: "100%", marginHorizontal: 0 }}>
+                  {renderSeries({ item: item as ISeries })}
+                </View>
+              )}
+            />
+          </>
+        )}
+
+        <SectionHeader 
+          title="Series" 
+          icon={<SeriesIcon />} 
+          rightAction={
+            <TouchableOpacity onPress={() => navigation.navigate("AllSeries" as any)}>
+              <Text style={styles.viewAllText}>View All</Text>
+            </TouchableOpacity>
+          }
+        />
         {loading ? (
           <Carousel
             loop={false}
@@ -632,6 +842,9 @@ const HomeScreen = () => {
             data={[1, 2, 3, 4]}
             pagingEnabled
             snapEnabled
+            onConfigurePanGesture={(gestureChain: any) =>
+              gestureChain.activeOffsetX([-10, 10]).failOffsetY([-10, 10])
+            }
             mode="parallax"
             modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
             renderItem={() => (
@@ -649,6 +862,9 @@ const HomeScreen = () => {
             data={prioritizedSeriesFive}
             pagingEnabled
             snapEnabled
+            onConfigurePanGesture={(gestureChain: any) =>
+              gestureChain.activeOffsetX([-10, 10]).failOffsetY([-10, 10])
+            }
             mode="parallax"
             modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
             renderItem={({ item }: { item: any }) => (
@@ -659,15 +875,17 @@ const HomeScreen = () => {
           />
         )}
 
-        {/* Trending Now (Max 5 Cards) */}
-        <SectionHeader title="Trending Now" icon={<TrendingIcon />} />
+        <SectionHeader 
+            title="Trending Now" 
+            icon={<TrendingIcon />} 
+            rightAction={<TouchableOpacity onPress={handleViewAllTrending}><Text style={styles.viewAllText}>View All</Text></TouchableOpacity>}
+        />
         {loading ? (
           <SkellyCrousel />
         ) : (
           <ContentSlider data={trendingStandaloneFive} />
         )}
 
-        {/* Your Feed: Exactly Max 4 Content Cards */}
         <SectionHeader title="Your Feed" icon={<YourFeedIcon />} />
         <View style={styles.gridSectionWrap}>
           {loading ? (
@@ -694,7 +912,6 @@ const HomeScreen = () => {
           )}
         </View>
 
-        {/* Feed Series Slider: Exactly Max 4 Series inside Feed */}
         {feedSeriesFour && feedSeriesFour.length > 0 && (
           <View style={{ marginTop: 12 }}>
             <Carousel
@@ -705,6 +922,9 @@ const HomeScreen = () => {
               data={feedSeriesFour}
               pagingEnabled
               snapEnabled
+              onConfigurePanGesture={(gestureChain: any) =>
+                gestureChain.activeOffsetX([-10, 10]).failOffsetY([-10, 10])
+              }
               mode="parallax"
               modeConfig={{ parallaxScrollingScale: 0.96, parallaxScrollingOffset: 0 }}
               renderItem={({ item }: { item: any }) => (
@@ -716,7 +936,6 @@ const HomeScreen = () => {
           </View>
         )}
 
-        {/* End of Feed Screen Indicator */}
         <View style={styles.endOfFeedContainer}>
           <Text style={styles.endOfFeedText}>You're all caught up!</Text>
         </View>
@@ -728,9 +947,11 @@ const HomeScreen = () => {
 function SectionHeader({
   title,
   icon,
+  rightAction
 }: {
   title: string;
   icon: React.ReactNode;
+  rightAction?: React.ReactNode;
 }) {
   return (
     <View style={styles.sectionHeader}>
@@ -738,6 +959,7 @@ function SectionHeader({
         {icon}
         <Text style={styles.title}>{title}</Text>
       </View>
+      {rightAction && rightAction}
     </View>
   );
 }
@@ -747,6 +969,25 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: pallete.bgmain,
     paddingTop: 100,
+  },
+  refreshBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    marginHorizontal: 24,
+    marginBottom: 12,
+    backgroundColor: "rgba(0, 210, 180, 0.08)",
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(0, 210, 180, 0.2)",
+  },
+  refreshBannerText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#00D2B4",
+    letterSpacing: 0.5,
   },
   hero: {
     paddingHorizontal: 24,
@@ -770,12 +1011,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     marginTop: 22,
     marginBottom: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
   },
   title: {
     fontSize: 13,
     fontWeight: "700",
     letterSpacing: 1,
     color: "#F5F5F5",
+  },
+  viewAllText: {
+    fontSize: 12,
+    color: pallete.accent,
+    fontWeight: "600",
   },
   horizontalList: {
     paddingLeft: 24,

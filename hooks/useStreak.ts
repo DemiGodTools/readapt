@@ -1,47 +1,66 @@
 import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useUser } from "./useUser";
 
-const STREAK_KEY = "streak";
+export const getStreakKey = (userId?: string): string => {
+  return userId ? `streak_${userId}` : "streak_guest";
+};
 
-export const updateStreak = async () => {
+export const updateStreak = async (userId?: string) => {
   const now = new Date();
   const todayStr = now.toISOString().split("T")[0];
+  const key = getStreakKey(userId);
 
-  const rawData = await AsyncStorage.getItem(STREAK_KEY);
+  const rawData = await AsyncStorage.getItem(key);
 
   if (!rawData) {
     const newStreakData = { streak: 1, lastDate: todayStr };
-    await AsyncStorage.setItem(STREAK_KEY, JSON.stringify(newStreakData));
-    return newStreakData;
+    await AsyncStorage.setItem(key, JSON.stringify(newStreakData));
+    return { isUpdated: true, update: newStreakData };
   }
 
-  const { streak, lastDate } = JSON.parse(rawData);
+  try {
+    const { streak, lastDate } = JSON.parse(rawData);
 
-  const todayMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  const [year, month, day] = lastDate.split("-").map(Number);
-  const lastMs = Date.UTC(year, month - 1, day);
+    const todayMs = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+    const [year, month, day] = lastDate.split("-").map(Number);
+    const lastMs = Date.UTC(year, month - 1, day);
 
-  const diffInDays = Math.floor((todayMs - lastMs) / (1000 * 60 * 60 * 24));
+    const diffInDays = Math.floor((todayMs - lastMs) / (1000 * 60 * 60 * 24));
 
-  if (diffInDays === 0) {
-    return { streak, lastDate };
+    if (diffInDays === 0) {
+      return { streak, lastDate, update: { streak, lastDate } };
+    }
+
+    const newStreak: number = diffInDays === 1 ? streak + 1 : 1;
+    const updatedData: { streak: number; lastDate: string } = {
+      streak: newStreak,
+      lastDate: todayStr,
+    };
+
+    await AsyncStorage.setItem(key, JSON.stringify(updatedData));
+    return { isUpdated: diffInDays === 1, update: updatedData };
+  } catch (err) {
+    const fallback = { streak: 1, lastDate: todayStr };
+    await AsyncStorage.setItem(key, JSON.stringify(fallback));
+    return { isUpdated: true, update: fallback };
   }
-
-  const newStreak: number = diffInDays === 1 ? streak + 1 : 1;
-  const updatedData: { streak: number; lastDate: string } = {
-    streak: newStreak,
-    lastDate: todayStr,
-  };
-
-  await AsyncStorage.setItem(STREAK_KEY, JSON.stringify(updatedData));
-  return { isUpdated: diffInDays === 1 || !rawData, update: updatedData };
 };
 
-export const useStreak = () => {
+export const useStreak = (explicitUserId?: string) => {
   const now = new Date();
   const todayStr = now.toISOString().split("T")[0];
+
+  let contextUser: any = null;
+  try {
+    const ctx = useUser();
+    contextUser = ctx?.user;
+  } catch {}
+
+  const activeUserId = explicitUserId || contextUser?._id || contextUser?.userId;
+
   const [streakData, setStreakData] = useState({
-    streak: 0,
+    streak: contextUser?.correctAnsStreak || 0,
     lastDate: todayStr,
   });
   const [loading, setLoading] = useState(true);
@@ -49,15 +68,25 @@ export const useStreak = () => {
   const refreshStreak = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await updateStreak();
-      if (!data.update) return;
-      setStreakData(data.update);
+      const key = getStreakKey(activeUserId);
+      const raw = await AsyncStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setStreakData(parsed);
+      } else if (contextUser?.correctAnsStreak) {
+        setStreakData({
+          streak: contextUser.correctAnsStreak,
+          lastDate: todayStr,
+        });
+      } else {
+        setStreakData({ streak: 0, lastDate: todayStr });
+      }
     } catch (error) {
       console.error("Failed to update streak:", error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeUserId, contextUser?.correctAnsStreak, todayStr]);
 
   useEffect(() => {
     refreshStreak();
@@ -70,3 +99,5 @@ export const useStreak = () => {
     refreshStreak,
   };
 };
+
+export default useStreak;

@@ -1,291 +1,262 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, { useRef, useEffect, useState, useCallback, useMemo, memo } from "react";
+import { View, Text, Pressable, TouchableOpacity, StyleSheet } from "react-native";
+import Svg, { Polygon, Rect, Polyline } from "react-native-svg";
 import {
-  View,
-  Text,
-  Image,
-  Pressable,
-  Animated,
-  StyleSheet,
-  PanResponder,
-} from "react-native";
-import Svg, { Path, Line } from "react-native-svg";
-import { useGlobalAudio } from "../../hooks/useGlobalAudio";
+  useGlobalAudio,
+  parseAnyDurationToSec,
+  subscribeToPlaybackTime,
+} from "../../hooks/useGlobalAudio";
 import { navigationRef } from "../nav/MainNavigation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import SmoothAudioSlider from "./SmoothAudioSlider";
+import SmoothAudioSlider, { triggerTactileHaptic } from "./SmoothAudioSlider";
+import CachedImage from "./CachedImage";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Reanimated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  runOnJS,
+} from "react-native-reanimated";
 
 const colors = {
-  bg: "rgba(15, 12, 25, 0.95)",
-  accent: "#01796F",
-  accentSoft: "#D0F2EE",
-  accentDark: "#004D46",
+  bg: "rgba(15, 18, 22, 0.96)",
+  pillWhite: "#F4F6F6",
+  pillDark: "#0D1313",
+  skipBg: "#1E2626",
   text: "#ffffff",
   textMuted: "#9ca3af",
   border: "rgba(255, 255, 255, 0.1)",
-  glow: "rgba(1, 121, 111, 0.45)",
 };
 
-const TAB_ROUTES = ["Home", "Downloads", "Profile"];
+const TAB_ROUTES = ["Home", "Categories", "Search", "Downloads", "Profile"];
 
-export default function AudioControls() {
-  const { status, player, currentTrack, togglePlay, seekTo, removeAllTracks } =
-    useGlobalAudio();
+const MiniPlayButton = memo(
+  ({ playing, onToggle }: { playing: boolean; onToggle: () => void }) => {
+    return (
+      <Pressable
+        onPress={() => {
+          triggerTactileHaptic("medium");
+          onToggle();
+        }}
+        style={styles.playBtn}
+        hitSlop={6}
+      >
+        {playing ? (
+          <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+            <Rect x="6" y="5" width="4" height="14" rx="1" stroke={colors.pillDark} strokeWidth="2.2" />
+            <Rect x="14" y="5" width="4" height="14" rx="1" stroke={colors.pillDark} strokeWidth="2.2" />
+          </Svg>
+        ) : (
+          <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+            <Polygon points="7,5 19,12 7,19" stroke={colors.pillDark} strokeWidth="2.2" fill="none" />
+          </Svg>
+        )}
+      </Pressable>
+    );
+  }
+);
+
+export default memo(function AudioControls() {
+  const { status, currentTrack, togglePlay, seekTo, removeAllTracks } = useGlobalAudio();
   const insets = useSafeAreaInsets();
   const [currentScreen, setCurrentScreen] = useState("");
 
-  // Dismiss animation & Pan Responder for swipe-to-dismiss
-  const panY = useRef(new Animated.Value(0)).current;
+  const panY = useSharedValue(0);
+  const hasTriggeredOpen = useSharedValue(false);
   const isDismissingRef = useRef(false);
+  const currentTimeRef = useRef(status?.currentTime || 0);
 
   useEffect(() => {
-    if (!navigationRef.isReady()) {
-      return;
-    }
+    const unsub = subscribeToPlaybackTime((liveTime: number) => {
+      currentTimeRef.current = liveTime;
+    });
+    return unsub;
+  }, []);
 
+  useEffect(() => {
     const updateRoute = () => {
-      const route = navigationRef.getCurrentRoute();
-      setCurrentScreen((route as any)?.name ?? "");
+      try {
+        if (navigationRef?.isReady?.()) {
+          const route = navigationRef.getCurrentRoute();
+          const name = (route as any)?.name ?? "";
+          setCurrentScreen((prev) => (prev !== name ? name : prev));
+        }
+      } catch (_) {}
     };
 
     updateRoute();
-    const unsubscribe = navigationRef.addListener?.("state", updateRoute);
-    return unsubscribe;
+    const unsub = navigationRef?.addListener?.("state", updateRoute);
+    return () => { unsub?.(); };
   }, []);
 
   const isTabScreen = TAB_ROUTES.includes(currentScreen);
-
-  const dismissPlayer = useCallback(() => {
-    if (isDismissingRef.current) return;
-    isDismissingRef.current = true;
-    Animated.timing(panY, {
-      toValue: 200,
-      duration: 220,
-      useNativeDriver: true,
-    }).start(() => {
-      removeAllTracks();
-      panY.setValue(0);
-      isDismissingRef.current = false;
-    });
-  }, [panY, removeAllTracks]);
-
-  // Swipe-down pan responder
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        // Only claim if downward swipe and vertical movement dominates
-        return (
-          gestureState.dy > 8 &&
-          Math.abs(gestureState.dy) > Math.abs(gestureState.dx) * 1.3
-        );
-      },
-      onPanResponderMove: (_, gestureState) => {
-        if (gestureState.dy > 0) {
-          panY.setValue(gestureState.dy);
-        }
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dy > 55 || gestureState.vy > 0.45) {
-          dismissPlayer();
-        } else {
-          Animated.spring(panY, {
-            toValue: 0,
-            tension: 140,
-            friction: 8,
-            useNativeDriver: true,
-          }).start();
-        }
-      },
-      onPanResponderTerminate: () => {
-        Animated.spring(panY, {
-          toValue: 0,
-          tension: 140,
-          friction: 8,
-          useNativeDriver: true,
-        }).start();
-      },
-    })
-  ).current;
-
-  // Scale animation for button presses
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-
-  const animatePressIn = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 0.97,
-      useNativeDriver: true,
-      friction: 6,
-      tension: 160,
-    }).start();
-  };
-
-  const animatePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      useNativeDriver: true,
-      friction: 6,
-      tension: 160,
-    }).start();
-  };
-
-  const seekRelative = useCallback(
-    (delta: number) => {
-      if (!status?.isLoaded || !status.duration) return;
-      const next = Math.max(
-        0,
-        Math.min(status.duration, (status.currentTime || 0) + delta)
-      );
-      seekTo(next);
-    },
-    [status?.isLoaded, status?.duration, status?.currentTime, seekTo]
-  );
+  const effectiveDuration =
+    status?.duration && status.duration > 0
+      ? status.duration
+      : parseAnyDurationToSec((currentTrack as any)?.duration) ||
+        parseAnyDurationToSec((currentTrack as any)?.total);
 
   const handleOpenFullPlayer = useCallback(() => {
-    if (!currentTrack || !navigationRef.isReady()) return;
+    if (!currentTrack || !navigationRef?.isReady?.()) return;
+    triggerTactileHaptic("light");
     (navigationRef as any).navigate("AudioRdr", { bookId: currentTrack._id });
   }, [currentTrack]);
 
-  // NEVER show mini-player on AudioRdr, Splash, or when no track is loaded
+  const dismissPlayer = useCallback(() => {
+    triggerTactileHaptic("medium");
+
+    panY.value = withTiming(300, { duration: 150 }, (finished) => {
+      if (finished) {
+        runOnJS(removeAllTracks)();
+      }
+    });
+
+    setTimeout(() => {
+      removeAllTracks();
+      panY.value = 0;
+    }, 180);
+  }, [panY, removeAllTracks]);
+
+  const panGesture = useMemo(() => {
+    return Gesture.Pan()
+      .activeOffsetY([-12, 12])
+      .failOffsetX([-24, 24])
+      .onBegin(() => {
+        "worklet";
+        hasTriggeredOpen.value = false;
+      })
+      .onUpdate((e) => {
+        "worklet";
+        if (e.translationY > 0) {
+          panY.value = e.translationY;
+        } else if (e.translationY < 0) {
+          panY.value = Math.max(-100, e.translationY);
+          if (e.translationY < -24 && !hasTriggeredOpen.value) {
+            hasTriggeredOpen.value = true;
+            runOnJS(handleOpenFullPlayer)();
+          }
+        }
+      })
+      .onFinalize((e) => {
+        "worklet";
+        if (e.translationY > 30 || e.velocityY > 240) {
+          runOnJS(dismissPlayer)();
+        } else if (!hasTriggeredOpen.value && (e.translationY < -18 || e.velocityY < -250)) {
+          hasTriggeredOpen.value = true;
+          runOnJS(handleOpenFullPlayer)();
+          panY.value = withTiming(0, { duration: 80 });
+        } else {
+          panY.value = withTiming(0, { duration: 140 });
+        }
+      });
+  }, [panY, hasTriggeredOpen, dismissPlayer, handleOpenFullPlayer]);
+
+  const seekRelative = useCallback(
+    (delta: number) => {
+      const maxDur = effectiveDuration > 0 ? effectiveDuration : Number.MAX_SAFE_INTEGER;
+      triggerTactileHaptic("light");
+      const next = Math.max(0, Math.min(maxDur, currentTimeRef.current + delta));
+      seekTo(next);
+    },
+    [effectiveDuration, seekTo]
+  );
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: panY.value }],
+  }));
+
   if (!currentTrack || currentScreen === "Splash" || currentScreen === "AudioRdr") {
     return null;
   }
 
   return (
-    <Animated.View
-      {...panResponder.panHandlers}
-      style={[
-        styles.wrapper,
-        {
-          bottom: isTabScreen ? insets.bottom + 75 : insets.bottom + 12,
-          transform: [{ translateY: panY }, { scale: scaleAnim }],
-        },
-      ]}>
-      {/* Swipe handle indicator */}
-      <View style={styles.handleContainer}>
-        <View style={styles.swipeHandle} />
-      </View>
-
-      <View style={styles.innerContent}>
-        {/* Left cover image & title (tap to open AudioRdr) */}
-        <Pressable
-          style={styles.trackInfoPressable}
-          onPress={handleOpenFullPlayer}
-          onPressIn={animatePressIn}
-          onPressOut={animatePressOut}>
-          <View style={styles.coverWrap}>
-            {currentTrack.cover ? (
-              <Image source={{ uri: currentTrack.cover }} style={styles.cover} />
-            ) : (
-              <View style={[styles.cover, styles.coverPlaceholder]} />
-            )}
-            <View style={styles.coverGlow} />
-          </View>
-
-          <View style={styles.trackDetails}>
-            <Text style={styles.trackTitle} numberOfLines={1}>
-              {currentTrack.title || "Audio"}
-            </Text>
-            <Text style={styles.trackAuthor} numberOfLines={1}>
-              {currentTrack.author || "Readapt"}
-            </Text>
-          </View>
-        </Pressable>
-
-        {/* Media Controls */}
-        <View style={styles.controlsRow}>
-          {/* -10s */}
-          <Pressable
-            onPress={() => seekRelative(-10)}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.controlBtn,
-              pressed && styles.controlBtnPressed,
-            ]}>
-            <Svg width={18} height={18} viewBox="0 0 24 24">
-              <Path
-                d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"
-                fill={colors.accentSoft}
-              />
-            </Svg>
-          </Pressable>
-
-          {/* Play / Pause Toggle */}
-          <Pressable
-            onPress={togglePlay}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.playBtn,
-              status?.playing && styles.playBtnActive,
-              pressed && styles.playBtnPressed,
-            ]}>
-            {status?.playing ? (
-              <Svg width={20} height={20} viewBox="0 0 24 24">
-                <Path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" fill={colors.accentDark} />
-              </Svg>
-            ) : (
-              <Svg width={20} height={20} viewBox="0 0 24 24">
-                <Path d="M8 5v14l11-7z" fill={colors.accentDark} />
-              </Svg>
-            )}
-          </Pressable>
-
-          {/* +10s */}
-          <Pressable
-            onPress={() => seekRelative(10)}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.controlBtn,
-              pressed && styles.controlBtnPressed,
-            ]}>
-            <Svg width={18} height={18} viewBox="0 0 24 24">
-              <Path
-                d="M13 6v12l8.5-6L13 6zM4 18l8.5-6L4 6v12z"
-                fill={colors.accentSoft}
-              />
-            </Svg>
-          </Pressable>
-
-          {/* Close / Dismiss "X" Button */}
-          <Pressable
-            onPress={dismissPlayer}
-            hitSlop={10}
-            style={({ pressed }) => [
-              styles.closeBtn,
-              pressed && styles.closeBtnPressed,
-            ]}>
-            <Svg
-              width={16}
-              height={16}
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke={colors.textMuted}
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round">
-              <Line x1="18" y1="6" x2="6" y2="18" />
-              <Line x1="6" y1="6" x2="18" y2="18" />
-            </Svg>
-          </Pressable>
+    <GestureDetector gesture={panGesture}>
+      <Reanimated.View
+        style={[
+          styles.wrapper,
+          { bottom: isTabScreen ? insets.bottom + 75 : insets.bottom + 12 },
+          animatedStyle,
+        ]}
+      >
+        <View style={styles.handleContainer}>
+          <View style={styles.swipeHandle} />
         </View>
-      </View>
+        <View style={styles.innerContent}>
+          <Pressable style={styles.trackInfoPressable} onPress={handleOpenFullPlayer}>
+            <View style={styles.coverWrap}>
+              {currentTrack.cover ? (
+                <CachedImage
+                  uri={currentTrack.cover}
+                  label={currentTrack.title}
+                  style={styles.cover}
+                  transition={0}
+                  letterSize={14}
+                />
+              ) : (
+                <View style={[styles.cover, styles.coverPlaceholder]} />
+              )}
+            </View>
+            <View style={styles.trackDetails}>
+              <Text style={styles.trackTitle} numberOfLines={1}>
+                {currentTrack.title || "Audio"}
+              </Text>
+              <Text style={styles.trackAuthor} numberOfLines={1}>
+                {currentTrack.author || "Readapt"}
+              </Text>
+            </View>
+          </Pressable>
 
-      {/* Progress Slider at bottom */}
-      <View style={styles.sliderWrapper}>
-        <SmoothAudioSlider
-          currentTime={status?.currentTime || 0}
-          duration={status?.duration || 0}
-          onSeek={seekTo}
-          showTimeLabels={false}
-          sliderStyle={styles.miniSlider}
-          minimumTrackTintColor={colors.accent}
-          maximumTrackTintColor="rgba(255, 255, 255, 0.15)"
-          thumbTintColor={colors.accentSoft}
-          disabled={!status?.isLoaded}
-        />
-      </View>
-    </Animated.View>
+          <View style={styles.controlsRow}>
+            <Pressable onPress={() => seekRelative(-10)} style={styles.controlBtn} hitSlop={6}>
+              <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+                <Polygon points="11,19 2,12 11,5" stroke="#E2E8E8" strokeWidth="2" strokeLinejoin="round" fill="none" />
+                <Polygon points="22,19 13,12 22,5" stroke="#E2E8E8" strokeWidth="2" strokeLinejoin="round" fill="none" />
+              </Svg>
+            </Pressable>
+
+            <MiniPlayButton playing={Boolean(status?.playing)} onToggle={togglePlay} />
+
+            <Pressable onPress={() => seekRelative(10)} style={styles.controlBtn} hitSlop={6}>
+              <Svg width={16} height={16} viewBox="0 0 24 24" fill="none">
+                <Polygon points="2,19 11,12 2,5" stroke="#E2E8E8" strokeWidth="2" strokeLinejoin="round" fill="none" />
+                <Polygon points="13,19 22,12 13,5" stroke="#E2E8E8" strokeWidth="2" strokeLinejoin="round" fill="none" />
+              </Svg>
+            </Pressable>
+
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation?.();
+                dismissPlayer();
+              }}
+              style={styles.closeBtn}
+              hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+            >
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <Polyline points="6 9 12 15 18 9" />
+              </Svg>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={styles.sliderWrapper}>
+          <SmoothAudioSlider
+            currentTime={status?.currentTime || 0}
+            duration={effectiveDuration}
+            onSeek={seekTo}
+            showTimeLabels={false}
+            mini
+            minimumTrackTintColor="#FFFFFF"
+            maximumTrackTintColor="rgba(255, 255, 255, 0.2)"
+            thumbTintColor="#FFFFFF"
+            disabled={effectiveDuration <= 0 && !status?.isLoaded}
+            toc={currentTrack?.toc}
+          />
+        </View>
+      </Reanimated.View>
+    </GestureDetector>
   );
-}
+});
 
 const styles = StyleSheet.create({
   wrapper: {
@@ -294,22 +265,14 @@ const styles = StyleSheet.create({
     left: 14,
     right: 14,
     borderRadius: 24,
-    borderWidth: 1.2,
+    borderWidth: 1,
     borderColor: colors.border,
-    shadowColor: colors.glow,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 14,
-    elevation: 10,
     overflow: "hidden",
     zIndex: 1500,
     paddingTop: 6,
+    paddingBottom: 6,
   },
-  handleContainer: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingBottom: 4,
-  },
+  handleContainer: { alignItems: "center", paddingBottom: 4 },
   swipeHandle: {
     width: 34,
     height: 4,
@@ -321,7 +284,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 12,
-    paddingBottom: 8,
+    paddingBottom: 6,
   },
   trackInfoPressable: {
     flexDirection: "row",
@@ -329,69 +292,28 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: 8,
   },
-  coverWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    overflow: "hidden",
-    position: "relative",
-  },
-  cover: {
-    width: "100%",
-    height: "100%",
-    borderRadius: 12,
-  },
-  coverPlaceholder: {
-    backgroundColor: "#1e1a30",
-  },
-  coverGlow: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(1, 121, 111, 0.15)",
-  },
-  trackDetails: {
-    flex: 1,
-    marginLeft: 10,
-    justifyContent: "center",
-  },
-  trackTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: colors.text,
-  },
-  trackAuthor: {
-    fontSize: 11,
-    color: colors.textMuted,
-    marginTop: 2,
-  },
-  controlsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
+  coverWrap: { width: 44, height: 44, borderRadius: 12, overflow: "hidden" },
+  cover: { width: "100%", height: "100%" },
+  coverPlaceholder: { backgroundColor: "#1e1a30" },
+  trackDetails: { flex: 1, marginLeft: 10 },
+  trackTitle: { fontSize: 13, fontWeight: "700", color: colors.text },
+  trackAuthor: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  controlsRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   controlBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.skipBg,
     alignItems: "center",
     justifyContent: "center",
-  },
-  controlBtnPressed: {
-    backgroundColor: "rgba(1, 121, 111, 0.25)",
   },
   playBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.accentSoft,
+    width: 48,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.pillWhite,
     alignItems: "center",
     justifyContent: "center",
-  },
-  playBtnActive: {
-    backgroundColor: "#B9D7D4",
-  },
-  playBtnPressed: {
-    transform: [{ scale: 0.94 }],
   },
   closeBtn: {
     width: 30,
@@ -400,19 +322,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.05)",
     alignItems: "center",
     justifyContent: "center",
-    marginLeft: 2,
   },
-  closeBtnPressed: {
-    backgroundColor: "rgba(235, 64, 64, 0.2)",
-  },
-  sliderWrapper: {
-    height: 18,
-    marginTop: -8,
-    paddingHorizontal: 8,
-    justifyContent: "center",
-  },
-  miniSlider: {
-    width: "100%",
-    height: 18,
-  },
+  sliderWrapper: { paddingHorizontal: 12 },
 });

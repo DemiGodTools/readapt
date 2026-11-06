@@ -11,7 +11,7 @@ export interface ISeries {
   title: string;
   author?: string;
   description: string;
-  joinedBy: string[];
+  joinedBy: any[];
   chapters: ISeriesContent[]; // automatically populated from api
   for: SubscriptionPlan;
   cover: string;

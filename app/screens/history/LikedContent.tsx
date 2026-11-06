@@ -1,5 +1,5 @@
-import React from "react";
-import { ScrollView, View } from "react-native";
+import React, { useMemo } from "react";
+import { View, Dimensions } from "react-native";
 import ContentCard from "../../../components/props/ContentCard";
 import { FlatList, StyleSheet, Text } from "react-native";
 import { useUser } from "../../../hooks/useUser";
@@ -14,38 +14,71 @@ import { useNetworkStatus } from "../../../hooks/useNetwork";
 
 type Props = NativeStackScreenProps<RootStackParamList, "LikedContent">;
 
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const NUM_COLUMNS = 3;
+const HORIZONTAL_PADDING = 16;
+const GRID_GAP = 10;
+const CARD_WIDTH = Math.floor(
+  (SCREEN_WIDTH - HORIZONTAL_PADDING * 2 - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS
+);
+
 const LikedContent = ({ route, navigation }: Props) => {
   const { user, loadingUser } = useUser();
-  const insets = useSafeAreaInsets()
-  const { isConnected  } = useNetworkStatus()
+  const insets = useSafeAreaInsets();
+  const { isConnected } = useNetworkStatus();
 
-  const renderContentCard = ({ item }: { item: any }) => {
-    return <ContentCard key={item._id} book={item} />;
+  const sortedLikes = useMemo(() => {
+    if (!user?.likes || !Array.isArray(user.likes)) return [];
+    return [...user.likes].sort((a: any, b: any) => {
+      const timeB = new Date(b?.updatedAt || b?.likedAt || b?.createdAt || 0).getTime();
+      const timeA = new Date(a?.updatedAt || a?.likedAt || a?.createdAt || 0).getTime();
+      if (timeB !== timeA) return timeB - timeA;
+      return 0;
+    });
+  }, [user?.likes]);
+
+  const renderContentCard = ({ item, index }: { item: any; index: number }) => {
+    return (
+      <ContentCard
+        key={String(item?._id || item?.id || index)}
+        book={item}
+        index={index}
+        isLiked={true}
+        compact={true}
+        cardWidth={CARD_WIDTH}
+      />
+    );
   };
 
-  console.log(isConnected, "is it commentted")
-
   if (!user && !isConnected) {
-    return <View style={[styles.container,{paddingBottom: insets.bottom,}]}>
-      <Offline />
-    </View>;
+    return (
+      <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+        <Offline />
+      </View>
+    );
   }
 
   return (
-    <View style={[styles.container,{paddingBottom: insets.bottom }]}>
-            
-      {user?.likes && !loadingUser && (
+    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+      {sortedLikes && !loadingUser && (
         <FlatList
-          data={user?.likes}
-          keyExtractor={(item) => item._id}
+          key="liked-grid-3-col"
+          data={sortedLikes}
+          keyExtractor={(item: any, index) => String(item?._id || (item as any)?.id || index)}
           renderItem={renderContentCard}
-          numColumns={2}
+          numColumns={NUM_COLUMNS}
           scrollEnabled={true}
           columnWrapperStyle={{
-            gap: 20,
+            gap: GRID_GAP,
           }}
           ListHeaderComponent={<Text style={styles.title}>Liked Content</Text>}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              paddingHorizontal: HORIZONTAL_PADDING,
+              paddingBottom: insets.bottom + 24,
+            },
+          ]}
           ListEmptyComponent={
             <View style={styles.emptyLikedBox}>
               <View style={styles.emptyIconCircle}>
@@ -86,8 +119,6 @@ const styles = StyleSheet.create({
   },
   listContent: {
     flexGrow: 1,
-    // alignItems: "center",
-    paddingHorizontal: 20,
     paddingBottom: 24,
   },
   emptyLikedBox: {
@@ -111,14 +142,14 @@ const styles = StyleSheet.create({
   emptyTitleText: {
     fontSize: 16,
     fontWeight: "600",
-    color: "#FFFFFF", // Maps to var(--text-white)
+    color: "#FFFFFF",
     marginBottom: 6,
     textAlign: "center",
   },
   emptySubText: {
     fontSize: 12,
-    color: "#9CA3AF", // Maps to var(--text-gray)
-    lineHeight: 18, // 12px * 1.5 line-height = 18px
+    color: "#9CA3AF",
+    lineHeight: 18,
     maxWidth: 240,
     textAlign: "center",
   },

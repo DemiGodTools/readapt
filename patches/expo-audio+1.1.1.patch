@@ -1,0 +1,35 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+index 04486e2..bf46d43 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -220,9 +220,15 @@ class AudioControlsService : MediaSessionService() {
+     player?.isActiveForLockScreen = true
+ 
+     if (player != null) {
+-      mediaSession?.release()
++      mediaSession?.let { oldSession ->
++        if (isSessionAdded(oldSession)) {
++          removeSession(oldSession)
++        }
++        oldSession.release()
++      }
+ 
+       val session = MediaSession.Builder(this, player.ref)
++        .setId("expo_audio_session_${player.id}_${System.currentTimeMillis()}")
+         .setCallback(AudioMediaSessionCallback())
+         .build()
+ 
+@@ -275,7 +281,12 @@ class AudioControlsService : MediaSessionService() {
+     playbackListener = null
+     currentPlayer = null
+     currentMetadata = null
+-    mediaSession?.release()
++    mediaSession?.let { session ->
++      if (isSessionAdded(session)) {
++        removeSession(session)
++      }
++      session.release()
++    }
+     mediaSession = null
+     stopForeground(STOP_FOREGROUND_REMOVE)
+   }

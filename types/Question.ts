@@ -1,11 +1,12 @@
-
 export interface IQuestion {
   _id: string;
   question: string;
   options: string[];
-  correct: number; // index
+  correct: number; // index (0-based)
   explanation?: string;
-  comments: number;
-  createdAt: string;
-  updatedAt: string;
+  comments?: any;
+  title?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  __v?: number;
 }

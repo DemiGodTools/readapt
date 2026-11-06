@@ -1,4 +1,3 @@
-
 interface IAttemptedQuestion {
   question: string;
   answered: number;
@@ -21,6 +20,22 @@ export interface IUser {
   profileLevel: number;
   questionsAttempted: IAttemptedQuestion[];
   correctAnsStreak?: number;
+  streakData?: {
+    streak: number;
+    lastDate: string;
+  };
+  recentReads?: {
+    chapter: any;
+    readtill: string;
+    total: string;
+    readAt: Date | string;
+  }[];
+  bio?: string;
+  profession?: string;
+  interests?: string[];
+  visibility?: "Public" | "Private";
+  isProfileCompleted?: boolean;
+  usernameLastChangedAt?: Date | string | null;
   createdAt: Date;
   updatedAt: Date;
 }

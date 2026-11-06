@@ -6,6 +6,7 @@ import {
   View,
 } from "react-native";
 import MainNavigation from "./components/nav/MainNavigation";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import Toast from "./components/state/Toast";
 import Modal from "./components/state/Modal";
 import { DataProvider } from "./components/state/DataContext";
@@ -30,7 +31,8 @@ export default function App() {
   }, [refreshStreak])
   
   return (
-    <SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
       <View style={styles.container}>
         <DataProvider>
           <MainNavigation />
@@ -40,7 +42,8 @@ export default function App() {
           <StatusBar style="light" backgroundColor="#090314" animated={true} />
         </DataProvider>
       </View>
-    </SafeAreaProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

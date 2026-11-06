@@ -1,9 +1,9 @@
+// File: components/props/Comments.tsx
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
   StyleSheet,
-  Image,
   TextInput,
   FlatList,
   Dimensions,
@@ -35,12 +35,12 @@ import { useToast } from "../../hooks/useToast";
 import { api } from "../../lib/api";
 import { useUser } from "../../hooks/useUser";
 import { useNetworkStatus } from "../../hooks/useNetwork";
+import CachedImage from "./CachedImage";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const DRAWER_HEIGHT = SCREEN_HEIGHT * 0.85;
 const CLOSE_THRESHOLD = 120;
 
-// ─── Types ────────────────────────────────────────────────────
 export type Comment = {
   _id: string;
   by: {
@@ -58,25 +58,25 @@ type Props = {
   visible: boolean;
   reload: () => void;
   onClose: () => void;
-  chapterId: string;
-  initialComments?: Comment[];
-  isQuestion?: boolean;
+  chapterId: string; 
+  initialComments?: Comment[]; 
+  isQuestion?: boolean; 
 };
 
-// ─── Component ────────────────────────────────────────────────
 const CommentsDrawer = ({
   visible,
   reload,
   onClose,
   chapterId,
   initialComments = [],
+  isQuestion = false,
 }: Props) => {
   const { accessToken } = useAuth();
   const { user } = useUser();
   const { showToast } = useToast();
   const { isConnected } = useNetworkStatus();
 
-  const [comments, setComments] = useState<Comment[]>(initialComments);
+  const [comments, setComments] = useState<Comment[]>([]);
   const [text, setText] = useState("");
   const [posting, setPosting] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -85,14 +85,12 @@ const CommentsDrawer = ({
   const context = useSharedValue({ y: 0 });
   const keyboardOffset = useSharedValue(0);
 
-  // Sync initial comments when provided
   useEffect(() => {
-    if (Array.isArray(initialComments) && initialComments.length > 0) {
+    if (visible && Array.isArray(initialComments) && initialComments.length > 0) {
       setComments(initialComments);
     }
-  }, [initialComments]);
+  }, [visible]);
 
-  // Clean Single Animation Lifecycle (Prevents visual jump/blink)
   useEffect(() => {
     if (visible) {
       translateY.value = DRAWER_HEIGHT;
@@ -100,18 +98,18 @@ const CommentsDrawer = ({
         damping: 48,
         stiffness: 220,
       });
-      fetchComments();
+      if (!initialComments || initialComments.length === 0) {
+        fetchComments();
+      }
     } else {
       translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 });
+      setText(""); 
     }
   }, [visible, chapterId]);
 
-  // Keyboard height adaptation
   useEffect(() => {
-    const showEvent =
-      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent =
-      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
     const showListener = Keyboard.addListener(showEvent, (e) => {
       keyboardOffset.value = withTiming(e.endCoordinates.height, {
@@ -137,18 +135,18 @@ const CommentsDrawer = ({
 
   const fetchComments = async () => {
     if (!chapterId) return;
-
-    if (comments.length === 0) {
-      setLoading(true);
-    }
+    setLoading(true);
 
     try {
       const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
-      const res = await api
-        .get(`/chapter/${chapterId}`, { headers })
-        .catch(() => null);
+      
+      // Both chapter and QnA comments come from the chapter document now
+      const res = await api.get(`/chapter/${chapterId}`, { headers }).catch(() => null);
 
-      const freshComments = res?.data?.data?.comments;
+      const freshComments = isQuestion 
+        ? res?.data?.data?.qnaComments 
+        : res?.data?.data?.comments;
+
       if (Array.isArray(freshComments)) {
         setComments(freshComments);
       }
@@ -165,7 +163,6 @@ const CommentsDrawer = ({
     });
   }, [onClose]);
 
-  // ─── Gesture ────────────────────────────────────────────────
   const panGesture = Gesture.Pan()
     .onStart(() => {
       context.value = { y: translateY.value };
@@ -201,7 +198,6 @@ const CommentsDrawer = ({
     return { opacity };
   });
 
-  // ─── Instant Optimistic Comment Post ─────────────────────────
   const handleSend = async () => {
     if (!isConnected) {
       showToast({ title: "Please connect to the Internet." });
@@ -229,23 +225,28 @@ const CommentsDrawer = ({
 
     try {
       const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+      
+      // Single clean endpoint configured to handle both based on isQna flag
+      const payload = { chapterId: chapterId, text: trimmed, isQna: isQuestion };
+      let res = await api.post("/chapter/comment", payload, { headers }).catch(() => null);
 
-      let res = await api
-        .post("/chapter/comment/add", { chapterId, text: trimmed }, { headers })
-        .catch(() => null);
-
+      // Fallback for older routes just in case
       if (!res?.data?.success) {
-        res = await api
-          .post("/chapter/comment", { chapterId, text: trimmed }, { headers })
-          .catch(() => null);
+        res = await api.post("/chapter/comment/add", payload, { headers }).catch(() => null);
       }
 
-      if (res?.data?.success && res.data?.data) {
-        setComments((prev) =>
-          prev.map((c) => (c._id === tempId ? res.data.data : c))
-        );
+      if (res?.data?.success) {
+        const realComment = res.data?.comment || res.data?.data;
+        if (realComment && realComment._id) {
+          setComments((prev) =>
+            prev.map((c) => (c._id === tempId ? { ...realComment, by: optimisticComment.by } : c))
+          );
+        }
+      } else {
+        throw new Error("Failed to save comment on server");
       }
-      reload?.();
+      
+      reload?.(); 
     } catch (err) {
       console.error("Comment post error:", err);
       setComments((prev) => prev.filter((c) => c._id !== tempId));
@@ -259,15 +260,16 @@ const CommentsDrawer = ({
   const renderComment = ({ item }: { item: Comment }) => (
     <PopButton>
       <View style={styles.commentItem}>
-        <Image
-          source={{
-            uri:
-              item.by?._id === user?._id && user?.image
-                ? user.image
-                : item.by?.image || "https://via.placeholder.com/64",
-            cache: "reload",
-          }}
+        <CachedImage
+          uri={
+            item.by?._id === user?._id && user?.image
+              ? user.image
+              : item.by?.image
+          }
+          label={item.by?.name || "Anonymous"}
           style={styles.userAvatar}
+          letterSize={14}
+          transition={0}
         />
         <View style={styles.commentContent}>
           <View style={styles.commentMeta}>
@@ -290,12 +292,10 @@ const CommentsDrawer = ({
   return (
     <GestureHandlerRootView
       style={[styles.rootContainer, { zIndex: 9999, elevation: 9999 }]}>
-      {/* Backdrop */}
       <Animated.View style={[styles.backdrop, backdropStyle]}>
         <Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} />
       </Animated.View>
 
-      {/* Drawer */}
       <Animated.View style={[styles.drawer, animatedStyle]}>
         <GestureDetector gesture={panGesture}>
           <View>
@@ -303,9 +303,10 @@ const CommentsDrawer = ({
               <View style={styles.dragHandle} />
             </View>
 
-            {/* Header */}
             <View style={styles.header}>
-              <Text style={styles.headerText}>Comments</Text>
+              <Text style={styles.headerText}>
+                {isQuestion ? "QnA Comments" : "Comments"}
+              </Text>
               <View style={styles.headerCount}>
                 <Text style={styles.headerCountText}>
                   {formatCount(comments.length)}
@@ -315,7 +316,6 @@ const CommentsDrawer = ({
           </View>
         </GestureDetector>
 
-        {/* Comments List */}
         <FlatList
           data={comments}
           keyExtractor={(item, index) => String(item?._id ?? index)}
@@ -339,7 +339,6 @@ const CommentsDrawer = ({
           }
         />
 
-        {/* Input Bar */}
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}>
           <Animated.View style={[styles.inputWrapper, inputAnimatedStyle]}>
@@ -385,7 +384,6 @@ const CommentsDrawer = ({
   );
 };
 
-// ─── Helpers ──────────────────────────────────────────────────
 const formatDate = (iso: string) => {
   try {
     const d = new Date(iso);
@@ -404,7 +402,6 @@ const formatCount = (n: number) => {
   return String(n);
 };
 
-// ─── Styles ───────────────────────────────────────────────────
 const styles = StyleSheet.create({
   rootContainer: {
     ...StyleSheet.absoluteFillObject,

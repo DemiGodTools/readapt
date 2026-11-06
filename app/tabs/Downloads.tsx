@@ -4,19 +4,22 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  Image,
   Pressable,
   ActivityIndicator,
   TouchableOpacity,
   ScrollView,
+  DeviceEventEmitter,
 } from "react-native";
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import Svg, { Path, Polyline, Line } from "react-native-svg";
 
-import { useDownloads, DownloadedChapter } from "../../hooks/useDownloads";
+import { useDownloads, DownloadedChapter, ActiveDownloadItem } from "../../hooks/useDownloads";
+import CachedImage from "../../components/props/CachedImage";
 import { IRecentRead } from "../../types/Storage";
+import { getRecentReads } from "../../lib/userStorage";
+import { useUser } from "../../hooks/useUser";
 import Contentprogress from "../../components/props/ContentProgress";
 import UpgradeSheet from "../../components/props/UpgradeSheet";
 import { useNavigation } from "@react-navigation/native";
@@ -117,17 +120,19 @@ const HeadphonesIcon = ({
 );
 
 export default function Downloads() {
-  const { downloads, isLoading, downloadStatuses, deleteChapter,refreshDownloads } =
-    useDownloads();
+  const {
+    downloads,
+    isLoading,
+    activeDownloads,
+    downloadStatuses,
+    deleteChapter,
+    refreshDownloads,
+  } = useDownloads();
+  const { user } = useUser();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
-    const [continueReading, setContinueReading] = useState<
-  IRecentRead[] | null
->(null);
-
-  const [deleteTarget, setDeleteTarget] = useState<DownloadedChapter | null>(
-    null,
-  );
+  const [continueReading, setContinueReading] = useState<IRecentRead[] | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DownloadedChapter | null>(null);
   const [deleteSheetVisible, setDeleteSheetVisible] = useState(false);
 
   const closeDeletePanel = () => {
@@ -149,75 +154,59 @@ export default function Downloads() {
   const groupedDownloads = useMemo(() => {
     const groups: Record<string, DownloadedChapter[]> = {};
     downloads.forEach((item: DownloadedChapter) => {
-      console.log(item.dateAdded, "dateof the tim")
-      const date = (new Date(item.dateAdded)).toLocaleDateString();
-
+      const date = new Date(item.dateAdded).toLocaleDateString();
       if (!groups[date]) {
         groups[date] = [];
       }
-
-      console.log(groups, "grouped downloads", date)
-
       groups[date].push(item);
     });
-
     return Object.entries(groups);
   }, [downloads]);
 
-
-  useEffect(() => {
   const loadRecentReads = async () => {
     try {
-
-      const readChapters =
-        await AsyncStorage.getItem('recentReads');
-
-      if (!readChapters) {
-        setContinueReading([]);
-        return;
-      }
-
-      const recentReads: IRecentRead[] =
-        JSON.parse(readChapters);
-
-      setContinueReading(recentReads);
+      const userId = user?._id || user?.userId;
+      const recentReads = await getRecentReads(userId);
+      setContinueReading(recentReads || []);
     } catch (error) {
-      console.error(
-        'Error loading recent reads:',
-        error
-      );
-
+      console.error('Error loading recent reads:', error);
       setContinueReading([]);
     }
   };
 
-  loadRecentReads();
-}, []);
+  useEffect(() => {
+    loadRecentReads();
 
-const getRecentRead = (
-  id: string
-): IRecentRead | null => {
-  try {
-    const readChapters =
-      continueReading?.find((item) => item.content._id === id) || null;
+    const subRecent = DeviceEventEmitter.addListener('RECENT_READS_UPDATED', (data) => {
+      if (Array.isArray(data)) {
+        setContinueReading(data);
+      } else {
+        loadRecentReads();
+      }
+    });
 
+    const subDl = DeviceEventEmitter.addListener('DOWNLOADS_CHANGED', () => {
+      loadRecentReads();
+    });
 
-    return readChapters;
-  } catch (error) {
-    console.error(
-      'Error getting recent read:',
-      error
-    );
+    return () => {
+      subRecent.remove();
+      subDl.remove();
+    };
+  }, [user?._id, user?.userId]);
 
-    return null;
-  }
-};
-
+  const getRecentRead = (id: string): IRecentRead | null => {
+    try {
+      return continueReading?.find((item) => item?.content?._id === id || (item?.content as any)?.id === id) || null;
+    } catch (error) {
+      return null;
+    }
+  };
 
   const openDownloadedItem = (item: DownloadedChapter) => {
     const readTill = getRecentRead(item._id);
     const targetPage = Math.max(1, parseInt(String(readTill?.readtill || "1"), 10) || 1);
-    const total = readTill?.total || item.total || "10";
+    const resolvedTotal = readTill?.total || (item as any)?.duration || item?.total || 0;
     const initialBookData = {
       _id: item._id,
       title: item.title,
@@ -225,13 +214,15 @@ const getRecentRead = (
       author: item.author || "READAPT",
       type: item.type,
       media: item.localUri || item.media,
-      total: parseInt(String(total), 10) || 1,
+      total: parseInt(String(resolvedTotal), 10) || 1,
+      duration: resolvedTotal,
     };
 
     if (String(item.type || "").toLowerCase().includes("audio")) {
+      const seekSec = typeof readTill?.readtill === "number" ? readTill.readtill : parseFloat(String(readTill?.readtill || "0")) || 0;
       (navigation as any).navigate("AudioRdr", {
         bookId: item._id,
-        seekTime: 0,
+        seekTime: seekSec,
         initialBookData,
       });
     } else {
@@ -244,8 +235,11 @@ const getRecentRead = (
       });
     }
   };
+
   const renderItem = ({ item }: { item: DownloadedChapter }) => {
-    const readTill = getRecentRead(item._id)
+    const readTill = getRecentRead(item._id);
+    const resolvedTotal = readTill?.total || (item as any)?.duration || item?.total || 0;
+    const resolvedReadtill = readTill?.readtill !== undefined ? String(readTill.readtill) : "0";
 
     return (
       <Pressable
@@ -258,8 +252,8 @@ const getRecentRead = (
             id={item._id}
             cover={item.cover}
             title={item.title}
-            readtill={readTill?.readtill.toString() || "0"}
-            total={readTill?.total || "10"}
+            readtill={resolvedReadtill}
+            total={resolvedTotal}
             type={item.type}
             author={item.author}
             fileSize={item.fileSize}
@@ -281,13 +275,95 @@ const getRecentRead = (
 
   return (
     <View style={styles.container}>
-      {downloads.length === 0 ? (
+      {downloads.length === 0 && activeDownloads.length === 0 ? (
         <EmptyDownloads reload={refreshDownloads} />
       ) : (
         <ScrollView
           style={{ flex: 1 }}
           showsVerticalScrollIndicator={true}
           contentContainerStyle={styles.listContent}>
+          {/* Active Downloads Section */}
+          {activeDownloads.length > 0 && (
+            <View style={styles.activeSection}>
+              <Text style={styles.activeSectionTitle}>
+                Downloading ({activeDownloads.length})
+              </Text>
+              {activeDownloads.map((ad) => {
+                const isAudio = String(ad.chapter.type || "").toLowerCase().includes("audio");
+                const mbWritten = (ad.bytesWritten / (1024 * 1024)).toFixed(1);
+                const mbTotal = (ad.totalBytes / (1024 * 1024)).toFixed(1);
+                const sizeText =
+                  ad.totalBytes > 0
+                    ? `${mbWritten} MB / ${mbTotal} MB`
+                    : ad.percent > 0
+                    ? `${ad.percent}%`
+                    : "Connecting...";
+
+                return (
+                  <View key={ad.id} style={styles.activeCard}>
+                    <View style={styles.activeCardRow}>
+                      {ad.chapter.cover ? (
+                        <CachedImage
+                          uri={ad.chapter.cover}
+                          label={ad.chapter.title}
+                          style={styles.activeThumb}
+                          transition={0}
+                          letterSize={14}
+                        />
+                      ) : (
+                        <View style={styles.activeThumbFallback}>
+                          {isAudio ? (
+                            <HeadphonesIcon size={20} color="#38bdf8" />
+                          ) : (
+                            <FileIcon size={20} color="#22c55e" />
+                          )}
+                        </View>
+                      )}
+                      <View style={styles.activeInfo}>
+                        <View style={styles.activeTitleRow}>
+                          <Text style={styles.activeTitle} numberOfLines={1}>
+                            {ad.chapter.title}
+                          </Text>
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              ad.status === "completed" && {
+                                backgroundColor: "rgba(34, 197, 94, 0.15)",
+                              },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.statusBadgeText,
+                                ad.status === "completed" && { color: "#22c55e" },
+                              ]}
+                            >
+                              {ad.status === "completed" ? "Done" : `${ad.percent}%`}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.activeAuthor} numberOfLines={1}>
+                          {ad.chapter.author || "READAPT"} • {sizeText}
+                        </Text>
+                        <View style={styles.activeProgressTrack}>
+                          <View
+                            style={[
+                              styles.activeProgressFill,
+                              {
+                                width: `${Math.max(4, ad.percent)}%`,
+                                backgroundColor: isAudio ? "#38bdf8" : "#22c55e",
+                              },
+                            ]}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
           {groupedDownloads.map(([date, items]) => (
             <View style={styles.dateGroup} key={date}>
               <Text style={styles.dateTitle}>{date}</Text>
@@ -652,5 +728,88 @@ const styles = StyleSheet.create({
 
   buttonPressed: {
     transform: [{ scale: 0.97 }],
+  },
+  activeSection: {
+    marginBottom: 20,
+    paddingHorizontal: 4,
+  },
+  activeSectionTitle: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    opacity: 0.85,
+  },
+  activeCard: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  activeCardRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  activeThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  activeThumbFallback: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  activeInfo: {
+    flex: 1,
+    gap: 4,
+  },
+  activeTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  activeTitle: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+    flex: 1,
+  },
+  statusBadge: {
+    backgroundColor: "rgba(56, 189, 248, 0.15)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  statusBadgeText: {
+    color: "#38bdf8",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  activeAuthor: {
+    color: "#9ca3af",
+    fontSize: 11.5,
+  },
+  activeProgressTrack: {
+    width: "100%",
+    height: 4,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 2,
+    overflow: "hidden",
+    marginTop: 4,
+  },
+  activeProgressFill: {
+    height: "100%",
+    borderRadius: 2,
   },
 });

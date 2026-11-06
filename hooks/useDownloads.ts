@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
+import { DeviceEventEmitter } from 'react-native';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { IChapter } from '../types/Chapter';
 import * as FileSystem from 'expo-file-system/legacy';
 
-const DOWNLOADS_KEY = '@downloaded_chapters';
-
 export interface DownloadedChapter extends IChapter {
   localUri: string;
   dateAdded: string;
   fileSize: string;
+  userId?: string;
 }
 
 export interface DownloadStatus {
@@ -19,61 +19,88 @@ export interface DownloadStatus {
   status: 'downloading' | 'completed' | 'failed';
 }
 
+export interface ActiveDownloadItem {
+  id: string;
+  chapter: IChapter;
+  percent: number; // 0 to 100
+  bytesWritten: number;
+  totalBytes: number;
+  status: 'downloading' | 'completed' | 'failed';
+}
+
 const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 MB';
-
   const mb = bytes / (1024 * 1024);
-
   if (mb >= 1) {
     return `${mb.toFixed(1)} MB`;
   }
-
   const kb = bytes / 1024;
   return `${Math.round(kb)} KB`;
 };
 
-const formatDateAdded = (isoString: string): string => {
-  const date = new Date(isoString);
-  const now = new Date();
+// Global active downloads state shared across all components
+const activeDownloadsMap = new Map<string, ActiveDownloadItem>();
+const activeDownloadListeners = new Set<() => void>();
 
-  const diffDays = Math.floor(
-    (now.getTime() - date.getTime()) / (1000 * 3600 * 24)
-  );
-
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
+const notifyActiveDownloadListeners = () => {
+  activeDownloadListeners.forEach((fn) => {
+    try {
+      fn();
+    } catch (_) {}
   });
+};
+
+// Resolve current logged-in user ID for storage isolation
+export const getActiveUserId = async (): Promise<string> => {
+  try {
+    const raw = await AsyncStorage.getItem('cached_user_profile');
+    if (raw) {
+      const u = JSON.parse(raw);
+      if (u?._id) return String(u._id);
+      if (u?.id) return String(u.id);
+      if (u?.email) return String(u.email).toLowerCase().trim();
+    }
+  } catch {}
+  return 'guest';
+};
+
+export const getUserDownloadsKey = async (overrideUserId?: string): Promise<string> => {
+  const uid = overrideUserId || (await getActiveUserId());
+  return `@downloaded_chapters_${uid}`;
 };
 
 export const useDownloads = () => {
   const [downloads, setDownloads] = useState<DownloadedChapter[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [activeDownloads, setActiveDownloads] = useState<ActiveDownloadItem[]>(() =>
+    Array.from(activeDownloadsMap.values())
+  );
 
-  const [downloadStatuses, setDownloadStatuses] = useState<
-    Record<string, DownloadStatus>
-  >({});
+  // Sync active downloads from the singleton store
+  useEffect(() => {
+    const syncActive = () => {
+      setActiveDownloads(Array.from(activeDownloadsMap.values()));
+    };
+    activeDownloadListeners.add(syncActive);
+    syncActive();
+    return () => {
+      activeDownloadListeners.delete(syncActive);
+    };
+  }, []);
 
   // --------------------------------------------------
-  // Load saved downloads
+  // Load saved downloads for the current active user
   // --------------------------------------------------
-
   const loadDownloads = useCallback(async () => {
     try {
       setIsLoading(true);
-
-      const jsonValue = await AsyncStorage.getItem(DOWNLOADS_KEY);
-
-      const data: DownloadedChapter[] =
-        jsonValue != null ? JSON.parse(jsonValue) : [];
-
+      const key = await getUserDownloadsKey();
+      const jsonValue = await AsyncStorage.getItem(key);
+      const data: DownloadedChapter[] = jsonValue != null ? JSON.parse(jsonValue) : [];
       setDownloads(data);
     } catch (error) {
       console.error('Error reading downloads:', error);
+      setDownloads([]);
     } finally {
       setIsLoading(false);
     }
@@ -81,273 +108,216 @@ export const useDownloads = () => {
 
   useEffect(() => {
     loadDownloads();
+
+    // Listen for auth state change or global downloads change
+    const subAuth = DeviceEventEmitter.addListener('AUTH_STATE_CHANGED', () => {
+      loadDownloads();
+    });
+    const subDownloads = DeviceEventEmitter.addListener('DOWNLOADS_CHANGED', () => {
+      loadDownloads();
+    });
+
+    return () => {
+      subAuth.remove();
+      subDownloads.remove();
+    };
   }, [loadDownloads]);
 
   // --------------------------------------------------
-  // Download chapter
+  // Download chapter with real-time resumable progress
   // --------------------------------------------------
+  const downloadChapter = async (
+    chapter: IChapter
+  ): Promise<string | null> => {
+    const chapterId = chapter._id;
 
-const downloadChapter = async (
-  chapter: IChapter
-): Promise<string | null> => {
-  const chapterId = chapter._id;
-
-  try {
-    setDownloadStatuses((prev) => ({
-      ...prev,
-      [chapterId]: {
-        id: chapterId,
-        percent: 0,
-        progressText: '0%',
-        status: 'downloading',
-      },
-    }));
-
-    const fileExtension =
-      chapter.media
-        ?.split('?')[0]
-        .split('.')
-        .pop()
-        ?.toLowerCase() ||
-      (chapter.type === 'audio' ? 'mp3' : 'pdf');
-
-    const targetDir = FileSystem.documentDirectory;
-
-    if (!targetDir) {
-      throw new Error('Document directory is unavailable');
+    // Avoid duplicate concurrent download for the same chapter
+    if (activeDownloadsMap.has(chapterId)) {
+      const existing = activeDownloadsMap.get(chapterId);
+      if (existing?.status === 'downloading') {
+        return null;
+      }
     }
 
-    const localPath =
-      `${targetDir}${chapterId}.${fileExtension}`;
+    try {
+      const activeUid = await getActiveUserId();
+      const userKey = await getUserDownloadsKey(activeUid);
 
-    // --------------------------------------------------
-    // Check whether already downloaded
-    // --------------------------------------------------
+      // Register in active downloads store immediately
+      const activeItem: ActiveDownloadItem = {
+        id: chapterId,
+        chapter,
+        percent: 0,
+        bytesWritten: 0,
+        totalBytes: 0,
+        status: 'downloading',
+      };
+      activeDownloadsMap.set(chapterId, activeItem);
+      notifyActiveDownloadListeners();
 
-    const fileInfo =
-      await FileSystem.getInfoAsync(localPath);
+      const fileExtension =
+        chapter.media
+          ?.split('?')[0]
+          .split('.')
+          .pop()
+          ?.toLowerCase() ||
+        (chapter.type === 'audio' ? 'mp3' : 'pdf');
 
-    if (fileInfo.exists) {
+      const targetDir = FileSystem.documentDirectory;
+      if (!targetDir) {
+        throw new Error('Document directory is unavailable');
+      }
 
-      const size =
-        'size' in fileInfo
-          ? Number(fileInfo.size || 0)
-          : 0;
+      const localPath = `${targetDir}${chapterId}.${fileExtension}`;
 
+      // Check whether already downloaded on disk
+      const fileInfo = await FileSystem.getInfoAsync(localPath);
+
+      if (fileInfo.exists) {
+        const size = 'size' in fileInfo ? Number(fileInfo.size || 0) : 0;
+        const newEntry: DownloadedChapter = {
+          ...chapter,
+          localUri: fileInfo.uri,
+          dateAdded: new Date().toISOString(),
+          fileSize: formatFileSize(size),
+          userId: activeUid,
+        };
+
+        const jsonValue = await AsyncStorage.getItem(userKey);
+        const existing: DownloadedChapter[] = jsonValue ? JSON.parse(jsonValue) : [];
+        const updated = [newEntry, ...existing.filter((item) => item._id !== chapterId)];
+
+        await AsyncStorage.setItem(userKey, JSON.stringify(updated));
+        setDownloads(updated);
+
+        activeItem.percent = 100;
+        activeItem.status = 'completed';
+        notifyActiveDownloadListeners();
+        DeviceEventEmitter.emit('DOWNLOADS_CHANGED');
+        DeviceEventEmitter.emit('DOWNLOAD_COMPLETED', { chapter, uri: fileInfo.uri });
+
+        setTimeout(() => {
+          activeDownloadsMap.delete(chapterId);
+          notifyActiveDownloadListeners();
+        }, 1200);
+
+        return fileInfo.uri;
+      }
+
+      // Create resumable download with progress tracking
+      const downloadResumable = FileSystem.createDownloadResumable(
+        chapter.media,
+        localPath,
+        {},
+        (downloadProgress) => {
+          const written = downloadProgress.totalBytesWritten;
+          const total = downloadProgress.totalBytesExpectedToWrite;
+          const pct = total > 0 ? Math.min(100, Math.round((written / total) * 100)) : 0;
+
+          const item = activeDownloadsMap.get(chapterId);
+          if (item) {
+            item.percent = pct;
+            item.bytesWritten = written;
+            item.totalBytes = total;
+            notifyActiveDownloadListeners();
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result?.uri) {
+        throw new Error('Download completed but URI is missing');
+      }
+
+      const downloadedInfo = await FileSystem.getInfoAsync(result.uri);
+      if (!downloadedInfo.exists) {
+        throw new Error('Downloaded file does not exist');
+      }
+
+      const fileSize = 'size' in downloadedInfo ? Number(downloadedInfo.size || 0) : 0;
+      const fileSizeFormatted = formatFileSize(fileSize);
       const newEntry: DownloadedChapter = {
         ...chapter,
-        localUri: fileInfo.uri,
-        dateAdded: (new Date()).toISOString(),
-        fileSize: formatFileSize(size),
+        localUri: result.uri,
+        dateAdded: new Date().toISOString(),
+        fileSize: fileSizeFormatted,
+        userId: activeUid,
       };
 
-      const jsonValue =
-        await AsyncStorage.getItem(
-          DOWNLOADS_KEY
-        );
+      const jsonValue = await AsyncStorage.getItem(userKey);
+      const existing: DownloadedChapter[] = jsonValue ? JSON.parse(jsonValue) : [];
+      const updated = [newEntry, ...existing.filter((item) => item._id !== chapterId)];
 
-      const existing: DownloadedChapter[] =
-        jsonValue
-          ? JSON.parse(jsonValue)
-          : [];
-
-      const updated = [
-        newEntry,
-        ...existing.filter(
-          (item) => item._id !== chapterId
-        ),
-      ];
-
-      await AsyncStorage.setItem(
-        DOWNLOADS_KEY,
-        JSON.stringify(updated)
-      );
-
+      await AsyncStorage.setItem(userKey, JSON.stringify(updated));
       setDownloads(updated);
 
-      setDownloadStatuses((prev) => ({
-        ...prev,
-        [chapterId]: {
-          id: chapterId,
-          percent: 100,
-          progressText: 'Downloaded',
-          status: 'completed',
-        },
-      }));
+      activeItem.percent = 100;
+      activeItem.status = 'completed';
+      notifyActiveDownloadListeners();
+      DeviceEventEmitter.emit('DOWNLOADS_CHANGED');
+      DeviceEventEmitter.emit('DOWNLOAD_COMPLETED', { chapter, uri: result.uri });
 
-      return fileInfo.uri;
+      setTimeout(() => {
+        activeDownloadsMap.delete(chapterId);
+        notifyActiveDownloadListeners();
+      }, 1200);
+
+      return result.uri;
+    } catch (error: any) {
+      console.error('Download error:', error);
+      const item = activeDownloadsMap.get(chapterId);
+      if (item) {
+        item.status = 'failed';
+        notifyActiveDownloadListeners();
+        setTimeout(() => {
+          activeDownloadsMap.delete(chapterId);
+          notifyActiveDownloadListeners();
+        }, 3000);
+      }
+      return null;
     }
-
-    const result = await FileSystem.downloadAsync(
-      chapter.media,
-      localPath
-    );
-
-    if (!result.uri) {
-      throw new Error(
-        'Download completed but URI is missing'
-      );
-    }
-
-    // --------------------------------------------------
-    // Check downloaded file
-    // --------------------------------------------------
-
-    const downloadedInfo =
-      await FileSystem.getInfoAsync(
-        result.uri
-      );
-
-    if (!downloadedInfo.exists) {
-      throw new Error(
-        'Downloaded file does not exist'
-      );
-    }
-
-    const fileSize =
-      'size' in downloadedInfo
-        ? Number(downloadedInfo.size || 0)
-        : 0;
-
-    if (fileSize <= 0) {
-      throw new Error(
-        'Downloaded file is empty'
-      );
-    }
-
-    const fileSizeFormatted =
-      formatFileSize(fileSize);
-
-    // --------------------------------------------------
-    // Create download record
-    // --------------------------------------------------
-
-    const newEntry: DownloadedChapter = {
-      ...chapter,
-      localUri: result.uri,
-      dateAdded: (new Date()).toISOString(),
-      fileSize: fileSizeFormatted,
-    };
-
-    // --------------------------------------------------
-    // Save metadata
-    // --------------------------------------------------
-
-    const jsonValue =
-      await AsyncStorage.getItem(
-        DOWNLOADS_KEY
-      );
-
-    const existing: DownloadedChapter[] =
-      jsonValue
-        ? JSON.parse(jsonValue)
-        : [];
-
-    const updated = [
-      newEntry,
-      ...existing.filter(
-        (item) => item._id !== chapterId
-      ),
-    ];
-
-    await AsyncStorage.setItem(
-      DOWNLOADS_KEY,
-      JSON.stringify(updated)
-    );
-
-    setDownloads(updated);
-
-    // --------------------------------------------------
-    // Completed
-    // --------------------------------------------------
-
-    setDownloadStatuses((prev) => ({
-      ...prev,
-      [chapterId]: {
-        id: chapterId,
-        percent: 100,
-        progressText: 'Downloaded',
-        status: 'completed',
-      },
-    }));
-
-    return result.uri;
-
-  } catch (error: any) {
-    console.error(
-      'Download error:',
-      error
-    );
-
-    console.error(
-      'Download error message:',
-      error?.message
-    );
-
-    setDownloadStatuses((prev) => ({
-      ...prev,
-      [chapterId]: {
-        id: chapterId,
-        percent: 0,
-        progressText: 'Failed',
-        status: 'failed',
-      },
-    }));
-
-    return null;
-  }
-};
+  };
 
   // --------------------------------------------------
   // Delete chapter
   // --------------------------------------------------
-
   const deleteChapter = async (id: string): Promise<void> => {
     try {
-      const itemToDelete = downloads.find(
-        (item) => item._id === id
-      );
+      const activeUid = await getActiveUserId();
+      const userKey = await getUserDownloadsKey(activeUid);
 
+      const itemToDelete = downloads.find((item) => item._id === id);
       if (itemToDelete) {
-        // Remove file:// prefix before RNBU fs operations
-        const path = itemToDelete.localUri.replace(
-          /^file:\/\//,
-          ''
-        );
-
+        const path = itemToDelete.localUri.replace(/^file:\/\//, '');
         const exists = await ReactNativeBlobUtil.fs.exists(path);
-
         if (exists) {
           await ReactNativeBlobUtil.fs.unlink(path);
         }
       }
 
-      const updated = downloads.filter(
-        (item) => item._id !== id
-      );
-
-      await AsyncStorage.setItem(
-        DOWNLOADS_KEY,
-        JSON.stringify(updated)
-      );
-
+      const updated = downloads.filter((item) => item._id !== id);
+      await AsyncStorage.setItem(userKey, JSON.stringify(updated));
       setDownloads(updated);
-
-      setDownloadStatuses((prev) => {
-        const copy = { ...prev };
-
-        delete copy[id];
-
-        return copy;
-      });
+      DeviceEventEmitter.emit('DOWNLOADS_CHANGED');
     } catch (error) {
       console.error('Failed to delete chapter:', error);
     }
   };
 
+  const downloadStatuses: Record<string, DownloadStatus> = {};
+  activeDownloads.forEach((ad) => {
+    downloadStatuses[ad.id] = {
+      id: ad.id,
+      percent: ad.percent,
+      progressText: `${ad.percent}%`,
+      status: ad.status,
+    };
+  });
+
   return {
     downloads,
     isLoading,
+    activeDownloads,
     downloadStatuses,
     downloadChapter,
     deleteChapter,

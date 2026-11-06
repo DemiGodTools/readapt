@@ -1,14 +1,17 @@
+// File: components/props/QuestionCard.tsx
 import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
-  Pressable,
+  TouchableOpacity,
   Animated,
-  Dimensions,
   Easing,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from "react-native";
-import Svg, { Path, Circle, Rect } from "react-native-svg";
+import Svg, { Path, Line, Polyline } from "react-native-svg";
 import useAuth from "../../hooks/useAuth";
 import pallete from "../../lib/Colors";
 import { IQuestion } from "../../types/Question";
@@ -18,19 +21,30 @@ import { updateStreak } from "../../hooks/useStreak";
 import { useUser } from "../../hooks/useUser";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
+if (
+  Platform.OS === "android" &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 type Props = {
   question: any;
-  onAttempted?: (isCorrect: boolean) => void;
+  index?: number;
+  total?: number;
+  qnaCommentCount?: number;
+  onAttempted?: (isCorrect: boolean, selectedIndex?: number) => void;
   onCommentClick: () => void;
 };
 
 const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 
-const QuestionCard = ({ question: rawQuestion, onAttempted, onCommentClick }: Props) => {
-  // Gracefully unpack question data
- // Normalization
+const QuestionCard = ({
+  question: rawQuestion,
+  qnaCommentCount = 0,
+  onAttempted,
+  onCommentClick,
+}: Props) => {
   const question: IQuestion =
     rawQuestion?.content && typeof rawQuestion.content === "object"
       ? rawQuestion.content
@@ -51,287 +65,190 @@ const QuestionCard = ({ question: rawQuestion, onAttempted, onCommentClick }: Pr
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
   const [showExplanation, setShowExplanation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [prevAnswer, setPrevAnswer] = useState<number | null>(null);
-  
-  const fillAnims = useRef<Animated.Value[]>([]);
-  if (fillAnims.current.length !== safeOptions.length) {
-    fillAnims.current = safeOptions.map(() => new Animated.Value(0));
-  }
 
-  const explanationAnim = useRef(new Animated.Value(0)).current;
+  // Animation values
+  const explanationOpacity = useRef(new Animated.Value(0)).current;
+  const explanationTranslateY = useRef(new Animated.Value(15)).current;
 
-  const formatDate = (iso?: string | Date) => {
-    try {
-      if (!iso) return "";
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return "";
-      const day = String(d.getDate()).padStart(2, "0");
-      const month = String(d.getMonth() + 1).padStart(2, "0");
-      return `${day}-${month}-${d.getFullYear()}`;
-    } catch {
-      return "";
-    }
-  };
-
-  const formatTime = (iso?: string | Date) => {
-    try {
-      if (!iso) return "";
-      const d = new Date(iso);
-      if (isNaN(d.getTime())) return "";
-      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch {
-      return "";
-    }
-  };
-
-  const handleSelect = async (index: number, isForce: boolean = false) => {
+  const handleSelect = async (optIndex: number, isForce: boolean = false) => {
     if (!isConnected && !isForce) {
       showToast({ title: "Please connect to the Internet." });
       return;
     }
-    if (prevAnswer !== null) return;
     if (selectedIndex !== null || submitting) return;
 
-    const correct = index === question.correct;
-    setSelectedIndex(index);
+    const correct = optIndex === Number(question.correct);
+    
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    
+    setSelectedIndex(optIndex);
     setIsCorrect(correct);
     setSubmitting(true);
+    setShowExplanation(true);
 
-    if (fillAnims.current[index]) {
-      Animated.timing(fillAnims.current[index], {
-        toValue: 1,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }).start();
-    }
-
-    if (!correct && typeof question.correct === "number" && fillAnims.current[question.correct]) {
-      Animated.timing(fillAnims.current[question.correct], {
-        toValue: 1,
-        duration: 500,
-        delay: 200,
-        useNativeDriver: false,
-      }).start();
-    }
-
-    setTimeout(() => {
-      setShowExplanation(true);
-      Animated.timing(explanationAnim, {
+    Animated.parallel([
+      Animated.timing(explanationOpacity, {
         toValue: 1,
         duration: 350,
-        easing: Easing.out(Easing.quad),
+        easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
-      }).start();
-    }, 380);
+      }),
+      Animated.timing(explanationTranslateY, {
+        toValue: 0,
+        duration: 350,
+        easing: Easing.out(Easing.back(1.2)),
+        useNativeDriver: true,
+      }),
+    ]).start();
 
     if (isForce) {
       setSubmitting(false);
-      onAttempted?.(correct);
-      setPrevAnswer(index);
+      onAttempted?.(correct, optIndex);
       return;
     }
 
-    updateStreak();
-    showToast({
-      title: correct
-        ? "Correct Answer! Streak Updated"
-        : "Wrong Answer!, But Streak Updated",
-    });
+    updateStreak(user?._id || user?.userId);
 
     try {
-      const data = await api.post(
+     /* await api.post(
         "/question/attempt",
         {
           questionId: question._id,
-          Answer: index,
+          Answer: optIndex,
           iscorrect: correct,
         },
         {
           headers: { Authorization: `Bearer ${accessToken}` },
         }
-      );
-      if (data?.data) {
-        showToast({ title: "Level Upgraded" });
-      }
+      ); */
     } catch (err) {
-      console.error("Attempt failed:", err);
+      console.log("Question attempt error:", err);
     } finally {
       setSubmitting(false);
-      onAttempted?.(correct);
-      setPrevAnswer(index);
+      onAttempted?.(correct, optIndex);
     }
   };
 
   useEffect(() => {
-    if (!user?.questionsAttempted || !user.questionsAttempted.length || !question?._id) return;
-    const past = user.questionsAttempted.find(
-      (q: any) => String(q.question) === String(question._id)
-    );
-    if (past && typeof past.answered === "number") {
-      setSelectedIndex(past.answered);
-      handleSelect(past.answered, true);
-    }
+   // User progress loading is temp disabled
   }, [user?.questionsAttempted, question?._id]);
 
-  const getTrackStyle = (index: number) => {
-    if (selectedIndex === null) return styles.pollTrack;
-    const isSelected = selectedIndex === index;
-    const isRightAnswer = index === question.correct;
+  const getOptionStyle = (optIndex: number) => {
+    if (selectedIndex === null) return styles.optionBox;
 
-    if (isSelected && isCorrect) return [styles.pollTrack, styles.trackUserTrue];
-    if (isSelected && !isCorrect) return [styles.pollTrack, styles.trackUserFalse];
-    if (!isSelected && isRightAnswer) return [styles.pollTrack, styles.trackTrue];
-    if (!isSelected && !isRightAnswer && selectedIndex !== null) return [styles.pollTrack, styles.trackFalse];
-    return styles.pollTrack;
+    const isSelected = selectedIndex === optIndex;
+    const isRightAnswer = optIndex === Number(question.correct);
+
+    if (isSelected && isCorrect) return [styles.optionBox, styles.optionBoxTrue];
+    if (isSelected && !isCorrect) return [styles.optionBox, styles.optionBoxFalse];
+    if (!isSelected && isRightAnswer) return [styles.optionBox, styles.optionBoxTrue];
+
+    return [styles.optionBox, { opacity: 0.4 }];
   };
 
-  const timeText = formatTime(question.createdAt);
-  const dateText = formatDate(question.createdAt);
-
-const commentCount = (() => {
-    const comms: any = question?.comments;
-    if (typeof comms === "number") return comms;
-    if (Array.isArray(comms)) return comms.length;
-    return 0;
-  })();
-  
   return (
     <View style={styles.pollBox}>
-      {/* Time & Date Header */}
-      {(timeText || dateText) ? (
-        <View style={styles.pollTimes}>
-          {timeText ? (
-            <View style={styles.timeItem}>
-              <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2">
-                <Circle cx="12" cy="12" r="9" />
-                <Path d="M12 7V12L14.5 14.5" />
-              </Svg>
-              <Text style={styles.timeText}>{timeText}</Text>
-            </View>
-          ) : null}
-          {dateText ? (
-            <View style={styles.timeItem}>
-              <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2">
-                <Rect x="3" y="6" width="18" height="15" rx="2" />
-                <Path d="M3 11H21" />
-                <Path d="M9 3V7" />
-                <Path d="M15 3V7" />
-              </Svg>
-              <Text style={styles.timeText}>{dateText}</Text>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-
-      {/* Question Text */}
       <Text style={styles.pollQuestion}>
         {question.question || "What is your answer?"}
       </Text>
 
-      {/* Options */}
       <View style={styles.pollOptions}>
-        {safeOptions.map((opt, index) => {
-          const fillAnim = fillAnims.current[index];
-          const fillWidth = fillAnim
-            ? fillAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: ["0%", "100%"],
-              })
-            : "0%";
-
-          const isSelected = selectedIndex === index;
-          const isRight = index === question.correct;
+        {safeOptions.map((opt, optIdx) => {
+          const isSelected = selectedIndex === optIdx;
+          const isRight = optIdx === Number(question.correct);
           const showIcon = selectedIndex !== null && (isSelected || isRight);
+          let iconColor = "#9ca3af";
+          if (showIcon) iconColor = isRight ? "#34d399" : "#fb7185";
 
           return (
-            <Pressable
-              key={index}
+            <TouchableOpacity
+              key={`opt_${optIdx}`}
               disabled={selectedIndex !== null}
-              onPress={() => handleSelect(index)}
-              style={styles.pollOptionItem}>
-              <View style={styles.pollLabelRow}>
-                <Text style={styles.optionLabel}>
-                  {OPTION_LABELS[index] || ""}) {opt}
+              onPress={() => handleSelect(optIdx)}
+              activeOpacity={0.7}
+              style={getOptionStyle(optIdx)}>
+              <View style={styles.optionContentRow}>
+                <View
+                  style={[
+                    styles.radioOuter,
+                    showIcon && { borderColor: iconColor, backgroundColor: "transparent" },
+                  ]}>
+                  {showIcon ? (
+                    isRight ? (
+                      <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <Polyline points="20 6 9 17 4 12" />
+                      </Svg>
+                    ) : (
+                      <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <Line x1="18" y1="6" x2="6" y2="18" />
+                        <Line x1="6" y1="6" x2="18" y2="18" />
+                      </Svg>
+                    )
+                  ) : null}
+                </View>
+                <Text
+                  style={[
+                    styles.optionLabel,
+                    selectedIndex === optIdx && { color: "#ffffff", fontWeight: "600" },
+                  ]}>
+                  <Text style={{ fontWeight: "700" }}>{OPTION_LABELS[optIdx]} </Text>
+                  {opt}
                 </Text>
               </View>
-
-              <View style={styles.pollSliderContainer}>
-                <View style={getTrackStyle(index)}>
-                  <Animated.View
-                    style={[
-                      styles.fillBar,
-                      {
-                        width: fillWidth,
-                        backgroundColor:
-                          isSelected && isCorrect
-                            ? "rgba(52, 211, 153, 0.45)"
-                            : isSelected && !isCorrect
-                            ? "rgba(251, 113, 133, 0.45)"
-                            : isRight
-                            ? "rgba(52, 211, 153, 0.3)"
-                            : "transparent",
-                      },
-                    ]}
-                  />
-
-                  {showIcon && (
-                    <View style={styles.pollStatusIcon}>
-                      {isRight ? (
-                        <Svg width={12} height={12} viewBox="0 0 24 24" fill={pallete.true || "#34d399"}>
-                          <Path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-                        </Svg>
-                      ) : (
-                        <Svg width={12} height={12} viewBox="0 0 24 24" fill={pallete.false || "#fb7185"}>
-                          <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
-                        </Svg>
-                      )}
-                    </View>
-                  )}
-                </View>
-              </View>
-            </Pressable>
+            </TouchableOpacity>
           );
         })}
       </View>
 
-      {/* Explanation */}
       {showExplanation && question.explanation ? (
         <Animated.View
           style={[
             styles.explanationBox,
             {
-              opacity: explanationAnim,
-              transform: [
-                {
-                  translateY: explanationAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [12, 0],
-                  }),
-                },
-              ],
+              opacity: explanationOpacity,
+              transform: [{ translateY: explanationTranslateY }],
             },
           ]}>
-          <Text style={styles.explanationLabel}>
-            {isCorrect ? "Correct!" : "Explanation"}
-          </Text>
+          <View style={styles.explanationHeaderRow}>
+            {isCorrect ? (
+              <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <Polyline points="20 6 9 17 4 12" />
+              </Svg>
+            ) : (
+              <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#fb7185" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                <Line x1="18" y1="6" x2="6" y2="18" />
+                <Line x1="6" y1="6" x2="18" y2="18" />
+              </Svg>
+            )}
+            <Text
+              style={[
+                styles.explanationLabel,
+                { color: isCorrect ? "#34d399" : "#fb7185" },
+              ]}>
+              {isCorrect ? "Correct Explanation" : "Explanation"}
+            </Text>
+          </View>
           <Text style={styles.explanationText}>{question.explanation}</Text>
         </Animated.View>
       ) : null}
 
-      {/* Footer / Clean Icon Comment Trigger */}
       <View style={styles.pollFooter}>
-        <Pressable
+        <TouchableOpacity
           style={styles.pollCommentIcon}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          onPress={onCommentClick}>
-          <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2">
+          onPress={onCommentClick}
+          activeOpacity={0.7}>
+          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2">
             <Path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
           </Svg>
           <Text style={styles.commentCount}>
-            {commentCount > 0 ? (commentCount >= 1000 ? `${(commentCount / 1000).toFixed(0)}k` : commentCount) : ""}
+            {qnaCommentCount > 0
+              ? qnaCommentCount >= 1000
+                ? `${(qnaCommentCount / 1000).toFixed(1)}k`
+                : qnaCommentCount
+              : "0"}
           </Text>
-        </Pressable>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -340,138 +257,111 @@ const commentCount = (() => {
 const styles = StyleSheet.create({
   pollBox: {
     width: "100%",
-    backgroundColor: pallete.bgcard || "rgba(20,20,20,0.85)",
+    backgroundColor: "rgba(22, 24, 28, 0.95)",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    borderRadius: 16,
-    padding: 18,
-  },
-  pollTimes: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 10,
-    opacity: 0.7,
-  },
-  timeItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  timeText: {
-    fontSize: 11,
-    fontWeight: "500",
-    color: pallete.textgray,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    borderRadius: 18,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    elevation: 5,
   },
   pollQuestion: {
     fontSize: 17,
     fontWeight: "600",
-    lineHeight: 24,
-    color: pallete.textwhite || "#fff",
-    marginBottom: 14,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.08)",
+    lineHeight: 25,
+    color: "#ffffff",
+    marginBottom: 20,
   },
   pollOptions: {
     gap: 12,
   },
-  pollOptionItem: {
-    gap: 6,
-  },
-  pollLabelRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  optionLabel: {
-    fontSize: 14,
-    color: "#e5e7eb",
-    lineHeight: 20,
-  },
-  pollSliderContainer: {
+  optionBox: {
     flexDirection: "row",
     alignItems: "center",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "rgba(255, 255, 255, 0.12)",
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
   },
-  pollTrack: {
-    flex: 1,
-    height: 20,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderRadius: 20,
-    overflow: "hidden",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
+  optionBoxTrue: {
+    borderColor: "rgba(52, 211, 153, 0.6)",
+    backgroundColor: "rgba(52, 211, 153, 0.12)",
+  },
+  optionBoxFalse: {
+    borderColor: "rgba(251, 113, 133, 0.6)",
+    backgroundColor: "rgba(251, 113, 133, 0.12)",
+  },
+  optionContentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  radioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.3)",
+    alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "transparent",
   },
-  trackUserTrue: {
-    borderWidth: 2,
-    borderColor: pallete.true || "#34d399",
-    backgroundColor: "rgba(52, 211, 153, 0.2)",
-  },
-  trackUserFalse: {
-    borderWidth: 2,
-    borderColor: pallete.false || "#fb7185",
-    backgroundColor: "rgba(251, 113, 133, 0.2)",
-  },
-  trackTrue: {
-    backgroundColor: "rgba(52, 211, 153, 0.2)",
-  },
-  trackFalse: {
-    backgroundColor: "rgba(251, 113, 133, 0.15)",
-  },
-  fillBar: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    borderRadius: 20,
-  },
-  pollStatusIcon: {
-    position: "absolute",
-    right: 8,
-    top: "50%",
-    marginTop: -6,
-    width: 12,
-    height: 12,
-    zIndex: 2,
+  optionLabel: {
+    fontSize: 15,
+    color: "#e5e7eb",
+    lineHeight: 22,
+    fontWeight: "400",
+    flexShrink: 1,
   },
   explanationBox: {
-    marginTop: 14,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: "rgba(0, 210, 180, 0.08)",
-    borderLeftWidth: 3,
-    borderLeftColor: pallete.accent,
+    marginTop: 18,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
+  },
+  explanationHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 6,
   },
   explanationLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: "700",
-    color: pallete.accent,
-    marginBottom: 4,
     textTransform: "uppercase",
   },
   explanationText: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 22,
     color: "#d1d5db",
   },
   pollFooter: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    marginTop: 14,
-    paddingTop: 8,
+    marginTop: 16,
+    paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.05)",
+    borderTopColor: "rgba(255, 255, 255, 0.08)",
   },
   pollCommentIcon: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 50,
   },
   commentCount: {
-    fontSize: 12,
-    color: pallete.textgray,
+    fontSize: 14,
+    color: "#9ca3af",
+    fontWeight: "600",
   },
 });
 

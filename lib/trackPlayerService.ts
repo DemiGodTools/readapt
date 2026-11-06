@@ -1,18 +1,19 @@
-import TrackPlayer, { Event } from 'react-native-track-player';
+import TrackPlayer, { Event } from "react-native-track-player";
 
-export const playbackService = async function () {
+export default async function () {
   TrackPlayer.addEventListener(Event.RemotePlay, () => TrackPlayer.play());
   TrackPlayer.addEventListener(Event.RemotePause, () => TrackPlayer.pause());
-  TrackPlayer.addEventListener(Event.RemoteStop, () => TrackPlayer.stop());
-  TrackPlayer.addEventListener(Event.RemoteSeek, (event) =>
-    TrackPlayer.seekTo(event.position)
-  );
-  TrackPlayer.addEventListener(Event.RemoteJumpForward, async (event) => {
-    const { position } = await TrackPlayer.getProgress();
-    await TrackPlayer.seekTo(position + (event.interval || 15));
-  });
-  TrackPlayer.addEventListener(Event.RemoteJumpBackward, async (event) => {
-    const { position } = await TrackPlayer.getProgress();
-    await TrackPlayer.seekTo(Math.max(0, position - (event.interval || 15)));
+  TrackPlayer.addEventListener(Event.RemoteStop, () => TrackPlayer.reset());
+  TrackPlayer.addEventListener(Event.RemoteNext, () => TrackPlayer.skipToNext());
+  TrackPlayer.addEventListener(Event.RemotePrevious, () => TrackPlayer.skipToPrevious());
+  TrackPlayer.addEventListener(Event.RemoteSeek, (event: any) => TrackPlayer.seekTo(event.position));
+  TrackPlayer.addEventListener(Event.RemoteDuck, async (event: any) => {
+    if (event.paused) {
+      await TrackPlayer.pause();
+    } else if (event.permanent) {
+      await TrackPlayer.stop();
+    } else {
+      await TrackPlayer.setVolume(event.ducking ? 0.3 : 1.0);
+    } 
   });
 };
