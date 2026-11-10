@@ -45,7 +45,7 @@ const SubCategoryOverview: React.FC<any> = () => {
 
   const {
     subCategoryId,
-    categoryId,
+    categoryId: rawCategoryId,
     categoryName,
     subCategory: initialSubCat,
   } = route.params || {};
@@ -58,26 +58,58 @@ const SubCategoryOverview: React.FC<any> = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const effectiveCategoryId =
+    rawCategoryId ||
+    (initialSubCat as any)?.parentCategory ||
+    (subCategory as any)?.parentCategory;
+
+  const contentCacheKey = `@subcat_content_${subCategoryId || effectiveCategoryId || "general"}`;
+
   const fetchContent = useCallback(
     async (isPullToRefresh = false) => {
-      if (isPullToRefresh) setRefreshing(true);
-      else if (books.length === 0 && series.length === 0) setLoading(true);
+      if (isPullToRefresh) {
+        setRefreshing(true);
+      }
+
+      // 1. FAST PATH: Instant paint from disk cache on cold mount
+      if (!isPullToRefresh) {
+        try {
+          const cachedRaw = await AsyncStorage.getItem(contentCacheKey);
+          if (cachedRaw) {
+            const parsed = JSON.parse(cachedRaw);
+            if (Array.isArray(parsed?.books) || Array.isArray(parsed?.series)) {
+              setBooks(parsed.books || []);
+              setSeries(parsed.series || []);
+              setLoading(false);
+            }
+          }
+        } catch {}
+      }
 
       try {
         let fetchedBooks: any[] = [];
         let fetchedSeries: any[] = [];
 
-        if (categoryId) {
+        // Helper to accurately classify series vs standalone content
+        const isSeriesItem = (item: any): boolean =>
+          item?.entityType === "series_container" ||
+          item?.type === "series" ||
+          item?.type === "framework" ||
+          item?.totalChapters !== undefined ||
+          (Array.isArray(item?.chapters) && item.chapters.length > 0) ||
+          Boolean(item?.isFramework);
+
+        if (effectiveCategoryId) {
           const url = subCategoryId
-            ? `${ROOT_API_BASE}/category/${categoryId}/content?subCategoryId=${subCategoryId}`
-            : `${ROOT_API_BASE}/category/${categoryId}/content`;
+            ? `${ROOT_API_BASE}/category/${effectiveCategoryId}/content?subCategoryId=${subCategoryId}`
+            : `${ROOT_API_BASE}/category/${effectiveCategoryId}/content`;
 
           try {
-            const res = await api.get(url);
+            const res = await api.get(url, { timeout: 8000 });
             const data = res?.data?.data;
             if (Array.isArray(data)) {
               data.forEach((item: any) => {
-                if (item?.type === "series" || item?.chapters || item?.chapterCount) {
+                if (isSeriesItem(item)) {
                   fetchedSeries.push(item);
                 } else {
                   fetchedBooks.push(item);
@@ -96,24 +128,19 @@ const SubCategoryOverview: React.FC<any> = () => {
           }
         }
 
+        // 2. Scan cached feed for series or books matching this subcategory/category
         try {
           let feedSeriesPool: any[] = [];
+          let feedBooksPool: any[] = [];
           const cachedFeed = await AsyncStorage.getItem("cached_feed_data");
           if (cachedFeed) {
             try {
               const parsed = JSON.parse(cachedFeed);
-              if (Array.isArray(parsed?.series)) {
-                feedSeriesPool = parsed.series;
-              }
+              if (Array.isArray(parsed?.series)) feedSeriesPool = parsed.series;
+              if (Array.isArray(parsed?.trending)) feedBooksPool.push(...parsed.trending);
+              if (Array.isArray(parsed?.personalized)) feedBooksPool.push(...parsed.personalized);
+              if (Array.isArray(parsed?.all)) feedBooksPool.push(...parsed.all);
             } catch {}
-          }
-
-          if (feedSeriesPool.length === 0) {
-            const feedRes = await api.get("/feed").catch(() => null);
-            const payload = feedRes?.data?.data ?? feedRes?.data;
-            if (Array.isArray(payload?.series)) {
-              feedSeriesPool = payload.series;
-            }
           }
 
           const subNameLower = subCategory?.name?.trim().toLowerCase() || "";
@@ -125,27 +152,54 @@ const SubCategoryOverview: React.FC<any> = () => {
             const matchesSub =
               (subCategoryId && sSub === subCategoryId.toLowerCase()) ||
               (subNameLower && sSubName === subNameLower);
-            const matchesCat = categoryId && sCat === categoryId.toLowerCase();
+            const matchesCat =
+              effectiveCategoryId && sCat === String(effectiveCategoryId).toLowerCase();
 
             return matchesSub || (!sSub && matchesCat);
           });
 
           const seriesMap = new Map<string, any>();
-          fetchedSeries.forEach((s) => seriesMap.set(String(s._id), s));
+          fetchedSeries.forEach((s) => seriesMap.set(String(s._id || s.id), s));
           matchedSeries.forEach((s) => {
-            if (!seriesMap.has(String(s._id))) {
-              seriesMap.set(String(s._id), s);
+            const sid = String(s._id || s.id);
+            if (!seriesMap.has(sid)) {
+              seriesMap.set(sid, s);
             }
           });
           fetchedSeries = Array.from(seriesMap.values());
+
+          // If standalone books are empty from API, supplement from matched feed items
+          if (fetchedBooks.length === 0 && feedBooksPool.length > 0) {
+            const matchedBooks = feedBooksPool.filter((b: any) => {
+              if (isSeriesItem(b)) return false;
+              const bSub = String(b?.subCategory?._id || b?.subCategory || b?.subCategoryId || "").toLowerCase();
+              const bSubName = String(b?.subCategory?.name || "").toLowerCase();
+              return (
+                (subCategoryId && bSub === subCategoryId.toLowerCase()) ||
+                (subNameLower && bSubName === subNameLower)
+              );
+            });
+            const bookMap = new Map<string, any>();
+            matchedBooks.forEach((b) => bookMap.set(String(b._id || b.id), b));
+            fetchedBooks = Array.from(bookMap.values());
+          }
         } catch (seriesErr) {
           console.warn("Series matching warning:", seriesErr);
         }
 
-        setBooks(fetchedBooks);
-        setSeries(fetchedSeries);
+        // Only overwrite if we actually got items, or if it was a pull-to-refresh
+        if (fetchedBooks.length > 0 || fetchedSeries.length > 0 || isPullToRefresh) {
+          setBooks(fetchedBooks);
+          setSeries(fetchedSeries);
 
-        // Warm the grid artwork so scrolling starts from cache, not spinners.
+          // Save fresh content to disk cache
+          AsyncStorage.setItem(
+            contentCacheKey,
+            JSON.stringify({ books: fetchedBooks, series: fetchedSeries })
+          ).catch(() => {});
+        }
+
+        // Warm artwork in parallel
         prefetchImages([
           subCategory?.image,
           ...fetchedSeries.map((s: any) => s?.cover),
@@ -158,7 +212,7 @@ const SubCategoryOverview: React.FC<any> = () => {
         setRefreshing(false);
       }
     },
-    [categoryId, subCategoryId, subCategory?.name]
+    [effectiveCategoryId, subCategoryId, subCategory?.name, contentCacheKey]
   );
 
   useEffect(() => {

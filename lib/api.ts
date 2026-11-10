@@ -35,11 +35,20 @@ export const getAccountDeletionUrl = (token?: string, email?: string) => {
 
 export const api = axios.create({
   baseURL: USER_API_BASE,
-  timeout: 15000,
+  timeout: 25000,
 });
 
 let isConnected = true;
 let showToast: ((message: string) => void) | null = null;
+let cachedUserEmail: string | null = null;
+
+export const setApiUserEmail = (email?: string | null) => {
+  if (email && typeof email === "string" && email.trim()) {
+    cachedUserEmail = email.trim();
+  } else {
+    cachedUserEmail = null;
+  }
+};
 
 export const configureApiInterceptor = (
   networkStatus: boolean,
@@ -60,13 +69,15 @@ api.interceptors.request.use(async (config) => {
   }
 
   try {
-    const existingAuth = config.headers.Authorization || config.headers.authorization;
+    const existingAuth = config.headers?.Authorization || config.headers?.authorization;
     const isAuthInvalid =
       !existingAuth ||
       typeof existingAuth !== "string" ||
       !existingAuth.replace("Bearer", "").trim() ||
       existingAuth.includes("undefined") ||
       existingAuth.includes("null");
+
+    let cleanToken: string | null = null;
 
     if (isAuthInvalid) {
       let rawToken: string | null = null;
@@ -93,16 +104,70 @@ api.interceptors.request.use(async (config) => {
       }
 
       if (rawToken && typeof rawToken === "string") {
-        const cleanToken = rawToken.trim();
+        cleanToken = rawToken.trim();
         if (cleanToken && cleanToken !== "undefined" && cleanToken !== "null") {
-          config.headers.Authorization = `Bearer ${cleanToken}`;
+          if (config.headers?.set) {
+            config.headers.set("Authorization", `Bearer ${cleanToken}`);
+          } else if (config.headers) {
+            config.headers.Authorization = `Bearer ${cleanToken}`;
+          }
         } else {
+          if (config.headers?.delete) {
+            config.headers.delete("Authorization");
+            config.headers.delete("authorization");
+          } else if (config.headers) {
+            delete config.headers.Authorization;
+            delete config.headers.authorization;
+          }
+        }
+      } else {
+        if (config.headers?.delete) {
+          config.headers.delete("Authorization");
+          config.headers.delete("authorization");
+        } else if (config.headers) {
           delete config.headers.Authorization;
           delete config.headers.authorization;
         }
-      } else {
-        delete config.headers.Authorization;
-        delete config.headers.authorization;
+      }
+    } else {
+      cleanToken = typeof existingAuth === "string" ? existingAuth.replace(/^Bearer\s+/i, "").trim() : null;
+    }
+
+    // Attach x-user-email header if missing so both legacy and modern backend endpoints authenticate
+    const existingEmailHeader =
+      (config.headers?.get && config.headers.get("x-user-email")) ||
+      (config.headers && (config.headers["x-user-email"] || config.headers["X-User-Email"]));
+
+    if (!existingEmailHeader) {
+      if (!cachedUserEmail && cleanToken && cleanToken.includes(".")) {
+        try {
+          const payloadPart = cleanToken.split(".")[1];
+          if (payloadPart) {
+            const b64 = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+            const decoded = atob(b64);
+            const parsedJwt = JSON.parse(decoded);
+            if (parsedJwt?.email) cachedUserEmail = String(parsedJwt.email).trim();
+            else if (parsedJwt?.user?.email) cachedUserEmail = String(parsedJwt.user.email).trim();
+          }
+        } catch {}
+      }
+
+      if (!cachedUserEmail) {
+        try {
+          const rawUser = await AsyncStorage.getItem("cached_user_profile");
+          if (rawUser) {
+            const parsed = JSON.parse(rawUser);
+            if (parsed?.email) cachedUserEmail = String(parsed.email).trim();
+          }
+        } catch {}
+      }
+
+      if (cachedUserEmail) {
+        if (config.headers?.set) {
+          config.headers.set("x-user-email", cachedUserEmail);
+        } else if (config.headers) {
+          config.headers["x-user-email"] = cachedUserEmail;
+        }
       }
     }
   } catch (err) {}
@@ -122,23 +187,42 @@ api.interceptors.response.use(
       (error.message === "Network Error" || error.code === "ERR_NETWORK" || error.code === "ECONNABORTED")
     ) {
       const currentUrl = originalRequest.baseURL || originalRequest.url || "";
-      if (currentUrl.includes("10.192.52.142")) {
+      if (
+        currentUrl.includes("10.192.52.142") ||
+        currentUrl.includes("localhost") ||
+        currentUrl.includes("127.0.0.1") ||
+        currentUrl.includes("10.0.2.2")
+      ) {
         originalRequest._retryWithFallback = true;
-        originalRequest.baseURL = (originalRequest.baseURL || "").replace(
-          LOCAL_API_BASE,
-          PROD_API_BASE
-        );
-        if (originalRequest.url && originalRequest.url.includes("10.192.52.142")) {
-          originalRequest.url = originalRequest.url.replace(
-            LOCAL_API_BASE,
-            PROD_API_BASE
-          );
+        originalRequest.baseURL = PROD_API_BASE + (originalRequest.baseURL?.endsWith("/user") ? "/user" : "");
+        if (originalRequest.url && (originalRequest.url.startsWith("http://") || originalRequest.url.startsWith("https://"))) {
+          originalRequest.url = originalRequest.url
+            .replace(LOCAL_API_BASE, PROD_API_BASE)
+            .replace("http://localhost:3000/api", PROD_API_BASE)
+            .replace("http://127.0.0.1:3000/api", PROD_API_BASE)
+            .replace("http://10.0.2.2:3000/api", PROD_API_BASE);
         }
         try {
-          return await axios(originalRequest);
+          return await api(originalRequest);
         } catch (fallbackError) {
           return Promise.reject(fallbackError);
         }
+      }
+    }
+
+    // Auto-retry once for GET requests on transient network drops
+    if (
+      originalRequest &&
+      !originalRequest._hasRetried &&
+      originalRequest.method?.toLowerCase() === "get" &&
+      (error.message === "Network Error" || error.code === "ERR_NETWORK" || error.code === "ECONNABORTED")
+    ) {
+      originalRequest._hasRetried = true;
+      try {
+        await new Promise((r) => setTimeout(r, 600));
+        return await api(originalRequest);
+      } catch (retryErr) {
+        return Promise.reject(retryErr);
       }
     }
 

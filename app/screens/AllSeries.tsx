@@ -9,11 +9,14 @@ import {
   FlatList,
   Modal,
   Platform,
+  RefreshControl,
+  DeviceEventEmitter,
 } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import CachedImage, { isRenderableUrl } from "../../components/props/CachedImage";
+import SeriesCard from "../../components/props/SeriesCard";
 import Svg, { Path, Line, Circle } from "react-native-svg";
 import {
   Gesture,
@@ -30,7 +33,7 @@ import Animated, {
   Easing,
 } from "react-native-reanimated";
 import pallete from "../../lib/Colors";
-import { api } from "../../lib/api";
+import { api, ROOT_API_BASE } from "../../lib/api";
 import useAuth from "../../hooks/useAuth";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
@@ -40,7 +43,6 @@ const { width, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const HORIZONTAL_PADDING = 14;
 const ITEM_GAP = 10;
 const CARD_WIDTH = Math.floor((width - HORIZONTAL_PADDING * 2 - ITEM_GAP * 2) / 3);
-const COVER_HEIGHT = Math.floor(CARD_WIDTH * 1.36);
 
 // --- Icons ---
 const BackIcon = memo(() => (
@@ -119,72 +121,6 @@ const getSeriesUnitCount = (s: any): number => {
 
 type SortOption = "relevance" | "most_joined" | "recent" | "content";
 type TypeFilter = "all" | "standard" | "framework";
-type PlanFilter = "all" | "free" | "pro";
-
-interface SeriesGridCardProps {
-  item: ISeries;
-  onPress: (id: string) => void;
-}
-
-const SeriesGridCard = memo(({ item, onPress }: SeriesGridCardProps) => {
-  const isFramework = String(item.type || "").toLowerCase() === "framework";
-  const unitCount = getSeriesUnitCount(item);
-  const joinedCount = getSeriesJoinedCount(item);
-
-  return (
-    <Pressable
-      style={({ pressed }) => [
-        styles.gridCard,
-        pressed && Platform.OS === "ios" && { opacity: 0.8 },
-      ]}
-      android_ripple={{ color: "rgba(0, 210, 180, 0.15)", foreground: true }}
-      onPress={() => onPress(item._id)}
-    >
-      <View style={styles.coverWrapper}>
-        <CachedImage
-          uri={isRenderableUrl(item.cover) ? getOptimizedThumb(item.cover) : null}
-          label={item.title}
-          style={styles.coverImage}
-          letterSize={40}
-        />
-
-        {/* Framework Pill Badge */}
-        {isFramework && (
-          <View style={styles.fwBadge}>
-            <Text style={styles.fwBadgeText}>FW</Text>
-          </View>
-        )}
-
-        {/* Chapter/Level pill on bottom corner */}
-        <View style={styles.unitPill}>
-          <Text style={styles.unitPillText}>
-            {unitCount} {isFramework ? "LVL" : "CH"}
-          </Text>
-        </View>
-      </View>
-
-      <Text style={styles.cardTitle} numberOfLines={2}>
-        {item.title}
-      </Text>
-
-      {/* Real Joined Count */}
-      <View style={styles.cardMetaRow}>
-        {joinedCount > 0 ? (
-          <View style={styles.joinedBadge}>
-            <UsersIcon />
-            <Text style={styles.joinedBadgeText}>
-              {formatCompactNumber(joinedCount)}
-            </Text>
-          </View>
-        ) : (
-          <Text style={styles.authorText} numberOfLines={1}>
-            {item.author || "READAPT"}
-          </Text>
-        )}
-      </View>
-    </Pressable>
-  );
-});
 
 export default function AllSeries() {
   const insets = useSafeAreaInsets();
@@ -194,10 +130,9 @@ export default function AllSeries() {
   const [seriesList, setSeriesList] = useState<ISeries[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Sorting and Filtering States
+  // Sorting and Filtering States (Access Plan removed per requirements)
   const [sortBy, setSortBy] = useState<SortOption>("relevance");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
-  const [planFilter, setPlanFilter] = useState<PlanFilter>("all");
 
   // Bottom Sheet State
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -206,34 +141,78 @@ export default function AllSeries() {
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const startY = useSharedValue(0);
 
+  const [refreshing, setRefreshing] = useState(false);
+  const isFetchingRef = useRef(false);
+
   // Fetch series
-  const fetchSeries = useCallback(async () => {
+  const fetchSeries = useCallback(async (isPull = false) => {
+    if (isFetchingRef.current && !isPull) return;
+    isFetchingRef.current = true;
+    if (isPull) setRefreshing(true);
+
     try {
-      const rawCache = await AsyncStorage.getItem("cached_feed_data");
-      if (rawCache) {
-        const parsed = JSON.parse(rawCache);
-        if (Array.isArray(parsed?.series) && parsed.series.length > 0) {
-          setSeriesList(parsed.series);
-          setLoading(false);
+      if (!isPull) {
+        const rawCache = await AsyncStorage.getItem("cached_feed_data");
+        if (rawCache) {
+          try {
+            const parsed = JSON.parse(rawCache);
+            if (Array.isArray(parsed?.series) && parsed.series.length > 0) {
+              setSeriesList(parsed.series);
+              setLoading(false);
+            }
+          } catch {}
         }
       }
 
+      let seriesResult: any[] = [];
       const headers: Record<string, string> = {};
       if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-      const res = await api.get("/feed", { headers });
-      const payload = res?.data?.data ?? res?.data;
-      if (Array.isArray(payload?.series)) {
-        setSeriesList(payload.series);
+
+      try {
+        const res = await api.get("/feed", { headers, timeout: 25000 });
+        const payload = res?.data?.data ?? res?.data;
+        if (Array.isArray(payload?.series)) {
+          seriesResult = payload.series;
+        }
+      } catch (feedErr) {
+        // Fallback to standalone series endpoint
+        try {
+          const sRes = await api.get(`${ROOT_API_BASE}/series`, { timeout: 25000 });
+          if (Array.isArray(sRes?.data?.data)) {
+            seriesResult = sRes.data.data;
+          }
+        } catch {}
       }
-    } catch (err) {
-      console.error("Error fetching all series:", err);
+
+      if (seriesResult.length > 0) {
+        setSeriesList(seriesResult);
+      }
+    } catch (err: any) {
+      if (err?.message !== "canceled") {
+        console.warn("All series sync notice:", err?.message || "Network request failed");
+      }
     } finally {
+      isFetchingRef.current = false;
       setLoading(false);
+      setRefreshing(false);
     }
   }, [accessToken]);
 
+  useFocusEffect(
+    useCallback(() => {
+      fetchSeries();
+    }, [fetchSeries])
+  );
+
   useEffect(() => {
-    fetchSeries();
+    const sub1 = DeviceEventEmitter.addListener("SERIES_JOINED", () => fetchSeries());
+    const sub2 = DeviceEventEmitter.addListener("SERIES_EXITED", () => fetchSeries());
+    const sub3 = DeviceEventEmitter.addListener("CHAPTER_QNA_COMPLETED", () => fetchSeries());
+    return () => {
+      sub1.remove();
+      sub2.remove();
+      sub3.remove();
+    };
   }, [fetchSeries]);
 
   // Bottom Sheet Animation handlers - Silky smooth timing with zero bounce
@@ -305,13 +284,6 @@ export default function AllSeries() {
       result = result.filter((s) => s.type !== "framework");
     }
 
-    // Filter by Plan
-    if (planFilter === "free") {
-      result = result.filter((s) => (s.for ?? 0) === 0);
-    } else if (planFilter === "pro") {
-      result = result.filter((s) => (s.for ?? 0) > 0);
-    }
-
     // Sort
     if (sortBy === "most_joined") {
       result.sort((a, b) => getSeriesJoinedCount(b) - getSeriesJoinedCount(a));
@@ -334,28 +306,41 @@ export default function AllSeries() {
     }
 
     return result;
-  }, [seriesList, typeFilter, planFilter, sortBy]);
+  }, [seriesList, typeFilter, sortBy]);
 
-  const hasActiveFilter = sortBy !== "relevance" || typeFilter !== "all" || planFilter !== "all";
-
-  const handleSeriesPress = useCallback(
-    (seriesId: string) => {
-      navigation.navigate("SeriesOverview", { seriesId });
-    },
-    [navigation]
-  );
+  const hasActiveFilter = sortBy !== "relevance" || typeFilter !== "all";
 
   const renderCard = useCallback(
-    ({ item }: { item: ISeries }) => (
-      <SeriesGridCard item={item} onPress={handleSeriesPress} />
-    ),
-    [handleSeriesPress]
+    ({ item }: { item: ISeries }) => {
+      const firstChapter = item.chapters?.find(
+        (ch: any) => ch?.contentModel === "Chapter"
+      );
+      const seriesAuthor =
+        item.author ||
+        (firstChapter?.content as any)?.author ||
+        "READAPT";
+      const unitCount = getSeriesUnitCount(item);
+
+      return (
+        <View style={{ width: CARD_WIDTH }}>
+          <SeriesCard
+            id={item._id}
+            title={item.title}
+            author={seriesAuthor}
+            cover={item.cover}
+            type={item.type}
+            chapterCount={unitCount}
+            cardWidth={CARD_WIDTH}
+          />
+        </View>
+      );
+    },
+    []
   );
 
   const resetFilters = () => {
     setSortBy("relevance");
     setTypeFilter("all");
-    setPlanFilter("all");
   };
 
   return (
@@ -403,7 +388,6 @@ export default function AllSeries() {
               : typeFilter === "standard"
               ? "Series"
               : "All Types"}
-            {planFilter !== "all" && ` • ${planFilter.toUpperCase()}`}
           </Text>
           <Pressable onPress={resetFilters} hitSlop={10}>
             <Text style={styles.clearText}>Clear</Text>
@@ -438,6 +422,14 @@ export default function AllSeries() {
           initialNumToRender={12}
           maxToRenderPerBatch={9}
           windowSize={7}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => fetchSeries(true)}
+              tintColor="#38bdf8"
+              colors={["#38bdf8"]}
+            />
+          }
         />
       )}
 
@@ -519,28 +511,6 @@ export default function AllSeries() {
                     label="Frameworks"
                     active={typeFilter === "framework"}
                     onPress={() => setTypeFilter("framework")}
-                  />
-                </View>
-              </View>
-
-              {/* SECTION 3: ACCESS TIER */}
-              <View style={styles.sectionWrap}>
-                <Text style={styles.sectionLabel}>ACCESS PLAN</Text>
-                <View style={styles.chipsRow}>
-                  <Chip
-                    label="All Plans"
-                    active={planFilter === "all"}
-                    onPress={() => setPlanFilter("all")}
-                  />
-                  <Chip
-                    label="Free Access"
-                    active={planFilter === "free"}
-                    onPress={() => setPlanFilter("free")}
-                  />
-                  <Chip
-                    label="Pro Members"
-                    active={planFilter === "pro"}
-                    onPress={() => setPlanFilter("pro")}
                   />
                 </View>
               </View>
@@ -675,81 +645,6 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     gap: ITEM_GAP,
     marginBottom: 16,
-  },
-
-  // 3-Column Card
-  gridCard: {
-    width: CARD_WIDTH,
-    borderRadius: 8,
-  },
-  coverWrapper: {
-    width: CARD_WIDTH,
-    height: COVER_HEIGHT,
-    borderRadius: 8,
-    overflow: "hidden",
-    backgroundColor: "#160D2A",
-    position: "relative",
-  },
-  coverImage: {
-    width: "100%",
-    height: "100%",
-  },
-  fwBadge: {
-    position: "absolute",
-    top: 5,
-    left: 5,
-    backgroundColor: "rgba(6, 182, 212, 0.9)",
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  fwBadgeText: {
-    color: "#fff",
-    fontSize: 9,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-  },
-  unitPill: {
-    position: "absolute",
-    bottom: 5,
-    right: 5,
-    backgroundColor: "rgba(9, 3, 20, 0.85)",
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 0.5,
-    borderColor: "rgba(255, 255, 255, 0.15)",
-  },
-  unitPillText: {
-    color: "#e5e7eb",
-    fontSize: 9,
-    fontWeight: "700",
-  },
-  cardTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#fff",
-    marginTop: 6,
-    lineHeight: 16,
-  },
-  cardMetaRow: {
-    marginTop: 3,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  joinedBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-  },
-  joinedBadgeText: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: "#00D2B4",
-  },
-  authorText: {
-    fontSize: 10,
-    color: "#6b7280",
   },
 
   // States

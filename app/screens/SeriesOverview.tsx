@@ -199,6 +199,20 @@ const getOptimizedThumb = (url?: string, width = 800, height = 500): string => {
   return url;
 };
 
+const getJoinedSeriesId = (val: any): string | null => {
+  if (!val) return null;
+  if (typeof val === "string") return val.trim();
+  if (typeof val === "object") {
+    if (val._id) return String(val._id).trim();
+    if (val.id) return String(val.id).trim();
+    if (typeof val.toString === "function") {
+      const s = val.toString();
+      if (s && s !== "[object Object]") return s.trim();
+    }
+  }
+  return null;
+};
+
 // ============================================================================
 // MAIN COMPONENT: SeriesOverview
 // ============================================================================
@@ -216,7 +230,10 @@ export default function SeriesOverview() {
   // State
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isJoined, setIsJoined] = useState(() => user?.joinedSeries === currentSeriesId);
+  const [isJoined, setIsJoined] = useState(() => {
+    const joinedId = getJoinedSeriesId(user?.joinedSeries);
+    return Boolean(joinedId && currentSeriesId && joinedId === String(currentSeriesId));
+  });
   const [joinedSeriesTitle, setJoinedSeriesTitle] = useState<string | null>(null);
   const [completeChapters, setCompleteChapters] = useState(0);
   const [completedChapterIds, setCompletedChapterIds] = useState<string[]>([]);
@@ -225,9 +242,12 @@ export default function SeriesOverview() {
 
   // Tabs: 'chapters' (or Levels) | 'about'
   // When user is joined, default tab is 'chapters'; when not joined, default tab is 'about'
-  const [activeTab, setActiveTab] = useState<"chapters" | "about">(() =>
-    user?.joinedSeries === currentSeriesId ? "chapters" : "about"
-  );
+  const [activeTab, setActiveTab] = useState<"chapters" | "about">(() => {
+    const joinedId = getJoinedSeriesId(user?.joinedSeries);
+    return Boolean(joinedId && currentSeriesId && joinedId === String(currentSeriesId))
+      ? "chapters"
+      : "about";
+  });
 
   // Bottom Sheets
   const [isSwitchSheetVisible, setIsSwitchSheetVisible] = useState(false);
@@ -297,9 +317,13 @@ export default function SeriesOverview() {
 
   // Sync joined status with user object
   useEffect(() => {
-    const currentlyJoined =
-      user?.joinedSeries === currentSeriesId ||
-      (Boolean(seriesData?._id) && user?.joinedSeries === seriesData?._id);
+    const joinedId = getJoinedSeriesId(user?.joinedSeries);
+    const targetId1 = currentSeriesId ? String(currentSeriesId) : null;
+    const targetId2 = seriesData?._id ? String(seriesData._id) : null;
+
+    const currentlyJoined = Boolean(
+      joinedId && ((targetId1 && joinedId === targetId1) || (targetId2 && joinedId === targetId2))
+    );
     setIsJoined(currentlyJoined);
     if (currentlyJoined) {
       setActiveTab("chapters");
@@ -312,11 +336,14 @@ export default function SeriesOverview() {
   useEffect(() => {
     let cancel = false;
     const fetchOtherJoinedTitle = async () => {
-      const otherId = user?.joinedSeries;
+      const otherId = getJoinedSeriesId(user?.joinedSeries);
+      const targetId1 = currentSeriesId ? String(currentSeriesId) : null;
+      const targetId2 = seriesData?._id ? String(seriesData._id) : null;
+
       if (
         otherId &&
-        otherId !== currentSeriesId &&
-        otherId !== seriesData?._id &&
+        otherId !== targetId1 &&
+        otherId !== targetId2 &&
         isConnected
       ) {
         try {
@@ -481,6 +508,84 @@ export default function SeriesOverview() {
     return typeof raw === "object" ? raw : chapterItems[currentActiveIdx];
   }, [chapterItems, currentActiveIdx]);
 
+  const currentActiveChapterId = useMemo(() => {
+    return String(
+      (typeof currentActiveChapter === "object"
+        ? currentActiveChapter?._id || currentActiveChapter?.id
+        : currentActiveChapter) || ""
+    );
+  }, [currentActiveChapter]);
+
+  const isCurrentActiveCompleted = useMemo(() => {
+    return Boolean(
+      currentActiveChapterId && completedChapterIds.includes(currentActiveChapterId)
+    );
+  }, [currentActiveChapterId, completedChapterIds]);
+
+  const isSeriesFullyCompleted = useMemo(() => {
+    return completeChapters >= totalChapters && totalChapters > 0;
+  }, [completeChapters, totalChapters]);
+
+  const totalActiveQuestions = useMemo(() => {
+    return currentActiveChapter?.questions?.length || 0;
+  }, [currentActiveChapter]);
+
+  const [currentChapterAttemptedCount, setCurrentChapterAttemptedCount] = useState(0);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadAttemptCount = async () => {
+      if (isCurrentActiveCompleted || isSeriesFullyCompleted) {
+        if (isMounted) setCurrentChapterAttemptedCount(totalActiveQuestions);
+        return;
+      }
+      let count = 0;
+      try {
+        const solvedRaw = await AsyncStorage.getItem(`@chapter_solved_qna_${currentActiveChapterId}`);
+        if (solvedRaw) {
+          const parsed = JSON.parse(solvedRaw);
+          if (Array.isArray(parsed)) {
+            count = parsed.length;
+          }
+        }
+      } catch {}
+
+      if (count === 0 && user?.questionsAttempted && Array.isArray(currentActiveChapter?.questions)) {
+        const attempts = user.questionsAttempted;
+        currentActiveChapter.questions.forEach((q: any) => {
+          const qId = String(q?._id || q?.id || q);
+          const qText = q?.question || q?.title;
+          if (
+            attempts.some(
+              (att: any) =>
+                String(att?.questionId || att?.question) === qId ||
+                (qText && att?.question === qText)
+            )
+          ) {
+            count++;
+          }
+        });
+      }
+
+      if (isMounted) {
+        setCurrentChapterAttemptedCount(Math.min(totalActiveQuestions, count));
+      }
+    };
+
+    if (currentActiveChapterId) {
+      loadAttemptCount();
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    currentActiveChapterId,
+    isCurrentActiveCompleted,
+    isSeriesFullyCompleted,
+    totalActiveQuestions,
+    user?.questionsAttempted,
+  ]);
+
   // Bottom Sheets Animations (Smooth non-bouncy timing)
   const openSwitchSheet = () => {
     setIsSwitchSheetVisible(true);
@@ -643,10 +748,10 @@ export default function SeriesOverview() {
       return;
     }
 
-    const otherJoined = user?.joinedSeries;
-    const targetId = seriesData?._id || currentSeriesId;
+    const otherJoined = getJoinedSeriesId(user?.joinedSeries);
+    const targetId = String(seriesData?._id || currentSeriesId || "");
 
-    if (otherJoined && otherJoined !== targetId) {
+    if (otherJoined && targetId && otherJoined !== targetId) {
       openSwitchSheet();
       return;
     }
@@ -655,7 +760,7 @@ export default function SeriesOverview() {
   };
 
   const executeJoinSeries = async () => {
-    const targetId = seriesData?._id || currentSeriesId;
+    const targetId = String(seriesData?._id || currentSeriesId || "");
     if (!targetId) return;
 
     // Optimistic UI updates
@@ -665,10 +770,14 @@ export default function SeriesOverview() {
 
     try {
       const token = await getCleanAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      if (user?.email) headers["x-user-email"] = user.email;
+
       const res = await api.post(
         "/series/join",
         { seriesId: targetId },
-        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+        { headers }
       );
 
       if (res.status === 200 || res.status === 201 || res.data?.success !== false) {
@@ -697,7 +806,8 @@ export default function SeriesOverview() {
             joinedBy: [newUserObj, ...currentJoined],
           };
         });
-        reload();
+        DeviceEventEmitter.emit("SERIES_JOINED", { seriesId: targetId });
+        reload().catch(() => {});
       } else {
         setIsJoined(false);
         updateUser({ joinedSeries: user?.joinedSeries });
@@ -715,7 +825,7 @@ export default function SeriesOverview() {
 
   // Exit Series Action
   const executeExitSeries = async () => {
-    const targetId = seriesData?._id || currentSeriesId;
+    const targetId = String(seriesData?._id || currentSeriesId || "");
     closeExitSheet();
 
     setIsJoined(false);
@@ -735,17 +845,23 @@ export default function SeriesOverview() {
 
     try {
       const token = await getCleanAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      if (user?.email) headers["x-user-email"] = user.email;
+
       await api.post(
         "/series/exit",
         { seriesId: targetId },
-        token ? { headers: { Authorization: `Bearer ${token}` } } : undefined
+        { headers }
       );
       showToast({ title: "Exited series." });
-      reload();
+      DeviceEventEmitter.emit("SERIES_EXITED", { seriesId: targetId });
+      reload().catch(() => {});
     } catch (err: any) {
       console.warn("Exit series error:", err?.response?.data || err?.message);
       showToast({ title: "Exited series." });
-      reload();
+      DeviceEventEmitter.emit("SERIES_EXITED", { seriesId: targetId });
+      reload().catch(() => {});
     }
   };
 
@@ -1103,14 +1219,37 @@ export default function SeriesOverview() {
                   onPress={() => handleStartChapter(currentActiveChapter)}
                 >
                   <View style={styles.expandedBottomLeft}>
-                    <Text style={[styles.expandedLevelTag, { color: accentColor }]}>
-                      {isFramework ? `Level ${currentActiveIdx + 1}` : `Chapter ${currentActiveIdx + 1}`}
-                    </Text>
+                    <View style={styles.progressTagRow}>
+                      <Text style={[styles.expandedLevelTag, { color: accentColor }]}>
+                        {isSeriesFullyCompleted
+                          ? (isFramework ? `Level ${totalChapters}` : `Chapter ${totalChapters}`)
+                          : (isFramework ? `Level ${currentActiveIdx + 1}` : `Chapter ${currentActiveIdx + 1}`)}
+                      </Text>
+                      {(isCurrentActiveCompleted || isSeriesFullyCompleted) && (
+                        <View style={styles.progressCompletedBadge}>
+                          <Svg width={11} height={11} viewBox="0 0 24 24" fill="none">
+                            <Circle cx="12" cy="12" r="10" fill="#10b981" />
+                            <Path
+                              d="M8 12.5l2.5 2.5L16 9"
+                              stroke="#ffffff"
+                              strokeWidth={2.5}
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </Svg>
+                          <Text style={styles.progressCompletedBadgeText}>Completed</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={styles.expandedLevelTitle} numberOfLines={1}>
                       {currentActiveChapter?.title || "Continue journey"}
                     </Text>
                     <Text style={styles.expandedQnaText}>
-                      Q&A 0/{currentActiveChapter?.questions?.length || 3} attempted
+                      {isSeriesFullyCompleted
+                        ? "All levels completed"
+                        : isCurrentActiveCompleted
+                        ? `Q&A ${totalActiveQuestions}/${totalActiveQuestions} completed`
+                        : `Q&A ${currentChapterAttemptedCount}/${totalActiveQuestions || 3} attempted`}
                     </Text>
                   </View>
                   <ChevronRightIcon color={accentColor} size={18} />
@@ -1802,6 +1941,26 @@ const styles = StyleSheet.create({
   expandedBottomLeft: {
     flex: 1,
     marginRight: 10,
+  },
+  progressTagRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 4,
+  },
+  progressCompletedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(16, 185, 129, 0.15)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    gap: 4,
+  },
+  progressCompletedBadgeText: {
+    color: "#10b981",
+    fontSize: 10.5,
+    fontWeight: "700",
   },
   expandedLevelTag: {
     fontSize: 11,

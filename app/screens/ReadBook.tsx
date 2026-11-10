@@ -83,6 +83,11 @@ import * as FileSystem from "expo-file-system/legacy";
 
 import pallete from "../../lib/Colors";
 import { api } from "../../lib/api";
+import {
+  getCachedRelatedBooks,
+  resolveRelatedStandaloneBooks,
+} from "../../lib/relatedContent";
+import RelatedContentSkelly from "../../components/props/RelatedContentSkelly";
 import useAuth from "../../hooks/useAuth";
 import { IRecentRead } from "../../types/Storage";
 import { getRecentReads, saveRecentReads } from "../../lib/userStorage";
@@ -361,54 +366,6 @@ type BookPopulated = {
   updatedAt: Date;
 };
 
-const shuffleArray = <T,>(array: T[]): T[] => {
-  const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  return shuffled;
-};
-
-const isStrictlyStandaloneBook = (
-  item: any,
-  excludedSeriesChapterIds?: Set<string>
-): boolean => {
-  if (!item) return false;
-  const actualItem =
-    typeof item.content === "object" && item.content !== null
-      ? item.content
-      : item;
-  const itemId = String(actualItem?._id || item?._id || "").trim();
-  if (!itemId) return false;
-  if (excludedSeriesChapterIds && excludedSeriesChapterIds.has(itemId))
-    return false;
-  if (item.contentModel && item.contentModel !== "Chapter") return false;
-  if (actualItem.contentModel && actualItem.contentModel !== "Chapter")
-    return false;
-
-  const checkSeriesProp = (obj: any) => {
-    if (!obj) return false;
-    if (Array.isArray(obj.chapters) && obj.chapters.length > 0) return true;
-    if (obj.series) {
-      if (typeof obj.series === "string" && obj.series.trim() !== "")
-        return true;
-      if (typeof obj.series === "object") {
-        if (obj.series._id) return true;
-        if (Object.keys(obj.series).length > 0) return true;
-      }
-    }
-    if (obj.seriesId && String(obj.seriesId).trim() !== "") return true;
-    if (obj.parentSeries && String(obj.parentSeries).trim() !== "") return true;
-    if (obj.isSeriesContent || obj.isSeriesChapter || obj.isSeries) return true;
-    if (obj.seriesType === "framework" || obj.seriesType === "normal")
-      return true;
-    return false;
-  };
-
-  if (checkSeriesProp(item) || checkSeriesProp(actualItem)) return false;
-  return true;
-};
 
 // ==========================================
 // MEMOIZED HIGH-PERFORMANCE PDF CANVAS
@@ -1139,6 +1096,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   }).current;
 
   const [relatedStandaloneBooks, setRelatedStandaloneBooks] = useState<any[]>([]);
+  const [isRelatedLoading, setIsRelatedLoading] = useState(false);
+  const relatedBookRef = useRef<any>(book);
+  relatedBookRef.current = book;
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -2159,8 +2119,19 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     setQuestions(initialValidQs.length > 0 ? initialValidQs : null);
     setShowQnaPanel(false);
     setSolvedIds(new Set());
+    if (activeChapterId) {
+      AsyncStorage.getItem(`@chapter_solved_qna_${activeChapterId}`)
+        .then((raw) => {
+          if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr) && arr.length > 0) {
+              setSolvedIds(new Set(arr));
+            }
+          }
+        })
+        .catch(() => {});
+    }
     setSeriesData(null);
-    setRelatedStandaloneBooks([]);
     setIsLocked(true);
     setIsAnnotating(false);
     setShowSizeSlider(false);
@@ -2182,164 +2153,67 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     removeAllTracks();
   }, []);
 
-  // Deferred loading of related content so scrolling never lags on initial page
+  // Deferred loading of related content so scrolling never lags on initial page.
+  // Hydrates from cache first, then refreshes quietly without wiping the row.
+  const relatedBookId = String(book?._id || activeChapterId || "");
+  const isRelatedSeriesBook = Boolean(book?.series);
+  const hasRelatedBook = Boolean(book?._id);
+  const relatedCategoryId = String(
+    (book as any)?.category?._id || (book as any)?.category || ""
+  );
   useEffect(() => {
-    if (!book || book.series || !accessToken) {
+    // Wait for the chapter document (it carries the category used for matching).
+    if (!relatedBookId || !hasRelatedBook || isRelatedSeriesBook) {
       setRelatedStandaloneBooks([]);
+      setIsRelatedLoading(false);
       return;
     }
-    let isMounted = true;
-    const resolveRelatedBooks = async () => {
-      try {
-        const excludedSeriesChapterIds = new Set<string>();
-        const collectSeriesChapterIds = (seriesList: any[]) => {
-          if (!Array.isArray(seriesList)) return;
-          seriesList.forEach((s) => {
-            if (!s) return;
-            const recId =
-              typeof s.recommendationBookId === "object"
-                ? s.recommendationBookId?._id
-                : s.recommendationBookId;
-            if (recId) excludedSeriesChapterIds.add(String(recId).trim());
-            if (Array.isArray(s.chapters)) {
-              s.chapters.forEach((ch: any) => {
-                const chId =
-                  (typeof ch?.content === "object" && ch?.content?._id) ||
-                  (typeof ch?.content === "string" && ch?.content) ||
-                  ch?._id;
-                if (chId) excludedSeriesChapterIds.add(String(chId).trim());
-              });
-            }
-          });
-        };
-        let feedAvailableStandalone: any[] = [];
-        try {
-          const cachedFeedRaw = await AsyncStorage.getItem("cached_feed_data");
-          if (cachedFeedRaw) {
-            const cachedFeed = JSON.parse(cachedFeedRaw);
-            if (cachedFeed?.series) collectSeriesChapterIds(cachedFeed.series);
-            if (Array.isArray(cachedFeed?.available))
-              feedAvailableStandalone = [
-                ...feedAvailableStandalone,
-                ...cachedFeed.available,
-              ];
-            if (Array.isArray(cachedFeed?.trending))
-              feedAvailableStandalone = [
-                ...feedAvailableStandalone,
-                ...cachedFeed.trending,
-              ];
-            if (Array.isArray(cachedFeed?.personalized))
-              feedAvailableStandalone = [
-                ...feedAvailableStandalone,
-                ...cachedFeed.personalized,
-              ];
-          }
-        } catch {}
-        try {
-          const allKeys = await AsyncStorage.getAllKeys();
-          const seriesKeys = allKeys.filter((k) =>
-            k.startsWith("cache_series_")
-          );
-          if (seriesKeys.length > 0) {
-            const seriesPairs = await AsyncStorage.multiGet(seriesKeys);
-            const parsedSeries = seriesPairs
-              .map(([_, val]) => (val ? JSON.parse(val) : null))
-              .filter(Boolean);
-            collectSeriesChapterIds(parsedSeries);
-          }
-        } catch {}
-        if (excludedSeriesChapterIds.has(String(book._id).trim())) {
-          if (isMounted) setRelatedStandaloneBooks([]);
-          return;
-        }
-        const catId =
-          typeof book.category === "object"
-            ? book.category?._id
-            : book.category;
-        let rawPool: any[] = [...feedAvailableStandalone];
-        if (catId && isConnected) {
-          try {
-            const catRes = await api
-              .get(`/chapter/category/${catId}`)
-              .catch(() => null);
-            if (catRes?.data?.data && Array.isArray(catRes.data.data))
-              rawPool = [...rawPool, ...catRes.data.data];
-          } catch {}
-        }
-        if (rawPool.length < 6 && isConnected) {
-          try {
-            const feedRes = await api.get("/feed").catch(() => null);
-            const payload = feedRes?.data?.data ?? feedRes?.data;
-            if (payload) {
-              if (Array.isArray(payload.series))
-                collectSeriesChapterIds(payload.series);
-              if (Array.isArray(payload.available))
-                rawPool = [...rawPool, ...payload.available];
-              if (Array.isArray(payload.trending))
-                rawPool = [...rawPool, ...payload.trending];
-            }
-          } catch {}
-        }
-        if (excludedSeriesChapterIds.has(String(book._id).trim())) {
-          if (isMounted) setRelatedStandaloneBooks([]);
-          return;
-        }
-        const strictlyStandalone = rawPool.filter((item: any) => {
-          if (!isStrictlyStandaloneBook(item, excludedSeriesChapterIds))
-            return false;
-          const itemId = String(item?.content?._id || item?._id || "").trim();
-          return itemId !== String(book._id).trim();
-        });
-        const uniqueMap = new Map<string, any>();
-        strictlyStandalone.forEach((item) => {
-          const actual =
-            typeof item.content === "object" && item.content !== null
-              ? item.content
-              : item;
-          if (actual?._id) uniqueMap.set(String(actual._id), actual);
-        });
-        const deduplicatedPool = Array.from(uniqueMap.values());
-        if (deduplicatedPool.length === 0) {
-          if (isMounted) setRelatedStandaloneBooks([]);
-          return;
-        }
-        const sameCategoryList = deduplicatedPool.filter((item) => {
-          const itemCat =
-            typeof item.category === "object"
-              ? item.category?._id
-              : item.category;
-          return catId && String(itemCat) === String(catId);
-        });
-        const otherCategoryList = deduplicatedPool.filter((item) => {
-          const itemCat =
-            typeof item.category === "object"
-              ? item.category?._id
-              : item.category;
-          return !catId || String(itemCat) !== String(catId);
-        });
-        const shuffledSame = shuffleArray(sameCategoryList);
-        const shuffledOther = shuffleArray(otherCategoryList);
-        let finalFour: any[] = [];
-        if (shuffledSame.length >= 4) finalFour = shuffledSame.slice(0, 4);
-        else
-          finalFour = [
-            ...shuffledSame,
-            ...shuffledOther.slice(0, 4 - shuffledSame.length),
-          ];
-        if (isMounted) setRelatedStandaloneBooks(finalFour);
-      } catch (err) {
-        if (isMounted) setRelatedStandaloneBooks([]);
-      }
-    };
 
-    InteractionManager.runAfterInteractions(() => {
-      resolveRelatedBooks();
-    });
+    let isMounted = true;
+    const cached = getCachedRelatedBooks(relatedBookId);
+    if (cached && cached.length > 0) {
+      setRelatedStandaloneBooks(cached);
+      setIsRelatedLoading(false);
+    } else {
+      setRelatedStandaloneBooks([]);
+      setIsRelatedLoading(true);
+    }
+
+    const timer = setTimeout(() => {
+      resolveRelatedStandaloneBooks({
+        book: relatedBookRef.current,
+        accessToken,
+        isConnected,
+        onUpdate: (fresh) => {
+          if (isMounted && fresh.length > 0) {
+            setRelatedStandaloneBooks(fresh);
+            setIsRelatedLoading(false);
+          }
+        },
+      })
+        .then((items) => {
+          if (!isMounted) return;
+          if (items.length > 0) setRelatedStandaloneBooks(items);
+          setIsRelatedLoading(false);
+        })
+        .catch(() => {
+          if (isMounted) setIsRelatedLoading(false);
+        });
+    }, 60);
 
     return () => {
       isMounted = false;
+      clearTimeout(timer);
     };
-  }, [book?._id, book?.series, book?.category, accessToken, isConnected]);
+  }, [
+    relatedBookId,
+    hasRelatedBook,
+    isRelatedSeriesBook,
+    relatedCategoryId,
+    accessToken,
+    isConnected,
+  ]);
+
 
   useEffect(() => {
     let active = true;
@@ -2835,7 +2709,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     book?.author && book.author.trim() !== "" ? book.author : "Readapt Creator";
   const isSeriesContent = Boolean(book?.series || seriesData);
   const showStandaloneRelated =
-    !isSeriesContent && relatedStandaloneBooks.length > 0;
+    !isSeriesContent && (relatedStandaloneBooks.length > 0 || isRelatedLoading);
 
   const resolvedSeriesBook = useMemo(() => {
     if (!book) return null;
@@ -3456,7 +3330,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                   <Text style={styles.sectionTitle}>Related Content</Text>
                 </View>
                 <View style={styles.relatedGrid}>
-                  {relatedStandaloneBooks.map((relBook, idx) => (
+                  {isRelatedLoading && relatedStandaloneBooks.length === 0 ? (
+                    <RelatedContentSkelly count={2} />
+                  ) : (
+                    relatedStandaloneBooks.map((relBook, idx) => (
                     <TouchableOpacity
                       key={relBook._id || idx}
                       style={styles.relatedGridCardWrapper}
@@ -3498,7 +3375,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                         />
                       </View>
                     </TouchableOpacity>
-                  ))}
+                    ))
+                  )}
                 </View>
               </View>
             ) : null}
@@ -4150,6 +4028,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                                 setSolvedIds((prev) => {
                                   const next = new Set(prev);
                                   next.add(qId);
+                                  AsyncStorage.setItem(
+                                    `@chapter_solved_qna_${activeChapterId}`,
+                                    JSON.stringify(Array.from(next))
+                                  ).catch(() => {});
                                   if (questions && questions.length > 0 && next.size >= questions.length) {
                                     markChapterQnaCompleted(activeChapterId);
                                     setTimeout(() => {

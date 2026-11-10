@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Dimensions, View, DeviceEventEmitter } from "react-native";
+import { Dimensions, View, DeviceEventEmitter, FlatList, StyleSheet, Text, RefreshControl } from "react-native";
 import useAuth from "../../../hooks/useAuth";
 import { useToast } from "../../../hooks/useToast";
-import { FlatList, StyleSheet, Text } from "react-native";
 import { IRecentRead } from "../../../types/Storage";
 import { getRecentReads } from "../../../lib/userStorage";
 import { useUser } from "../../../hooks/useUser";
@@ -59,11 +58,13 @@ const RecentReads = ({ route, navigation }: Props) => {
   const { showToast } = useToast();
   const { user } = useUser();
   const [recentReads, setRecentReads] = useState<IRecentReadSection[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const insets = useSafeAreaInsets();
 
-  const loadRecentReads = useCallback(async () => {
+  const loadRecentReads = useCallback(async (forceSync = false) => {
+    if (forceSync) setRefreshing(true);
     try {
-      const reads = await getRecentReads(user?._id || user?.userId);
+      const reads = await getRecentReads(user?._id || user?.userId, forceSync);
       if (!reads || reads.length === 0) {
         setRecentReads([]);
         return;
@@ -100,9 +101,10 @@ const RecentReads = ({ route, navigation }: Props) => {
       setRecentReads(sections);
     } catch (error) {
       console.error("Error fetching recent reads:", error);
-      showToast({ title: "Error" });
+    } finally {
+      setRefreshing(false);
     }
-  }, [user?._id, user?.userId, showToast]);
+  }, [user?._id, user?.userId]);
 
   useEffect(() => {
     loadRecentReads();
@@ -119,6 +121,10 @@ const RecentReads = ({ route, navigation }: Props) => {
       loadRecentReads();
     });
     return () => sub.remove();
+  }, [loadRecentReads]);
+
+  const onRefresh = useCallback(() => {
+    loadRecentReads(true);
   }, [loadRecentReads]);
 
   const renderContentCard = ({ item }: { item: IRecentReadSection }) => (
@@ -152,6 +158,14 @@ const RecentReads = ({ route, navigation }: Props) => {
         renderItem={renderContentCard}
         numColumns={1}
         scrollEnabled={true}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#01796F"
+            colors={["#01796F"]}
+          />
+        }
         ListHeaderComponent={<Text style={styles.title}>Reading History</Text>}
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={

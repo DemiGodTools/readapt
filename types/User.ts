@@ -16,6 +16,10 @@ export interface IUser {
   };
   likes: IChapter[];
   image?: string;
+  /** 256px avatar variant */
+  imageMd?: string;
+  /** 128px avatar variant */
+  imageSm?: string;
   joinedSeries?: string;
   profileLevel: number;
   questionsAttempted: IAttemptedQuestion[];

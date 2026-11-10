@@ -13,13 +13,14 @@ import {
   LayoutAnimation,
   Platform,
   UIManager,
+  Easing,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import Svg, { Path, Rect } from "react-native-svg";
+import Svg, { Path } from "react-native-svg";
 import { createShimmerPlaceholder } from "react-native-shimmer-placeholder";
 
 import { api, ROOT_API_BASE } from "../../lib/api";
@@ -37,33 +38,19 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 }
 
 const Shimmer = createShimmerPlaceholder(LinearGradient);
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const CACHE_KEY = "@cached_categories_tree";
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
-/* ------------------------------------------------------------------
- * Covers
- *
- * Every cover renders through the shared <CachedImage> (expo-image +
- * persistent memory-disk cache), so re-opening the app paints artwork
- * from disk with zero network and decodes at view size.
- *
- * Covers are also warmed ahead of time: main covers right after the list
- * arrives, sub-covers the moment a card is touched, so expanding an
- * accordion never reveals empty boxes.
- * ------------------------------------------------------------------ */
-
-// Buttery smooth custom animation preset (forces native thread interpolation)
+// Clean, bouncy-free LayoutAnimation preset
 const smoothExpandAnim = {
-  duration: 350,
-  update: {
-    type: LayoutAnimation.Types.spring,
-    springDamping: 0.8,
-  },
+  duration: 300,
   create: {
     type: LayoutAnimation.Types.easeInEaseOut,
     property: LayoutAnimation.Properties.opacity,
+  },
+  update: {
+    type: LayoutAnimation.Types.easeInEaseOut,
   },
   delete: {
     type: LayoutAnimation.Types.easeInEaseOut,
@@ -85,26 +72,24 @@ const CategoryCard = memo(({
   priority?: "low" | "normal" | "high";
 }) => {
   const subCats = category.subCategories || [];
+  
+  // Only animate the rotation manually (LayoutAnimation handles the rest)
   const rotateAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
-  const opacityAnim = useRef(new Animated.Value(isExpanded ? 1 : 0)).current;
 
   const categoryImageUrl = isRenderableUrl(category.image) ? category.image : null;
 
-  // Chevron Rotation and Content Opacity Fade
+  // Chevron Rotation
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(rotateAnim, {
-        toValue: isExpanded ? 1 : 0,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.timing(opacityAnim, {
-        toValue: isExpanded ? 1 : 0,
-        duration: 250,
-        useNativeDriver: true,
-      })
-    ]).start();
-  }, [isExpanded, rotateAnim, opacityAnim]);
+    // Smooth bezier curve guarantees no bounce/spring
+    const smoothEasing = Easing.bezier(0.4, 0.0, 0.2, 1);
+
+    Animated.timing(rotateAnim, {
+      toValue: isExpanded ? 1 : 0,
+      duration: 300,
+      easing: smoothEasing,
+      useNativeDriver: true,
+    }).start();
+  }, [isExpanded, rotateAnim]);
 
   const rotate = rotateAnim.interpolate({
     inputRange: [0, 1],
@@ -178,102 +163,151 @@ const CategoryCard = memo(({
       {isExpanded && (
         <View style={styles.subCatSection}>
           
-          {/* Deep static glassmorphic gradient overlay (No Native Module, No Blur Blinking) */}
+          {/* Deep static glassmorphic gradient overlay */}
           <LinearGradient
             colors={["rgba(16, 12, 30, 0.75)", "rgba(12, 8, 24, 0.98)"]}
             style={StyleSheet.absoluteFillObject}
             pointerEvents="none"
           />
 
-          <Animated.View style={{ opacity: opacityAnim, flex: 1 }}>
-            <View style={styles.subCatSectionHeader}>
-              <Text style={styles.subCatHeading}>SUB-CATEGORIES</Text>
-              <Text style={styles.subCatCountLabel}>
-                {subCats.length} {subCats.length === 1 ? "topic" : "topics"}
+          <View style={styles.subCatSectionHeader}>
+            <Text style={styles.subCatHeading}>SUB-CATEGORIES</Text>
+            <Text style={styles.subCatCountLabel}>
+              {subCats.length} {subCats.length === 1 ? "topic" : "topics"}
+            </Text>
+          </View>
+
+          {subCats.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              scrollEventThrottle={16}
+              contentContainerStyle={styles.subCatScroll}>
+              {subCats.map((sub: ISubCategory) => {
+                return (
+                  <TouchableOpacity
+                    key={sub._id}
+                    style={styles.subCatCard169}
+                    activeOpacity={0.85}
+                    onPress={() => onSubCategoryPress(category, sub)}>
+                    <View style={styles.subCatImageWrapper}>
+                      <CachedImage
+                        uri={isRenderableUrl(sub.image) ? sub.image : null}
+                        label={sub.name}
+                        style={styles.subCatImage169}
+                        letterSize={34}
+                      />
+                      <LinearGradient
+                        colors={["transparent", "rgba(10, 6, 20, 0.75)"]}
+                        style={StyleSheet.absoluteFillObject}
+                      />
+                      <View style={styles.subCatPillBadge}>
+                        <Text style={styles.subCatPillBadgeText}>
+                          {sub.counts?.total || 0} ITEMS
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.subCatCardInfo}>
+                      <Text style={styles.subCatCardTitle} numberOfLines={1}>
+                        {sub.name}
+                      </Text>
+                      <View style={styles.subCatViewRow}>
+                        <Text style={styles.subCatViewText}>Explore</Text>
+                        <Svg width={12} height={12} viewBox="0 0 24 24" fill="none">
+                          <Path
+                            d="M9 18L15 12L9 6"
+                            stroke="#2dd4bf"
+                            strokeWidth={2}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </Svg>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          ) : (
+            <View style={styles.emptySubCatState}>
+              <View style={styles.grayscaleIconContainer}>
+                <Svg
+                  width={26}
+                  height={26}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="#64748b"
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                  strokeLinejoin="round">
+                  <Path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  <Path d="M9 14l6-6" stroke="#64748b" strokeWidth={1.5} />
+                </Svg>
+              </View>
+              <Text style={styles.emptySubCatTitle}>
+                No Sub-categories Available
+              </Text>
+              <Text style={styles.emptySubCatSubtitle}>
+                All content in this category is directly available
               </Text>
             </View>
-
-            {subCats.length > 0 ? (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                scrollEventThrottle={16}
-                contentContainerStyle={styles.subCatScroll}>
-                {subCats.map((sub: ISubCategory) => {
-                  return (
-                    <TouchableOpacity
-                      key={sub._id}
-                      style={styles.subCatCard169}
-                      activeOpacity={0.85}
-                      onPress={() => onSubCategoryPress(category, sub)}>
-                      <View style={styles.subCatImageWrapper}>
-                        <CachedImage
-                          uri={isRenderableUrl(sub.image) ? sub.image : null}
-                          label={sub.name}
-                          style={styles.subCatImage169}
-                          letterSize={34}
-                        />
-                        <LinearGradient
-                          colors={["transparent", "rgba(10, 6, 20, 0.75)"]}
-                          style={StyleSheet.absoluteFillObject}
-                        />
-                        <View style={styles.subCatPillBadge}>
-                          <Text style={styles.subCatPillBadgeText}>
-                            {sub.counts?.total || 0} ITEMS
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={styles.subCatCardInfo}>
-                        <Text style={styles.subCatCardTitle} numberOfLines={1}>
-                          {sub.name}
-                        </Text>
-                        <View style={styles.subCatViewRow}>
-                          <Text style={styles.subCatViewText}>Explore</Text>
-                          <Svg width={12} height={12} viewBox="0 0 24 24" fill="none">
-                            <Path
-                              d="M9 18L15 12L9 6"
-                              stroke="#2dd4bf"
-                              strokeWidth={2}
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
-                          </Svg>
-                        </View>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            ) : (
-              <View style={styles.emptySubCatState}>
-                <View style={styles.grayscaleIconContainer}>
-                  <Svg
-                    width={26}
-                    height={26}
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="#64748b"
-                    strokeWidth={1.75}
-                    strokeLinecap="round"
-                    strokeLinejoin="round">
-                    <Path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                    <Path d="M9 14l6-6" stroke="#64748b" strokeWidth={1.5} />
-                  </Svg>
-                </View>
-                <Text style={styles.emptySubCatTitle}>
-                  No Sub-categories Available
-                </Text>
-                <Text style={styles.emptySubCatSubtitle}>
-                  All content in this category is directly available
-                </Text>
-              </View>
-            )}
-          </Animated.View>
+          )}
         </View>
       )}
     </View>
   );
 });
+
+const augmentCategoryCounts = (cats: ICategory[], feedSeries: any[]): ICategory[] => {
+  if (!Array.isArray(cats) || !Array.isArray(feedSeries) || feedSeries.length === 0) {
+    return cats;
+  }
+
+  return cats.map((cat) => {
+    let catTotalExtra = 0;
+    const catId = String(cat._id || "");
+
+    const augmentedSubCats = (cat.subCategories || []).map((sub) => {
+      const subId = String(sub._id || "");
+      const subName = (sub.name || "").trim().toLowerCase();
+
+      const matchingSeries = feedSeries.filter((s: any) => {
+        const sSubId = String(s?.subCategory?._id || s?.subCategory || s?.subCategoryId || "");
+        const sSubName = (s?.subCategory?.name || "").trim().toLowerCase();
+        return (subId && sSubId === subId) || (subName && sSubName === subName);
+      });
+
+      const currentTotal = sub.counts?.total || 0;
+      const seriesAlreadyCounted = (sub.counts as any)?.series || 0;
+      const extraSeries = Math.max(0, matchingSeries.length - seriesAlreadyCounted);
+
+      if (extraSeries > 0) {
+        catTotalExtra += extraSeries;
+        return {
+          ...sub,
+          counts: {
+            total: currentTotal + extraSeries,
+            pdf: sub.counts?.pdf || 0,
+            audio: sub.counts?.audio || 0,
+            series: seriesAlreadyCounted + extraSeries,
+          },
+        };
+      }
+      return sub;
+    });
+
+    return {
+      ...cat,
+      counts: {
+        total: (cat.counts?.total || 0) + catTotalExtra,
+        pdf: cat.counts?.pdf || 0,
+        audio: cat.counts?.audio || 0,
+        series: ((cat.counts as any)?.series || 0) + catTotalExtra,
+      },
+      subCategories: augmentedSubCats,
+    };
+  });
+};
 
 const Categories = () => {
   const insets = useSafeAreaInsets();
@@ -287,9 +321,23 @@ const Categories = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
   const [expandedCategoryId, setExpandedCategoryId] = useState<string | null>(null);
+  const isFetchingRef = useRef(false);
 
   const loadCategories = useCallback(async (isPullToRefresh = false) => {
+    if (isFetchingRef.current && !isPullToRefresh) return;
+    isFetchingRef.current = true;
     if (isPullToRefresh) setRefreshing(true);
+
+    let cachedFeedSeries: any[] = [];
+    try {
+      const rawFeed = await AsyncStorage.getItem("cached_feed_data");
+      if (rawFeed) {
+        const parsed = JSON.parse(rawFeed);
+        if (Array.isArray(parsed?.series)) {
+          cachedFeedSeries = parsed.series;
+        }
+      }
+    } catch {}
 
     try {
       if (!isPullToRefresh) {
@@ -298,10 +346,10 @@ const Categories = () => {
           try {
             const parsed = JSON.parse(cached);
             if (Array.isArray(parsed) && parsed.length > 0) {
-              setCategories(parsed);
+              const augmented = augmentCategoryCounts(parsed, cachedFeedSeries);
+              setCategories(augmented);
               setLoading(false);
-              // Disk-cached artwork paints instantly on cold start.
-              warmMainCovers(parsed);
+              warmMainCovers(augmented);
             }
           } catch {}
         }
@@ -309,20 +357,25 @@ const Categories = () => {
 
       let res: any = null;
       try {
-        res = await api.get("/category");
+        res = await api.get("/category", { timeout: 25000 });
       } catch (userApiErr) {
-        res = await api.get(`${ROOT_API_BASE}/category`);
+        try {
+          res = await api.get(`${ROOT_API_BASE}/category`, { timeout: 25000 });
+        } catch {}
       }
 
       if (res?.data?.success && Array.isArray(res.data.data)) {
-        const freshList: ICategory[] = res.data.data;
+        const freshList: ICategory[] = augmentCategoryCounts(res.data.data, cachedFeedSeries);
         setCategories(freshList);
         await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(freshList));
         warmMainCovers(freshList);
       }
-    } catch (err) {
-      console.error("Categories fetch error:", err);
+    } catch (err: any) {
+      if (err?.message !== "canceled") {
+        console.warn("Categories fetch notice:", err?.message || "Network request failed");
+      }
     } finally {
+      isFetchingRef.current = false;
       setLoading(false);
       setRefreshing(false);
     }
@@ -337,10 +390,9 @@ const Categories = () => {
       Vibration.vibrate(8);
     } catch {}
 
-    // Start warming the sub-covers before the accordion paints them.
     prefetchImages((category.subCategories || []).map((sub) => sub.image));
 
-    // Apply the custom buttery smooth LayoutAnimation
+    // Fire layout animation exactly before updating the state
     LayoutAnimation.configureNext(smoothExpandAnim);
     setExpandedCategoryId((prev) => (prev === category._id ? null : category._id));
   }, []);
@@ -694,7 +746,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 16,
     paddingBottom: 20,
-    // Divider line is strictly removed here
   },
   subCatSectionHeader: {
     flexDirection: "row",

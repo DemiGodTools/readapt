@@ -184,7 +184,11 @@ export default function MainNavigation() {
             {(props) => <SplashScreen {...props} />}
           </Stack.Screen>
 
-          <Stack.Screen name="Subscription" component={Subscription} />
+          <Stack.Screen 
+            name="Subscription" 
+            component={Subscription} 
+            options={{ headerShown: false }} 
+          />
 
           <Stack.Screen 
             name="DailyRewards" 

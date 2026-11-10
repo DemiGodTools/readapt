@@ -12,8 +12,6 @@ import {
   Vibration,
   DeviceEventEmitter,
   TouchableOpacity,
-  RefreshControl,
-  ActivityIndicator,
 } from "react-native";
 import { IThought } from "../../types/Thought";
 import pallete from "../../lib/Colors";
@@ -61,16 +59,20 @@ const CARD_GAP = 5;
 const SIDE_PADDING = 22;
 const CARD_WIDTH = (width - SIDE_PADDING * 2 - CARD_GAP) / 2;
 
+const getJoinedSeriesId = (val: any): string => {
+  if (!val) return "";
+  if (typeof val === "string") {
+    const clean = val.trim();
+    return clean === "[object Object]" ? "" : clean;
+  }
+  if (typeof val === "object") return String(val._id || val.id || "").trim();
+  return "";
+};
+
 // --- Icons ---
 const QuickPicksIcon = () => (
   <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-    <Path
-      d="M13 2L3.5 13.5H11.5L10.5 22L20.5 10.5H12.5L13 2Z"
-      fill="#F59E0B"
-      stroke="#F59E0B"
-      strokeWidth={1}
-      strokeLinejoin="round"
-    />
+    <Path d="M13 2L3.5 13.5H11.5L10.5 22L20.5 10.5H12.5L13 2Z" fill="#F59E0B" stroke="#F59E0B" strokeWidth={1} strokeLinejoin="round" />
   </Svg>
 );
 
@@ -87,10 +89,7 @@ const SeriesIcon = () => (
 
 const ContinueIcon = () => (
   <Svg width={18} height={18} viewBox="0 0 640 640">
-    <Path
-      fill="#4ade80"
-      d="M175.3 160C161.3 160 148.8 169.2 144.7 182.6L102.4 320L256 320C273.7 320 288 334.3 288 352L352 352C352 334.3 366.3 320 384 320L537.6 320L495.3 182.6C491.2 169.2 478.8 160 464.7 160L432 160C414.3 160 400 145.7 400 128C400 110.3 414.3 96 432 96L464.7 96C506.8 96 544.1 123.5 556.5 163.8L601.9 311.3C606 324.5 608 338.2 608 352L608 448C608 501 565 544 512 544L448 544C395 544 352 501 352 448L352 416L288 416L288 448C288 501 245 544 192 544L128 544C75 544 32 501 32 448L32 352C32 338.2 34.1 324.5 38.1 311.3L83.5 163.8C95.9 123.5 133.1 96 175.3 96L208 96C225.7 96 240 110.3 240 128C240 145.7 225.7 160 208 160L175.3 160z"
-    />
+    <Path fill="#4ade80" d="M175.3 160C161.3 160 148.8 169.2 144.7 182.6L102.4 320L256 320C273.7 320 288 334.3 288 352L352 352C352 334.3 366.3 320 384 320L537.6 320L495.3 182.6C491.2 169.2 478.8 160 464.7 160L432 160C414.3 160 400 145.7 400 128C400 110.3 414.3 96 432 96L464.7 96C506.8 96 544.1 123.5 556.5 163.8L601.9 311.3C606 324.5 608 338.2 608 352L608 448C608 501 565 544 512 544L448 544C395 544 352 501 352 448L352 416L288 416L288 448C288 501 245 544 192 544L128 544C75 544 32 501 32 448L32 352C32 338.2 34.1 324.5 38.1 311.3L83.5 163.8C95.9 123.5 133.1 96 175.3 96L208 96C225.7 96 240 110.3 240 128C240 145.7 225.7 160 208 160L175.3 160z" />
   </Svg>
 );
 
@@ -178,7 +177,6 @@ function SkellyCrousel() {
   );
 }
 
-
 const HeroGradientTitle = ({ text }: { text: string }) => {
   const upper = (text || "Good to see you again.").toUpperCase().trim();
   const words = upper.split(" ");
@@ -212,9 +210,11 @@ const HeroGradientTitle = ({ text }: { text: string }) => {
         <Defs>
           <SvgGradient id="thoughtTitleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
             <Stop offset="0%" stopColor="#FFFFFF" stopOpacity={1} />
-            <Stop offset="35%" stopColor="#F4F4F5" stopOpacity={1} />
-            <Stop offset="70%" stopColor="#A1A1AA" stopOpacity={1} />
-            <Stop offset="100%" stopColor="#27272A" stopOpacity={1} />
+            <Stop offset="20%" stopColor="#D8DCE3" stopOpacity={1} />
+            <Stop offset="45%" stopColor="#8C939D" stopOpacity={1} />
+            <Stop offset="50%" stopColor="#FFFFFF" stopOpacity={1} />
+            <Stop offset="80%" stopColor="#6C7581" stopOpacity={1} />
+            <Stop offset="100%" stopColor="#C3C9D1" stopOpacity={1} />
           </SvgGradient>
         </Defs>
         {lines.map((line, idx) => (
@@ -239,15 +239,21 @@ const HomeScreen = () => {
   const { accessToken } = useAuth();
   const [feedData, setFeedData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const { user, reload } = useUser();
   const [completeChapters, setCompleteChapters] = useState(0);
   const [continueReading, setContinueReading] = useState<any[] | null>(null);
   const hasVibratedAtEnd = useRef(false);
+  const joinedSeriesReqRef = useRef(0);
+  const joinedSeriesMetaRef = useRef<{ id: string; at: number }>({ id: "", at: 0 });
 
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { isConnected } = useNetworkStatus();
+
+  const joinedSeriesId = useMemo(
+    () => getJoinedSeriesId((user as any)?.joinedSeries),
+    [user?.joinedSeries]
+  );
 
   const likedIdsSet = useMemo(() => {
     const ids = new Set<string>();
@@ -379,7 +385,7 @@ const HomeScreen = () => {
     loadRecentReads();
   }, [user?._id, user?.userId, loadRecentReads]);
 
-  const fetchFeed = useCallback(async (isManual = false) => {
+  const fetchFeed = useCallback(async () => {
     try {
       const headers: Record<string, string> = {};
       if (accessToken && typeof accessToken === "string" && accessToken.trim()) {
@@ -395,22 +401,9 @@ const HomeScreen = () => {
       console.error("Feed API Error Detail:", err?.message);
     } finally {
       setLoading(false);
-      if (isManual) setRefreshing(false);
     }
   }, [accessToken]);
 
-  // Pull-to-refresh handler (only user initiated)
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await Promise.all([
-      fetchFeed(true),
-      loadRecentReads(),
-      reload().catch(() => {}),
-    ]);
-    setRefreshing(false);
-  }, [fetchFeed, loadRecentReads, reload]);
-
-  // Focus effect: ONLY updates recent reading progress so feed never flickers or shuffles!
   useFocusEffect(
     useCallback(() => {
       loadRecentReads();
@@ -424,7 +417,6 @@ const HomeScreen = () => {
     return () => sub.remove();
   }, [loadRecentReads]);
 
-  // Immediate 0-blink cache hydration on startup
   useEffect(() => {
     AsyncStorage.getItem("cached_feed_data")
       .then((raw) => {
@@ -437,28 +429,89 @@ const HomeScreen = () => {
       .catch(() => {});
   }, []);
 
-  // Fetch feed strictly ONCE on app reopen/startup
   useEffect(() => {
     fetchFeed();
   }, []);
 
+  // Joined series card data:
+  // - the id may arrive as a string or a populated object, so normalize it first
+  // - paint instantly from the feed payload / last cached copy so the card never
+  //   disappears on a slow or flaky connection
+  // - skip the network call while offline and throttle repeat attempts so we do
+  //   not fire a burst of duplicate requests (source of the "Network Error" spam)
   useEffect(() => {
-    const getSeries = async () => {
-      if (user && user?.joinedSeries && accessToken) {
+    if (!joinedSeriesId) {
+      joinedSeriesMetaRef.current = { id: "", at: 0 };
+      setSeriesData(null);
+      return;
+    }
+
+    let cancelled = false;
+    const requestToken = ++joinedSeriesReqRef.current;
+    const cacheKey = `cached_series_${joinedSeriesId}`;
+
+    const applySeries = (data: any) => {
+      if (!data || cancelled || requestToken !== joinedSeriesReqRef.current) return;
+      setSeriesData({ ...data, _id: data._id || joinedSeriesId } as ISeries);
+    };
+
+    const fromFeed = (Array.isArray(feedData?.series) ? feedData.series : []).find(
+      (s: any) => String(s?._id || "") === joinedSeriesId
+    );
+
+    if (fromFeed) {
+      applySeries(fromFeed);
+    } else {
+      setSeriesData((prev) =>
+        prev && String((prev as any)._id || "") === joinedSeriesId ? prev : null
+      );
+    }
+
+    const loadJoinedSeries = async () => {
+      if (!fromFeed) {
         try {
-          const data = await api.get(`/series/${user.joinedSeries}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          setSeriesData(data?.data?.data || null);
-        } catch (error) {
-          console.error("Error fetching joined series:", error);
-        }
+          const cachedRaw = await AsyncStorage.getItem(cacheKey);
+          if (cachedRaw) applySeries(JSON.parse(cachedRaw));
+        } catch {}
+      }
+
+      if (cancelled || requestToken !== joinedSeriesReqRef.current) return;
+      if (!accessToken || !isConnected) return;
+
+      const lastAttempt = joinedSeriesMetaRef.current;
+      if (
+        lastAttempt.id === joinedSeriesId &&
+        Date.now() - lastAttempt.at < 10000
+      ) {
+        return;
+      }
+      joinedSeriesMetaRef.current = { id: joinedSeriesId, at: Date.now() };
+
+      try {
+        const res = await api.get(`/series/${joinedSeriesId}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: 18000,
+        });
+        const fetched = res?.data?.data;
+        if (!fetched) return;
+        applySeries(fetched);
+        AsyncStorage.setItem(cacheKey, JSON.stringify(fetched)).catch(() => {});
+      } catch (error: any) {
+        if (cancelled) return;
+        console.warn(
+          "Joined series unavailable, using cached copy:",
+          error?.message || String(error)
+        );
       }
     };
-    getSeries();
-  }, [user, accessToken, isConnected]);
 
-  // Section 1: Quick Picks (Strictly Books, max 4 cards)
+    void loadJoinedSeries();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [joinedSeriesId, accessToken, isConnected, feedData?.series]);
+
   const quickPicks = useMemo(() => {
     return (feedData?.available || [])
       .filter(isStrictlyStandalone)
@@ -469,9 +522,7 @@ const HomeScreen = () => {
       }));
   }, [feedData?.available, isStrictlyStandalone, likedIdsSet]);
 
-  // Section: High Impact 3:4 Banner Slider Items (Admin Spotlight Banners or Intelligent Standalone Fallback)
   const bannerList = useMemo(() => {
-    // ⚡ 1. Primary: Use dynamic admin banners returned from backend API
     if (Array.isArray(feedData?.banners) && feedData.banners.length > 0) {
       return feedData.banners.map((item: any) => ({
         ...item,
@@ -491,11 +542,9 @@ const HomeScreen = () => {
       }));
     }
 
-    // ⚡ 2. Fallback: Generate curated standalone books & series only if no admin banners exist
     const list: any[] = [];
     const seenIds = new Set<string>();
 
-    // 1. Standalone Books ONLY (Strictly exclude chapters belonging to any series)
     const standaloneCandidates = [
       ...(feedData?.trending || []),
       ...(feedData?.personalized || []),
@@ -510,11 +559,10 @@ const HomeScreen = () => {
           ...book,
           bannerType: "standalone_book",
         });
-        if (list.length >= 3) break; // Top 3 curated standalone books
+        if (list.length >= 3) break;
       }
     }
 
-    // 2. Series in banner (NEVER show user's joined series! Mark frameworks with special badge)
     const userJoinedId = String(user?.joinedSeries || "").trim();
     const seriesCandidates = (feedData?.series || []).filter((s: any) => {
       const sId = String(s?._id || "");
@@ -530,7 +578,7 @@ const HomeScreen = () => {
           bannerType: "series",
           isFramework: s.type === "framework",
         });
-        if (list.filter((x) => x.bannerType === "series").length >= 2) break; // Up to 2 series
+        if (list.filter((x) => x.bannerType === "series").length >= 2) break; 
       }
     }
 
@@ -545,7 +593,6 @@ const HomeScreen = () => {
     isStrictlyStandalone,
   ]);
 
-  // Section 2: Eligible Series (Based on user plan)
   const availableSeries = useMemo(() => {
     if (IS_EARLY_ACCESS_FREE) {
       return (feedData?.series || []).slice(0, 6);
@@ -665,23 +712,7 @@ const HomeScreen = () => {
         onScroll={handleScroll}
         scrollEventThrottle={16}
         contentContainerStyle={{ paddingBottom: 60 }}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#00D2B4"
-            colors={["#00D2B4", "#38bdf8", "#01796F"]}
-            progressBackgroundColor="#120726"
-            progressViewOffset={Platform.OS === "android" ? 85 : 0}
-          />
-        }
       >
-        {refreshing && (
-          <View style={styles.refreshBanner}>
-            <ActivityIndicator size="small" color="#00D2B4" />
-            <Text style={styles.refreshBannerText}>Updating your feed...</Text>
-          </View>
-        )}
         <View style={styles.hero}>
           <HeroGradientTitle
             text={feedData?.thought?.title || "Good to see you again."}
@@ -691,15 +722,14 @@ const HomeScreen = () => {
           </Text>
         </View>
 
-        {/* 3:4 Native Banner Slider */}
         <BannerSlider banners={bannerList} loading={loading} />
 
-        {user?.joinedSeries && seriesData && (
+        {joinedSeriesId && seriesData && (
           <View style={styles.section}>
             <PopButton
               onPress={() => {
                 navigation.navigate("SeriesOverview", {
-                  seriesId: user?.joinedSeries || "",
+                  seriesId: joinedSeriesId,
                 });
               }}>
               <View style={styles.progressCard}>
@@ -968,30 +998,11 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: pallete.bgmain,
-    paddingTop: 100,
-  },
-  refreshBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 8,
-    marginHorizontal: 24,
-    marginBottom: 12,
-    backgroundColor: "rgba(0, 210, 180, 0.08)",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(0, 210, 180, 0.2)",
-  },
-  refreshBannerText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#00D2B4",
-    letterSpacing: 0.5,
+    paddingTop: 100, 
   },
   hero: {
     paddingHorizontal: 24,
-    marginTop: 24,
+    marginTop: 10,
   },
   heroTitle: {
     fontFamily: "Bebas Neue",

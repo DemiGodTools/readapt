@@ -1,50 +1,59 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  Pressable,
-  TextInput,
-  Dimensions,
-  Modal,
-  TouchableOpacity,
   Alert,
   Animated,
+  AppState,
+  Dimensions,
+  Linking,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Share,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
   Vibration,
-  Platform,
+  View,
 } from "react-native";
-import Svg, { Path, Circle, Line, Polyline } from "react-native-svg";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Circle, Line, Path, Polyline, Rect } from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Linking, ActivityIndicator } from "react-native";
-import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
-import { useNavigation } from "@react-navigation/native";
+import Constants from "expo-constants";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import pallete from "../../lib/Colors";
 import useAuth from "../../hooks/useAuth";
 import { useUser } from "../../hooks/useUser";
+import { api } from "../../lib/api";
 import { ISeries } from "../../types/Series";
-import { IChapter } from "../../types/Chapter";
-import { api, getAccountDeletionUrl } from "../../lib/api";
 import CachedImage from "../../components/props/CachedImage";
-import PopButton from "../../components/props/PopButton";
-import { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import ProfileSkeleton from "../../components/props/ProfileSkeleton";
+import ProfileEditSheet from "../../components/props/ProfileEditSheet";
+import UpgradeSheet from "../../components/props/UpgradeSheet";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useToast } from "../../hooks/useToast";
 import { getLevelTitle } from "../../lib/levels";
 import { useStreak } from "../../hooks/useStreak";
-import * as SecureStore from "expo-secure-store";
-import Offline from "../../components/state/Offline";
-import UpgradeSheet from "../../components/props/UpgradeSheet";
 import { useNetworkStatus } from "../../hooks/useNetwork";
-import { IS_EARLY_ACCESS_FREE } from "../../lib/entitlements";
-import { getRecentReads } from "../../lib/userStorage";
-import { LinearGradient } from "expo-linear-gradient";
+import { getRecentReadsKey } from "../../lib/userStorage";
+import { useQuery } from "../../lib/queryCache";
+import { copyText } from "../../lib/safeNative";
+import {
+  avatarUri,
+  createAvatarVariants,
+  ImageValidationError,
+  uploadAvatarVariants,
+  validateImageAsset,
+} from "../../lib/imageUpload";
 
-const { width, height } = Dimensions.get("window");
+const { width } = Dimensions.get("window");
 const PREVIEW_SIZE = Math.min(width * 0.82, 330);
+const ACCENT = "#00D2B4";
+const AMBER = "#f59e0b";
+const DANGER = "#ef4444";
 
-// Level colors
 const LEVEL_COLORS: Record<string, string> = {
   Novice: "#4ade80",
   Scholar: "#38bdf8",
@@ -52,266 +61,221 @@ const LEVEL_COLORS: Record<string, string> = {
   Strategist: "#a78bfa",
 };
 
-// Early Access
-const tierLabel: string[] = [
-  IS_EARLY_ACCESS_FREE ? "Early Access VIP" : "FREE Tier",
-  "Basic plan",
-  "PRO TIER",
-  "PREMIUM TIER",
-];
+const APP_VERSION = Constants.expoConfig?.version || "1.0.0";
 
-type IRecentRead = {
-  content: IChapter;
+type JoinedSeriesRef = string | { _id?: string; id?: string } | null | undefined;
+
+const normalizeSeriesId = (raw: JoinedSeriesRef): string | null => {
+  if (!raw) return null;
+  const value = typeof raw === "string" ? raw : raw?._id || raw?.id;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "[object Object]") return null;
+  return trimmed;
 };
 
-interface CircularProgressProps {
-  progress: number;
-}
+const initialsCode = (input?: string) => {
+  const clean = (input || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  return clean.slice(0, 4).padEnd(2, "X");
+};
 
-const CircularProgress: React.FC<CircularProgressProps> = ({ progress }) => {
-  const size = 44;
+/* -------------------------------------------------------------------------
+ * Small pieces
+ * ---------------------------------------------------------------------- */
+
+const ChevronRight = ({ color = "rgba(255,255,255,0.55)", size = 18 }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+    <Polyline points="9 18 15 12 9 6" />
+  </Svg>
+);
+
+const CircularProgress = ({ progress }: { progress: number }) => {
+  const size = 46;
   const strokeWidth = 3.5;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const clamped = Math.min(Math.max(progress, 0), 1);
-  const strokeDashoffset = circumference * (1 - clamped);
-  const percentage = Math.round(clamped * 100);
 
   return (
-    <View style={styles.circularProgressContainer}>
+    <View style={styles.progressRing}>
       <Svg width={size} height={size}>
+        <Circle cx={size / 2} cy={size / 2} r={radius} stroke="rgba(255,255,255,0.24)" strokeWidth={strokeWidth} fill="none" />
         <Circle
           cx={size / 2}
           cy={size / 2}
           r={radius}
-          stroke="rgba(255, 255, 255, 0.22)"
-          strokeWidth={strokeWidth}
-          fill="none"
-        />
-        <Circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          stroke="#00D2B4"
+          stroke={ACCENT}
           strokeWidth={strokeWidth}
           strokeDasharray={circumference}
-          strokeDashoffset={strokeDashoffset}
+          strokeDashoffset={circumference * (1 - clamped)}
           strokeLinecap="round"
           fill="none"
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
       </Svg>
-      <View style={styles.circularProgressCenter}>
-        <Text style={styles.circularProgressText}>{percentage}%</Text>
+      <View style={styles.progressRingCenter}>
+        <Text style={styles.progressRingText}>{Math.round(clamped * 100)}%</Text>
       </View>
     </View>
   );
 };
 
+const ActionRow = ({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onPress: () => void;
+}) => (
+  <Pressable
+    onPress={onPress}
+    style={({ pressed }) => [styles.actionRow, pressed && styles.actionRowPressed]}
+    android_ripple={{ color: "rgba(255,255,255,0.06)" }}
+  >
+    <View style={styles.actionIcon}>{icon}</View>
+    <Text style={styles.actionLabel}>{label}</Text>
+    <ChevronRight />
+  </Pressable>
+);
+
+/* -------------------------------------------------------------------------
+ * Screen
+ * ---------------------------------------------------------------------- */
+
 const ProfileScreen = () => {
+  const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { accessToken } = useAuth();
   const { user, reload, loadingUser, updateUser, logout } = useUser() as any;
+  const { showToast } = useToast();
+  const { isConnected } = useNetworkStatus();
+  const { streak } = useStreak();
+
+  const [avatarOverride, setAvatarOverride] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-
-  const pickAndUploadProfilePhoto = async () => {
-    try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert("Permissions Required", "Photo library access is required to update your profile photo.");
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images" as any],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.55,
-        base64: true,
-        selectionLimit: 1,
-      });
-
-      if (result.canceled || !result.assets?.[0]) return;
-
-      setUploadingPhoto(true);
-      setUploadProgress(0.08);
-
-      const localAsset = result.assets[0];
-      const localUri = localAsset?.uri;
-      if (!localUri) {
-        showToast({ title: "Unable to read selected image." });
-        setUploadingPhoto(false);
-        setUploadProgress(0);
-        return;
-      }
-
-      setAvatar(localUri);
-
-      let imageDataUri = localAsset?.base64
-        ? `data:${localAsset.mimeType || "image/jpeg"};base64,${localAsset.base64}`
-        : "";
-
-      if (!imageDataUri) {
-        try {
-          const base64Image = await FileSystem.readAsStringAsync(localUri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          imageDataUri = `data:${localAsset.mimeType || "image/jpeg"};base64,${base64Image}`;
-        } catch {}
-      }
-
-      setUploadProgress(0.24);
-
-      let token = accessToken;
-      if (!token) {
-        const stored = await SecureStore.getItemAsync("accessToken");
-        if (stored) {
-          try {
-            const parsed = JSON.parse(stored);
-            token = parsed?.token || (typeof parsed === "string" ? parsed : null);
-          } catch {
-            token = stored;
-          }
-        }
-      }
-      if (!token) {
-        const asyncStored = await AsyncStorage.getItem("accessToken");
-        if (asyncStored) {
-          try {
-            const parsed = JSON.parse(asyncStored);
-            token = parsed?.token || (typeof parsed === "string" ? parsed : null);
-          } catch {
-            token = asyncStored;
-          }
-        }
-      }
-
-      const uploadHeaders: Record<string, string> = {};
-      if (token) uploadHeaders["Authorization"] = `Bearer ${token.trim()}`;
-      if (user?.email) uploadHeaders["x-user-email"] = user.email;
-
-      let remoteUrl: string | null = null;
-      const baseApiUrl = (api.defaults.baseURL || "https://redapt-admin-sand.vercel.app/api/user").replace(/\/+$/, "");
-      let currentProgress = 0.24;
-      const progressTimer = setInterval(() => {
-        if (currentProgress < 0.88) {
-          currentProgress += Math.max(0.02, (0.88 - currentProgress) * 0.16);
-          setUploadProgress(Number(currentProgress.toFixed(2)));
-        }
-      }, 80);
-
-      try {
-        if (typeof (FileSystem as any).createUploadTask === "function") {
-          const uploadTask = (FileSystem as any).createUploadTask(
-            `${baseApiUrl}/update/profile`,
-            localUri,
-            {
-              httpMethod: "POST",
-              uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-              fieldName: "file",
-              headers: uploadHeaders,
-            },
-            (data: any) => {
-              if (data.totalBytesExpectedToSend > 0) {
-                const ratio = data.totalBytesSent / data.totalBytesExpectedToSend;
-                const mapped = 0.25 + ratio * 0.63;
-                if (mapped > currentProgress) {
-                  currentProgress = mapped;
-                  setUploadProgress(Number(currentProgress.toFixed(2)));
-                }
-              }
-            }
-          );
-          const uploadRes = await uploadTask.uploadAsync();
-          if (uploadRes && uploadRes.status === 200 && uploadRes.body) {
-            const parsed = JSON.parse(uploadRes.body);
-            remoteUrl = parsed?.url || parsed?.user?.image || null;
-          }
-        } else {
-          const uploadRes = await FileSystem.uploadAsync(
-            `${baseApiUrl}/update/profile`,
-            localUri,
-            {
-              httpMethod: "POST",
-              uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-              fieldName: "file",
-              headers: uploadHeaders,
-            }
-          );
-          if (uploadRes.status === 200 && uploadRes.body) {
-            const parsed = JSON.parse(uploadRes.body);
-            remoteUrl = parsed?.url || parsed?.user?.image || null;
-          }
-        }
-      } catch (e) {
-        console.warn("Multipart upload attempt failed:", e);
-      }
-
-      if (!remoteUrl && imageDataUri) {
-        try {
-          const directRes = await api.post(
-            "/update/profile-direct",
-            { image: imageDataUri },
-            {
-              headers: { ...uploadHeaders, "Content-Type": "application/json" },
-              timeout: 25000,
-              onUploadProgress: (progressEvent: any) => {
-                if (progressEvent.total) {
-                  const ratio = progressEvent.loaded / progressEvent.total;
-                  const mapped = 0.25 + ratio * 0.63;
-                  if (mapped > currentProgress) {
-                    currentProgress = mapped;
-                    setUploadProgress(Number(currentProgress.toFixed(2)));
-                  }
-                }
-              },
-            }
-          );
-          if (directRes.status === 200) {
-            remoteUrl = directRes.data?.url || directRes.data?.user?.image || null;
-          }
-        } catch (e) {
-          console.warn("Direct upload endpoint attempt failed:", e);
-        }
-      }
-
-      clearInterval(progressTimer);
-
-      const finalImageUrl = remoteUrl || localUri;
-      setAvatar(finalImageUrl);
-      updateUser({ image: finalImageUrl } as any);
-      reload().catch(() => {});
-
-      setUploadProgress(1);
-      await new Promise((r) => setTimeout(r, 320));
-
-      Vibration.vibrate(40);
-      showToast({ title: remoteUrl ? "Profile photo updated!" : "Profile photo saved!" });
-    } catch (err: any) {
-      console.error("Profile upload error:", err);
-      showToast({ title: err?.message || "Upload failed. Please try again." });
-    } finally {
-      setUploadingPhoto(false);
-      setUploadProgress(0);
-    }
-  };
-
-  const [seriesData, setSeriesData] = useState<ISeries | null>(null);
-  const [completeChapters, setCompleteChapters] = useState(0);
-  const { streak } = useStreak();
-  const [avatar, setAvatar] = useState(user?.image ?? "");
+  const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
   const [avatarPreviewVisible, setAvatarPreviewVisible] = useState(false);
+  const [editVisible, setEditVisible] = useState(false);
+  const [showStreakInfo, setShowStreakInfo] = useState(false);
+  const [showLevelInfo, setShowLevelInfo] = useState(false);
+  const [showLogoutSheet, setShowLogoutSheet] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [completeChapters, setCompleteChapters] = useState(0);
+
   const previewScale = useRef(new Animated.Value(0.35)).current;
   const previewOpacity = useRef(new Animated.Value(0)).current;
+  // Seeded with "now" so the first focus does not duplicate the DataContext's
+  // initial /get-self request on a cold start.
+  const lastFocusRefresh = useRef(Date.now());
+
+  const joinedSeriesId = useMemo(
+    () => normalizeSeriesId(user?.joinedSeries as JoinedSeriesRef),
+    [user?.joinedSeries]
+  );
+
+  /* ---------------- SWR: joined series + local progress ---------------- */
+  const seriesQuery = useQuery<ISeries | null>(
+    joinedSeriesId ? `series:${joinedSeriesId}` : null,
+    async () => {
+      if (!joinedSeriesId) return null;
+      const res = await api.get(`/series/${joinedSeriesId}`, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+        timeout: 10000,
+      });
+      return (res.data?.data?.data ?? res.data?.data ?? null) as ISeries | null;
+    },
+    {
+      staleTime: 60_000,
+      enabled: Boolean(joinedSeriesId && isConnected),
+    }
+  );
+
+  const seriesData = seriesQuery.data ?? null;
+  const totalChapters = useMemo(
+    () => (seriesData?.chapters || []).filter((item: any) => item?.contentModel === "Chapter" || item?.content).length,
+    [seriesData?.chapters]
+  );
+  const progressPercent = totalChapters > 0 ? Math.min(100, Math.round((completeChapters / totalChapters) * 100)) : 0;
 
   useEffect(() => {
-    if (user?.image) {
-      setAvatar(user.image);
+    let alive = true;
+    const userId = user?._id || user?.userId;
+    if (!seriesData?.chapters?.length || !userId) {
+      setCompleteChapters(0);
+      return () => {
+        alive = false;
+      };
     }
-  }, [user?.image]);
+
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(getRecentReadsKey(userId));
+        const reads = raw ? JSON.parse(raw) : [];
+        const chapterIds = new Set(
+          (seriesData.chapters || [])
+            .map((item: any) => item?.content?._id)
+            .filter(Boolean)
+        );
+        const readIds = new Set(
+          (Array.isArray(reads) ? reads : [])
+            .map((entry: any) => entry?.content?._id || entry?._id)
+            .filter((id: string) => id && chapterIds.has(id))
+        );
+        if (alive) setCompleteChapters(readIds.size);
+      } catch {
+        if (alive) setCompleteChapters(0);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [seriesData?.chapters, user?._id, user?.userId]);
+
+  /* ---------------- Focus / foreground revalidation ---------------- */
+  const refreshSeries = seriesQuery.refresh;
+  const revalidate = useCallback(() => {
+    lastFocusRefresh.current = Date.now();
+    Promise.resolve(refreshSeries?.()).catch(() => {});
+    Promise.resolve(reload?.()).catch(() => {});
+  }, [reload, refreshSeries]);
+
+  useFocusEffect(
+    useCallback(() => {
+      // SWR: only hit the network if what we show is more than 30s old.
+      if (Date.now() - lastFocusRefresh.current > 30_000) revalidate();
+    }, [revalidate])
+  );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active" && Date.now() - lastFocusRefresh.current > 60_000) revalidate();
+    });
+    return () => sub.remove();
+  }, [revalidate]);
+
+  const onRefresh = useCallback(async () => {
+    if (!isConnected) {
+      showToast({ title: "You're offline. Showing saved data." });
+      return;
+    }
+    setRefreshing(true);
+    try {
+      await Promise.allSettled([reload?.(), refreshSeries?.()]);
+    } finally {
+      setRefreshing(false);
+      lastFocusRefresh.current = Date.now();
+    }
+  }, [isConnected, reload, refreshSeries, showToast]);
+
+  /* ---------------- Avatar ---------------- */
+  const avatarSource = avatarOverride || avatarUri(user, "md");
 
   const openAvatarPreview = () => {
-    Vibration.vibrate(25);
+    Vibration.vibrate(20);
     setAvatarPreviewVisible(true);
     previewScale.setValue(0.35);
     previewOpacity.setValue(0);
@@ -328,436 +292,872 @@ const ProfileScreen = () => {
     ]).start(() => setAvatarPreviewVisible(false));
   };
 
-  const [showStreakInfo, setShowStreakInfo] = useState(false);
-  const [showLevelInfo, setShowLevelInfo] = useState(false);
-  const [showLogoutSheet, setShowLogoutSheet] = useState(false);
-  const [showDeleteSheet, setShowDeleteSheet] = useState(false);
-  const [deletingAccount, setDeletingAccount] = useState(false);
-  const { showToast } = useToast();
-  const { isConnected } = useNetworkStatus();
+  const changePhoto = useCallback(async () => {
+    setPhotoMenuVisible(false);
+    if (uploadingPhoto) return;
 
-  useEffect(() => {
-    if (!user || !accessToken) return;
-    const getSeries = async () => {
-      const rawId = user?.joinedSeries;
-      const seriesId = typeof rawId === "string" ? rawId : rawId && typeof rawId === "object" ? (rawId as any)?._id || (rawId as any)?.id : null;
-      if (!seriesId || typeof seriesId !== "string" || seriesId.trim() === "" || seriesId === "[object Object]") return;
+    if (!isConnected) {
+      showToast({ title: "Please connect to the Internet to change your photo." });
+      return;
+    }
 
-      try {
-        const cached = await AsyncStorage.getItem(`cached_series_${seriesId}`);
-        if (cached) setSeriesData(JSON.parse(cached));
-      } catch {}
-
-      if (!isConnected) return;
-      try {
-        const data = await api.get(`/series/${seriesId}`, { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 10000 });
-        if (data?.data?.data) {
-          setSeriesData(data.data.data);
-          AsyncStorage.setItem(`cached_series_${seriesId}`, JSON.stringify(data.data.data)).catch(() => {});
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        if (!permission.canAskAgain) {
+          Alert.alert(
+            "Photo permission needed",
+            "Readapt needs access to your photos to update your profile picture.",
+            [
+              { text: "Not now", style: "cancel" },
+              { text: "Open settings", onPress: () => Linking.openSettings().catch(() => {}) },
+            ]
+          );
+        } else {
+          showToast({ title: "Photo library permission is required." });
         }
-      } catch (error: any) {
-        console.warn("Notice: series fetch in profile:", error?.message);
-      }
-    };
-    getSeries();
-  }, [user?.joinedSeries, accessToken, isConnected]);
-
-  useEffect(() => {
-    if (!seriesData?.cover || !user?.email) return;
-    const getJoinedSeriesData = async () => {
-      const recentReads = await getRecentReads(user?._id || user?.userId);
-      if (!recentReads || recentReads.length === 0) {
-        setCompleteChapters(0);
         return;
       }
-      const json: IChapter[] = recentReads.map((r: any) => r.content);
-      const ChapterIdsInSeries = seriesData?.chapters?.map((item: any) => item.content._id) || [];
-      const readChaptersInSeries = json.filter((ch) => ChapterIdsInSeries.includes(ch._id));
-      setCompleteChapters(readChaptersInSeries.length);
-    };
-    getJoinedSeriesData();
-  }, [seriesData?.chapters, user, loadingUser, isConnected]);
 
-  const progressPercent = ((completeChapters / (seriesData?.chapters || [])?.filter((item) => item.contentModel === "Chapter").length) * 100).toFixed(0);
-  const levelName = user?.profileLevel ? getLevelTitle(user?.profileLevel) : "Novice";
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images" as any],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 1,
+        exif: false,
+        selectionLimit: 1,
+      });
+
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+
+      // Local validation is metadata-only, so an oversized file is rejected
+      // before we decode a single pixel.
+      await validateImageAsset(asset);
+
+      setUploadingPhoto(true);
+      setUploadProgress(0.05);
+      setAvatarOverride(asset.uri);
+
+      const { variants, previewUri, base64Fallback } = await createAvatarVariants(asset);
+      setAvatarOverride(previewUri);
+      setUploadProgress(0.35);
+
+      const uploaded = await uploadAvatarVariants(variants, {
+        base64Fallback,
+        onProgress: (ratio) => setUploadProgress(0.35 + ratio * 0.6),
+        timeoutMs: 30000,
+      });
+
+      setUploadProgress(1);
+
+      if (uploaded.user) {
+        updateUser?.(uploaded.user);
+      } else if (uploaded.urls) {
+        updateUser?.(uploaded.urls as any);
+      } else {
+        updateUser?.({ image: previewUri } as any);
+      }
+
+      Vibration.vibrate(35);
+      showToast({ title: "Profile photo updated" });
+      setTimeout(() => setAvatarOverride(null), 500);
+    } catch (error: any) {
+      setAvatarOverride(null);
+      if (error instanceof ImageValidationError) {
+        showToast({ title: error.message });
+      } else if (error?.response?.status === 401) {
+        showToast({ title: "Your session expired. Please log in again." });
+      } else {
+        showToast({
+          title:
+            error?.response?.data?.message ||
+            error?.message ||
+            "Could not update your photo. Please try again.",
+        });
+      }
+    } finally {
+      setUploadingPhoto(false);
+      setUploadProgress(0);
+    }
+  }, [isConnected, showToast, updateUser, uploadingPhoto]);
+
+  /* ---------------- Derived profile bits ---------------- */
+  const levelName = user?.profileLevel ? getLevelTitle(user.profileLevel) : "Novice";
   const levelColor = LEVEL_COLORS[levelName] || LEVEL_COLORS.Novice;
+  const referralCode = useMemo(
+    () => `READAPT${initialsCode(user?.userId || user?.name)}`,
+    [user?.userId, user?.name]
+  );
+
+  const copyReferral = useCallback(async () => {
+    if (await copyText(referralCode)) {
+      Vibration.vibrate(18);
+      showToast({ title: "Referral code copied" });
+      return;
+    }
+    // Builds without the clipboard module get the share sheet instead of an
+    // error, so the code still reaches the user.
+    try {
+      await Share.share({ message: referralCode });
+    } catch {
+      showToast({ title: "Couldn't copy the code" });
+    }
+  }, [referralCode, showToast]);
+
+  const shareReferral = useCallback(async () => {
+    try {
+      await Share.share({
+        message: `I'm reading on Readapt. Join me with my code ${referralCode} — https://play.google.com/store/apps`,
+      });
+    } catch {}
+  }, [referralCode]);
 
   const handleLogout = async () => {
+    setShowLogoutSheet(false);
     try {
       if (logout) await logout();
-      else {
-        await SecureStore.deleteItemAsync("accessToken").catch(() => {});
-        await AsyncStorage.removeItem("accessToken").catch(() => {});
-      }
     } catch {}
     navigation.reset({ index: 0, routes: [{ name: "Login" }] });
   };
 
-  const handleScheduleDeletion = async () => {
-    if (!isConnected) { showToast({ title: "Please connect to the Internet." }); return; }
-    setDeletingAccount(true);
-    try {
-      const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
-      const res = await api.post("/deletion/request", { email: user?.email }, { headers });
-      if (res.data?.success) {
-        const { deletionToken, scheduledAt, email } = res.data;
-        if (deletionToken) {
-          await AsyncStorage.setItem("pending_deletion_info", JSON.stringify({ token: deletionToken, scheduledAt, email }));
-        }
-        if (logout) await logout();
-        else {
-          await SecureStore.deleteItemAsync("accessToken").catch(() => {});
-          await AsyncStorage.removeItem("accessToken").catch(() => {});
-        }
-        setShowDeleteSheet(false);
-        showToast({ title: "Account deletion scheduled (48h grace period)" });
-        const webUrl = getAccountDeletionUrl(deletionToken, user?.email);
-        Linking.openURL(webUrl).catch(() => {});
-        navigation.reset({ index: 0, routes: [{ name: "Login" }] });
-      } else {
-        showToast({ title: res.data?.message || "Failed to schedule deletion." });
-      }
-    } catch (err: any) {
-      Alert.alert("Deletion Request Failed", err?.response?.data?.message || err?.message || "Error scheduling deletion.");
-    } finally {
-      setDeletingAccount(false);
-    }
+  const openSeries = () => {
+    if (joinedSeriesId) navigation.navigate("SeriesOverview", { seriesId: joinedSeriesId });
+    else navigation.navigate("AllSeries");
   };
 
-  return (
-    <View style={styles.container}>
-      {/* Top Header Bar with Settings Icon */}
-      <View style={styles.topHeaderBar}>
-        <Text style={styles.topHeaderTitle}>Profile</Text>
-        <TouchableOpacity
-          style={styles.settingsIconBtn}
-          activeOpacity={0.7}
-          onPress={() => navigation.navigate("Settings" as never)}
-        >
-          <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <Circle cx="12" cy="12" r="3" />
-            <Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </Svg>
-        </TouchableOpacity>
+  /* ---------------- Render states ---------------- */
+  if (!user) {
+    if (loadingUser || !isConnected) {
+      return (
+        <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+            <ProfileSkeleton />
+          </ScrollView>
+        </View>
+      );
+    }
+
+    return (
+      <View style={[styles.container, styles.centered, { paddingTop: insets.top }]}>
+        <View style={styles.errorCard}>
+          <Text style={styles.errorTitle}>We couldn't load your profile</Text>
+          <Text style={styles.errorText}>
+            Check your connection and try again. Your saved data is safe.
+          </Text>
+          <Pressable
+            style={({ pressed }) => [styles.retryBtn, pressed && { opacity: 0.8 }]}
+            onPress={() => {
+              reload?.().catch(() => {});
+            }}
+          >
+            <Text style={styles.retryText}>Try again</Text>
+          </Pressable>
+        </View>
       </View>
+    );
+  }
 
-      <Modal visible={avatarPreviewVisible} transparent animationType="none" statusBarTranslucent navigationBarTranslucent onRequestClose={closeAvatarPreview}>
-        <TouchableOpacity style={styles.avatarPreviewOverlay} activeOpacity={1} onPress={closeAvatarPreview}>
-          <Animated.View style={[styles.avatarPreviewWrap, { transform: [{ scale: previewScale }], opacity: previewOpacity }]}>
-            <CachedImage uri={avatar} label={user?.name} style={styles.avatarPreviewImage} letterSize={90} />
-          </Animated.View>
-          <Text style={styles.previewDismissHint}>Tap anywhere to close</Text>
-        </TouchableOpacity>
-      </Modal>
+  const isBusy = uploadingPhoto;
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        
-        {/* Profile Info */}
-        <View style={styles.profileInfo}>
-          <TouchableOpacity activeOpacity={0.85} onPress={() => { if (!uploadingPhoto) pickAndUploadProfilePhoto(); }} onLongPress={openAvatarPreview} delayLongPress={350}>
-            <View style={styles.avatarContainer}>
-              <View style={styles.avatarPlaceholder}>
-                <CachedImage uri={avatar} label={user?.name} style={styles.avatarImage} letterSize={38} transition={0} />
-                {uploadingPhoto && <View style={styles.avatarUploadBackdrop}><CircularProgress progress={uploadProgress} /></View>}
+  return (
+    <View style={[styles.container, { paddingTop: insets.top + 6 }]}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={ACCENT}
+            colors={[ACCENT]}
+            progressBackgroundColor="#12101c"
+          />
+        }
+      >
+        {/* Identity */}
+        <View style={styles.identityRow}>
+          <View style={styles.avatarBlock}>
+            <Pressable
+              onPress={() => setPhotoMenuVisible(true)}
+              onLongPress={openAvatarPreview}
+              delayLongPress={350}
+              disabled={isBusy}
+              style={({ pressed }) => [styles.avatarPress, pressed && { opacity: 0.9 }]}
+            >
+              <View style={styles.avatarRing}>
+                <CachedImage
+                  uri={avatarSource}
+                  label={user?.name}
+                  style={styles.avatarImage}
+                  letterSize={40}
+                  transition={0}
+                  priority="high"
+                />
+                {isBusy ? (
+                  <View style={styles.avatarBusy}>
+                    <CircularProgress progress={uploadProgress} />
+                  </View>
+                ) : null}
               </View>
-            </View>
-          </TouchableOpacity>
-          <View style={styles.infoDetails}>
-            <View style={styles.nameHeaderRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.userName}>{user?.name || "Readapt User"}</Text>
-                <Text style={styles.userHandle}>@{user?.userId || "readapt_user"}</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.settingsPillBtn}
-                activeOpacity={0.7}
-                onPress={() => navigation.navigate("Settings" as never)}
-              >
-                <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={pallete.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <Circle cx="12" cy="12" r="3" />
-                  <Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </Pressable>
+
+            <Pressable
+              onPress={() => setShowLevelInfo(true)}
+              style={[styles.levelPill, { borderColor: levelColor }]}
+              hitSlop={6}
+            >
+              <Svg width={13} height={13} viewBox="0 0 24 24" fill={levelColor}>
+                <Path d="M12 2l2.4 6.1L21 9.3l-4.8 4.2 1.4 6.5L12 16.7 6.4 20l1.4-6.5L3 9.3l6.6-1.2z" />
+              </Svg>
+              <Text style={[styles.levelPillText, { color: levelColor }]}>{levelName}</Text>
+            </Pressable>
+
+            {!isBusy ? (
+              <Pressable style={styles.cameraChip} onPress={() => setPhotoMenuVisible(true)} hitSlop={10}>
+                <Svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#03110f" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                  <Path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                  <Circle cx="12" cy="13" r="4" />
                 </Svg>
-                <Text style={styles.settingsPillText}>Settings</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.badgesRow}>
-              <Pressable onPress={() => setShowLevelInfo(true)}>
-                <View style={[styles.levelBadge, { backgroundColor: levelColor }]}>
-                  <Text style={styles.levelBadgeText}>{levelName}</Text>
-                </View>
               </Pressable>
+            ) : null}
+          </View>
+
+          <View style={styles.identityText}>
+            <View style={styles.nameRow}>
+              <Pressable onPress={() => setEditVisible(true)} style={{ flex: 1 }} hitSlop={6}>
+                <Text style={styles.userName} numberOfLines={1}>
+                  {user?.name || "Readapt User"}
+                </Text>
+                <Text style={styles.userHandle} numberOfLines={1}>
+                  @{user?.userId || "readapt_user"}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.settingsBtn, pressed && { opacity: 0.7 }]}
+                onPress={() => navigation.navigate("Settings")}
+                hitSlop={8}
+              >
+                <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                  <Circle cx="12" cy="12" r="3" />
+                  <Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.36.4.66.74.86.34.2.72.3 1.11.3H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </Svg>
+              </Pressable>
+            </View>
+
+            <View style={styles.badgesRow}>
               {user?.profession ? (
-                <View style={styles.professionBadge}>
-                  <Text style={styles.professionBadgeText}>{user.profession}</Text>
+                <View style={styles.metaPill}>
+                  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <Path d="M22 10 12 5 2 10l10 5 10-5z" />
+                    <Path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5" />
+                  </Svg>
+                  <Text style={styles.metaPillText}>{user.profession}</Text>
                 </View>
               ) : null}
-              {user?.visibility ? (
-                <View style={styles.visibilityBadge}>
-                  <Text style={styles.visibilityBadgeText}>
-                    {user.visibility === "Private" ? "🔒 Private" : "🌐 Public"}
-                  </Text>
-                </View>
-              ) : null}
+              {user?.profession && user?.visibility ? <View style={styles.badgeDivider} /> : null}
+              <View style={styles.metaPill}>
+                <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
+                  <Circle cx="12" cy="12" r="9" />
+                  <Path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" />
+                </Svg>
+                <Text style={styles.metaPillText}>{user.visibility === "Private" ? "Private" : "Public"}</Text>
+              </View>
             </View>
           </View>
         </View>
 
-        {/* Bio & Interests Card */}
-        {(Boolean(user?.bio) || (Array.isArray(user?.interests) && user.interests.length > 0)) && (
-          <View style={styles.section}>
-            <View style={styles.bioCard}>
-              {user?.bio ? (
-                <Text style={styles.bioText}>"{user.bio}"</Text>
-              ) : null}
+        {!isConnected ? (
+          <Pressable style={styles.offlineBar} onPress={onRefresh}>
+            <View style={styles.offlineDot} />
+            <Text style={styles.offlineText}>Offline — showing your saved profile</Text>
+            <Text style={styles.offlineAction}>Retry</Text>
+          </Pressable>
+        ) : null}
 
-              {Array.isArray(user?.interests) && user.interests.length > 0 && (
-                <View style={[styles.interestsSection, Boolean(user?.bio) && { marginTop: 12 }]}>
-                  <Text style={styles.interestsHeader}>TOPICS OF INTEREST</Text>
-                  <View style={styles.interestsWrap}>
-                    {user.interests.map((topic: string) => (
-                      <View key={topic} style={styles.interestChip}>
-                        <Text style={styles.interestChipText}>{topic}</Text>
-                      </View>
-                    ))}
-                  </View>
+        {/* Bio */}
+        <Pressable onPress={() => setEditVisible(true)} style={styles.bioWrap}>
+          {user?.bio ? (
+            <Text style={styles.bioText}>{user.bio}</Text>
+          ) : (
+            <Text style={styles.bioPlaceholder}>Add a short bio so readers know you →</Text>
+          )}
+          {Array.isArray(user?.interests) && user.interests.length > 0 ? (
+            <View style={styles.interestsWrap}>
+              {user.interests.slice(0, 6).map((topic: string) => (
+                <View key={topic} style={styles.interestChip}>
+                  <Text style={styles.interestChipText}>{topic}</Text>
                 </View>
-              )}
+              ))}
             </View>
-          </View>
-        )}
+          ) : null}
+        </Pressable>
 
-        {/* Progress Card */}
-        {user?.joinedSeries && seriesData && completeChapters !== null && (
-          <View style={styles.section}>
-            <PopButton onPress={() => navigation.navigate("SeriesOverview", { seriesId: user?.joinedSeries || "" })}>
-              <View style={styles.progressCard}>
-                <View style={styles.progressContent}>
-                  <Text style={styles.progressTitle}>{seriesData.title}</Text>
-                  <Text style={styles.progressMeta}>Chapter {completeChapters} • <Text style={styles.accentText}>{progressPercent}% Complete</Text></Text>
-                  <View style={styles.progressTrack}><View style={[styles.progressFill, { width: (width / 100) * Number(progressPercent) }]} /></View>
-                </View>
-                <Svg width={20} height={20} viewBox="0 0 16 16" fill="none"><Path fillRule="evenodd" clipRule="evenodd" d="M10.853333333333333 7.6466666666666665a0.5 0.5 0 0 1 0 0.7066666666666667l-5 5a0.5 0.5 0 0 1 -0.7066666666666667 -0.7066666666666667L9.793333333333333 8 5.1466666666666665 3.3533333333333335a0.5 0.5 0 0 1 0.7066666666666667 -0.7066666666666667l5 5Z" fill={pallete.textwhite} /></Svg>
-              </View>
-            </PopButton>
-          </View>
-        )}
-
-        {/* Streak Card */}
-        <View style={styles.section}>
-          <Pressable
-            style={({ pressed }) => [styles.streakCard, pressed && { transform: [{ scale: 0.99 }] }]}
-            onPress={() => (navigation as any).navigate('DailyRewards')}
-            onLongPress={() => setShowStreakInfo(true)}
-            delayLongPress={400}
-          >
-            <View style={styles.streakVisual}>
-              <Svg width={30} height={30} viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2">
-                <Path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5Z" />
+        {/* Learning journey */}
+        <Pressable
+          onPress={openSeries}
+          style={({ pressed }) => [styles.journeyCard, pressed && styles.cardPressed]}
+        >
+          <View style={styles.journeyTop}>
+            <View style={styles.journeyIcon}>
+              <Svg width={24} height={24} viewBox="0 0 24 24" fill={ACCENT}>
+                <Path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM2 19.5c0-3 3.1-5 7-5s7 2 7 5V21H2v-1.5zM16.5 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM22 20v1h-4.6v-1.5c0-1.7-.7-3.2-1.9-4.3.6-.1 1.2-.2 1.9-.2 3.2 0 5.6 1.7 5.6 4.5V20z" />
               </Svg>
             </View>
-            <View style={styles.streakDetails}>
-              <Text style={styles.streakLabel}>Current Streak</Text>
-              <View style={styles.streakDayNumber}>
-                <Text style={styles.num}>{streak}</Text>
-                <Text style={styles.day}>Days</Text>
-              </View>
+            <View style={styles.journeyBody}>
+              <Text style={styles.cardTitle}>
+                {joinedSeriesId ? "Your Learning Journey" : "Start your learning journey"}
+              </Text>
+              {joinedSeriesId && seriesQuery.isLoading && !seriesData ? (
+                <View style={styles.inlineSkeletonRow}>
+                  <View style={styles.inlineSkeletonBar} />
+                </View>
+              ) : joinedSeriesId && seriesData ? (
+                <Text style={styles.cardMeta}>
+                  Chapter {Math.max(1, completeChapters)} •{" "}
+                  <Text style={styles.cardMetaAccent}>{progressPercent}% Complete</Text>
+                </Text>
+              ) : joinedSeriesId ? (
+                <Text style={styles.cardMeta}>Tap to open your series</Text>
+              ) : (
+                <Text style={styles.cardMeta}>Join a series to track your progress</Text>
+              )}
+
+              {joinedSeriesId && seriesData ? (
+                <View style={styles.progressTrack}>
+                  <View
+                    style={[
+                      styles.progressFill,
+                      { width: `${progressPercent}%` as `${number}%` },
+                    ]}
+                  />
+                </View>
+              ) : null}
             </View>
-            
-            <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={pallete.textgray} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <Path d="M9 18l6-6-6-6" />
+            <ChevronRight color="rgba(255,255,255,0.75)" />
+          </View>
+          {seriesData?.title ? <Text style={styles.journeySeries} numberOfLines={1}>{seriesData.title}</Text> : null}
+        </Pressable>
+
+        {/* Streak */}
+        <Pressable
+          onPress={() => navigation.navigate("DailyRewards")}
+          onLongPress={() => setShowStreakInfo(true)}
+          delayLongPress={400}
+          style={({ pressed }) => [styles.streakCard, pressed && styles.cardPressed]}
+        >
+          <View style={styles.streakIconWrap}>
+            <Svg width={36} height={36} viewBox="0 0 24 24" fill="none" stroke={AMBER} strokeWidth={1.8} strokeLinejoin="round">
+              <Path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
             </Svg>
+          </View>
+          <View style={styles.streakBody}>
+            <Text style={styles.streakLabel}>CURRENT STREAK</Text>
+            <View style={styles.streakNumbers}>
+              <Text style={styles.streakNumber}>{streak}</Text>
+              <Text style={styles.streakDays}>Days</Text>
+            </View>
+          </View>
+          <ChevronRight color="rgba(255,255,255,0.75)" />
+        </Pressable>
+
+        {/* Refer & Earn */}
+        <View style={styles.referCard}>
+          <View style={styles.referTop}>
+            <View style={styles.referIcon}>
+              <Svg width={24} height={24} viewBox="0 0 24 24" fill={ACCENT}>
+                <Path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM2 19.5c0-3 3.1-5 7-5s7 2 7 5V21H2v-1.5zM18.5 9h-1V7.5h-2V9h-1.5v2H15.5v1.5h2V11h1v-2z" />
+              </Svg>
+            </View>
+            <View style={styles.referBody}>
+              <Text style={styles.cardTitle}>Refer &amp; Earn</Text>
+              <Text style={styles.cardMeta}>Share your code with friends and earn rewards.</Text>
+            </View>
+            <Pressable
+              onPress={copyReferral}
+              style={({ pressed }) => [styles.copyBtn, pressed && { opacity: 0.75 }]}
+              hitSlop={6}
+            >
+              <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                <Rect x="9" y="9" width="12" height="12" rx="2.5" />
+                <Path d="M5 15V5a2 2 0 0 1 2-2h10" />
+              </Svg>
+              <Text style={styles.copyText}>Copy</Text>
+            </Pressable>
+          </View>
+
+          <Pressable onPress={copyReferral} style={styles.referCodeBox}>
+            <Text style={styles.referCodeLabel}>YOUR REFERRAL CODE</Text>
+            <Text style={styles.referCode} selectable>
+              {referralCode}
+            </Text>
           </Pressable>
         </View>
 
-        {/* Outside Log Out Button */}
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.logoutDirectBtn}
-            activeOpacity={0.8}
-            onPress={() => setShowLogoutSheet(true)}
-          >
-            <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <Path d="M10 3H6a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h4" />
-              <Polyline points="16 17 21 12 16 7" />
-              <Line x1="21" y1="12" x2="9" y2="12" />
-            </Svg>
-            <Text style={styles.logoutDirectBtnText}>Log Out</Text>
-          </TouchableOpacity>
+        {/* Rows */}
+        <View style={styles.actionsWrap}>
+          <ActionRow
+            icon={
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill={ACCENT}>
+                <Rect x="3" y="12" width="4" height="9" rx="1.2" />
+                <Rect x="10" y="8" width="4" height="13" rx="1.2" />
+                <Rect x="17" y="4" width="4" height="17" rx="1.2" />
+              </Svg>
+            }
+            label="My Activity"
+            onPress={() => navigation.navigate("RecentReads")}
+          />
+          <ActionRow
+            icon={
+              <Svg width={20} height={20} viewBox="0 0 24 24" fill={ACCENT}>
+                <Path d="M3 9h18v3H3zM5 12h14v9H5zM12 9v12M12 9c-2.8 0-4.5-1.3-4.5-3S9.2 3 12 6c2.8-3 4.5-1.3 4.5 0S14.8 9 12 9z" />
+              </Svg>
+            }
+            label="Refer & Win"
+            onPress={shareReferral}
+          />
         </View>
 
-        <Text style={styles.footer}>© 2026 Readapt · Version 1.0.2</Text>
+        {/* Log out */}
+        <Pressable
+          style={({ pressed }) => [styles.logoutBtn, pressed && { opacity: 0.85 }]}
+          onPress={() => setShowLogoutSheet(true)}
+        >
+          <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={DANGER} strokeWidth={2.1} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M10 3H6a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h4" />
+            <Polyline points="16 17 21 12 16 7" />
+            <Line x1="21" y1="12" x2="9" y2="12" />
+          </Svg>
+          <Text style={styles.logoutText}>Log Out</Text>
+        </Pressable>
+
+        <Text style={styles.footer}>© 2026 Readapt • Version {APP_VERSION}</Text>
       </ScrollView>
 
-      {/* Info Panels */}
+      {/* Photo preview */}
+      <Modal
+        visible={avatarPreviewVisible}
+        transparent
+        animationType="none"
+        statusBarTranslucent
+        navigationBarTranslucent
+        onRequestClose={closeAvatarPreview}
+      >
+        <TouchableOpacity style={styles.previewOverlay} activeOpacity={1} onPress={closeAvatarPreview}>
+          <Animated.View style={[styles.previewWrap, { transform: [{ scale: previewScale }], opacity: previewOpacity }]}>
+            <CachedImage uri={avatarUri(user, "lg")} label={user?.name} style={styles.previewImage} letterSize={90} />
+          </Animated.View>
+          <Text style={styles.previewHint}>Tap anywhere to close</Text>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Photo actions */}
+      <UpgradeSheet visible={photoMenuVisible} onClose={() => setPhotoMenuVisible(false)} title="Profile photo">
+        <View style={styles.sheetBody}>
+          <TouchableOpacity style={styles.sheetPrimary} activeOpacity={0.85} onPress={changePhoto}>
+            <Text style={styles.sheetPrimaryText}>Change photo</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.sheetSecondary}
+            activeOpacity={0.85}
+            onPress={() => {
+              setPhotoMenuVisible(false);
+              openAvatarPreview();
+            }}
+          >
+            <Text style={styles.sheetSecondaryText}>View photo</Text>
+          </TouchableOpacity>
+          <Text style={styles.sheetHint}>JPG, PNG, WebP or HEIC · max 10 MB</Text>
+        </View>
+      </UpgradeSheet>
+
+      {/* Streak help */}
       <UpgradeSheet visible={showStreakInfo} onClose={() => setShowStreakInfo(false)} title="How Streak Works?">
         <View style={styles.infoSheetBody}>
           <Text style={styles.panelDescription}>
-            <Text style={{ fontWeight: "700" }}>Read or listen</Text> to a chapter <Text style={{ fontWeight: "700" }}>every day</Text> and keep your <Text style={{ fontWeight: "700" }}>streak</Text> going! Keep learning for <Text style={{ fontWeight: "700" }}>7, 14, and 21 days</Text> in a row and <Text style={{ fontStyle: "italic" }}>unlock exciting rewards</Text> and surprises at every milestone.
-            {"\n\n"}<Text style={{ color: "#f59e0b", fontWeight: "700" }}>Are you ready?</Text>
+            <Text style={{ fontWeight: "700" }}>Read or listen</Text> to a chapter{" "}
+            <Text style={{ fontWeight: "700" }}>every day</Text> and keep your{" "}
+            <Text style={{ fontWeight: "700" }}>streak</Text> going! Keep learning for{" "}
+            <Text style={{ fontWeight: "700" }}>7, 14, and 21 days</Text> in a row and unlock rewards at
+            every milestone.
           </Text>
         </View>
       </UpgradeSheet>
 
-      <UpgradeSheet visible={showLevelInfo} onClose={() => setShowLevelInfo(false)} title="How Levels Works?">
+      {/* Level help */}
+      <UpgradeSheet visible={showLevelInfo} onClose={() => setShowLevelInfo(false)} title="How Levels Work?">
         <View style={styles.infoSheetBody}>
           <Text style={styles.panelDescription}>
-            Can you <Text style={{ fontWeight: "700" }}>reach the top</Text>? Your intelligence is your greatest weapon.
-            {"\n\n"}<Text style={{ color: "#f59e0b", fontWeight: "700" }}>• The Rule of Three:</Text> Answer <Text style={{ fontStyle: "italic" }}>3 questions correctly in a row</Text> to <Text style={{ fontWeight: "700" }}>Level Up</Text>.
-            {"\n\n"}<Text style={{ color: "#f59e0b", fontWeight: "700" }}>• High Stakes:</Text> A <Text style={{ fontStyle: "italic" }}>single incorrect answer</Text> triggers an <Text style={{ fontWeight: "700" }}>immediate Level Down</Text>.
+            Your intelligence is your greatest weapon.{"\n\n"}
+            <Text style={{ color: AMBER, fontWeight: "700" }}>• The Rule of Three:</Text> answer{" "}
+            <Text style={{ fontStyle: "italic" }}>3 questions correctly in a row</Text> to level up.
+            {"\n\n"}
+            <Text style={{ color: AMBER, fontWeight: "700" }}>• High Stakes:</Text> a single incorrect
+            answer triggers an immediate level down.
           </Text>
         </View>
       </UpgradeSheet>
 
-      <UpgradeSheet visible={showLogoutSheet} onClose={() => setShowLogoutSheet(false)} title="Are you sure want to LogOut">
-        <View style={styles.logoutSheetBody}>
-          <View style={styles.logoutActions}>
-            <TouchableOpacity style={[styles.logoutBtn, styles.logoutDismissBtn]} activeOpacity={0.8} onPress={() => setShowLogoutSheet(false)}><Text style={styles.logoutBtnText}>Dismiss</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.logoutBtn, styles.logoutConfirmBtn]} activeOpacity={0.8} onPress={() => { setShowLogoutSheet(false); handleLogout(); }}><Text style={styles.logoutBtnText}>Log Out</Text></TouchableOpacity>
+      {/* Logout confirm */}
+      <UpgradeSheet visible={showLogoutSheet} onClose={() => setShowLogoutSheet(false)} title="Are you sure you want to log out?">
+        <View style={styles.sheetBody}>
+          <View style={styles.sheetRow}>
+            <TouchableOpacity style={[styles.sheetBtn, styles.sheetCancel]} activeOpacity={0.85} onPress={() => setShowLogoutSheet(false)}>
+              <Text style={styles.sheetBtnText}>Stay</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.sheetBtn, styles.sheetDanger]} activeOpacity={0.85} onPress={handleLogout}>
+              <Text style={styles.sheetBtnText}>Log Out</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </UpgradeSheet>
 
-      <UpgradeSheet visible={showDeleteSheet} onClose={() => !deletingAccount && setShowDeleteSheet(false)} title="Delete Your Account?">
-        <View style={styles.logoutSheetBody}>
-          <Text style={styles.panelDescription}>
-            Your account will enter a <Text style={{ color: "#f59e0b", fontWeight: "700" }}>48-hour grace period</Text>.
-            {"\n\n"}• Streaks, progress, bookmarks, and downloads will be <Text style={{ color: "#ef4444", fontWeight: "700" }}>permanently deleted</Text>.
-            {"\n"}• Chapter comments will remain <Text style={{ color: "#00D2B4", fontWeight: "700" }}>anonymized</Text> to keep discussions intact.
-            {"\n"}• You can cancel anytime within 48 hours simply by logging back in or using the web portal.
-          </Text>
-          <View style={styles.logoutActions}>
-            <TouchableOpacity style={[styles.logoutBtn, styles.logoutDismissBtn]} activeOpacity={0.8} disabled={deletingAccount} onPress={() => setShowDeleteSheet(false)}><Text style={styles.logoutBtnText}>Keep Account</Text></TouchableOpacity>
-            <TouchableOpacity style={[styles.logoutBtn, styles.logoutConfirmBtn]} activeOpacity={0.8} disabled={deletingAccount} onPress={handleScheduleDeletion}>{deletingAccount ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.logoutBtnText}>Schedule Deletion</Text>}</TouchableOpacity>
-          </View>
-        </View>
-      </UpgradeSheet>
+      {/* Edit profile */}
+      <ProfileEditSheet
+        visible={editVisible}
+        onClose={() => setEditVisible(false)}
+        onChangePhoto={changePhoto}
+        isUploadingPhoto={uploadingPhoto}
+      />
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#050505", paddingTop: Platform.OS === "android" ? 45 : 55 },
-  scrollContent: { paddingBottom: 40 },
-  section: { marginBottom: 24, paddingHorizontal: 20 },
+  container: { flex: 1, backgroundColor: "#050505" },
+  centered: { alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
+  scrollContent: { paddingBottom: 36 },
 
-  // Top Header Bar with Settings
-  topHeaderBar: {
+  identityRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingBottom: 12,
+    paddingTop: 10,
+    paddingBottom: 4,
   },
-  topHeaderTitle: {
-    color: "#fff",
-    fontSize: 24,
-    fontWeight: "800",
-    letterSpacing: -0.5,
+  avatarBlock: { width: 112, height: 118, alignItems: "center", justifyContent: "flex-start" },
+  avatarPress: { borderRadius: 60 },
+  avatarRing: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    borderWidth: 2.5,
+    borderColor: ACCENT,
+    padding: 2,
+    backgroundColor: "#071512",
+    shadowColor: ACCENT,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    elevation: 10,
+    marginTop: 2,
   },
-  settingsIconBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.12)",
+  avatarImage: { width: "100%", height: "100%", borderRadius: 50 },
+  avatarBusy: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 50,
     alignItems: "center",
     justifyContent: "center",
   },
-
-  profileInfo: { flexDirection: "row", alignItems: "center", marginTop: 10, marginBottom: 24, paddingHorizontal: 20 },
-  avatarContainer: { width: 86, height: 86, alignItems: "center", justifyContent: "center", position: "relative" },
-  avatarPlaceholder: { width: 80, height: 80, borderRadius: 40, overflow: "hidden", backgroundColor: pallete.bgcard, borderWidth: 3, borderColor: pallete.accent, shadowColor: pallete.accent, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.35, shadowRadius: 15, elevation: 8, position: "relative" },
-  avatarImage: { width: "100%", height: "100%", resizeMode: "cover" },
-  avatarUploadBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0, 0, 0, 0.65)", alignItems: "center", justifyContent: "center" },
-  circularProgressContainer: { width: 44, height: 44, alignItems: "center", justifyContent: "center", position: "relative" },
-  circularProgressCenter: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
-  circularProgressText: { fontSize: 10, fontWeight: "700", color: "#FFFFFF", letterSpacing: -0.3, textAlign: "center" },
-  
-  avatarPreviewOverlay: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.88)", alignItems: "center", justifyContent: "center", paddingHorizontal: 20 },
-  avatarPreviewWrap: { width: PREVIEW_SIZE, height: PREVIEW_SIZE, borderRadius: PREVIEW_SIZE / 2, borderWidth: 4, borderColor: pallete.accent, backgroundColor: "#0d0d12", alignItems: "center", justifyContent: "center", overflow: "hidden", shadowColor: pallete.accent, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.55, shadowRadius: 28, elevation: 25 },
-  avatarPreviewImage: { width: "100%", height: "100%", borderRadius: PREVIEW_SIZE / 2 },
-  previewDismissHint: { color: "rgba(255, 255, 255, 0.55)", fontSize: 13, fontWeight: "500", letterSpacing: 0.3, marginTop: 24 },
-  
-  infoDetails: { marginLeft: 16, flex: 1 },
-  nameHeaderRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 },
-  userName: { fontSize: 20, fontWeight: "700", color: "#fff", marginBottom: 2 },
-  userHandle: { fontSize: 13, color: pallete.textgray, fontWeight: "500" },
-  settingsPillBtn: {
+  progressRing: { width: 46, height: 46, alignItems: "center", justifyContent: "center" },
+  progressRingCenter: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  progressRingText: { color: "#fff", fontSize: 10, fontWeight: "800" },
+  levelPill: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(56, 189, 248, 0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(56, 189, 248, 0.25)",
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
     gap: 4,
+    position: "absolute",
+    bottom: 2,
+    left: -4,
+    backgroundColor: "#0a0a0c",
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
   },
-  settingsPillText: {
-    color: pallete.accent,
-    fontSize: 11,
-    fontWeight: "700",
+  levelPillText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.2 },
+  cameraChip: {
+    position: "absolute",
+    right: 2,
+    top: 74,
+    width: 27,
+    height: 27,
+    borderRadius: 14,
+    backgroundColor: ACCENT,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#050505",
   },
-  badgesRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 4 },
-  levelBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
-  levelBadgeText: { color: "#050505", fontSize: 10, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.5 },
-  professionBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, backgroundColor: "rgba(56, 189, 248, 0.15)", borderWidth: 1, borderColor: "rgba(56, 189, 248, 0.3)" },
-  professionBadgeText: { color: "#38bdf8", fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
-  visibilityBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, backgroundColor: "rgba(255, 255, 255, 0.08)", borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.12)" },
-  visibilityBadgeText: { color: "#cbd5e1", fontSize: 10, fontWeight: "600", letterSpacing: 0.3 },
 
-  bioCard: { backgroundColor: pallete.bgcard, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 14, padding: 16 },
-  bioText: { color: "#e2e8f0", fontSize: 14, fontStyle: "italic", lineHeight: 21 },
-  interestsSection: { marginTop: 12 },
-  interestsHeader: { color: pallete.textgray, fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginBottom: 8 },
-  interestsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  interestChip: { backgroundColor: "rgba(56, 189, 248, 0.1)", borderWidth: 1, borderColor: "rgba(56, 189, 248, 0.25)", borderRadius: 20, paddingHorizontal: 12, paddingVertical: 5 },
-  interestChipText: { color: "#38bdf8", fontSize: 12, fontWeight: "600" },
+  identityText: { flex: 1, marginLeft: 14 },
+  nameRow: { flexDirection: "row", alignItems: "flex-start" },
+  userName: { color: "#fff", fontSize: 23, fontWeight: "800", letterSpacing: -0.4 },
+  userHandle: { color: "rgba(148,163,184,0.85)", fontSize: 14, fontWeight: "500", marginTop: 3 },
+  settingsBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 6,
+  },
+  badgesRow: { flexDirection: "row", alignItems: "center", marginTop: 12, flexWrap: "wrap", gap: 8 },
+  metaPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(0,210,180,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(0,210,180,0.28)",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  metaPillText: { color: "#7de9d8", fontSize: 11.5, fontWeight: "700" },
+  badgeDivider: { width: 1, height: 16, backgroundColor: "rgba(255,255,255,0.16)" },
 
-  progressCard: { backgroundColor: pallete.bgcard, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", borderRadius: 14, padding: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  progressContent: { flex: 1, marginRight: 16 },
-  progressTitle: { fontSize: 16, fontWeight: "600", color: "#fff", marginBottom: 6 },
-  progressMeta: { fontSize: 12, color: pallete.textgray, marginBottom: 10 },
-  accentText: { color: pallete.accent, fontWeight: "700" },
-  progressTrack: { width: "100%", height: 6, backgroundColor: "rgba(255,255,255,0.1)", borderRadius: 10, overflow: "hidden" },
-  progressFill: { height: "100%", borderRadius: 10, backgroundColor: pallete.accent },
+  offlineBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 20,
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: "rgba(245,158,11,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.28)",
+  },
+  offlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: AMBER, marginRight: 8 },
+  offlineText: { flex: 1, color: "#fcd34d", fontSize: 12, fontWeight: "600" },
+  offlineAction: { color: AMBER, fontSize: 12, fontWeight: "800" },
 
-  streakCard: { backgroundColor: "rgba(245, 158, 11, 0.1)", borderWidth: 1, borderColor: "rgba(245, 158, 11, 0.3)", borderRadius: 16, padding: 20, flexDirection: "row", alignItems: "center" },
-  streakVisual: { marginRight: 15 },
-  streakDetails: { flex: 1 },
-  streakLabel: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, color: "#f59e0b", marginBottom: 4 },
-  streakDayNumber: { flexDirection: "row", alignItems: "baseline", gap: 5 },
-  num: { fontSize: 44, fontWeight: "800", color: "#fff" },
-  day: { fontSize: 22, color: "#ccc", fontWeight: "600" },
+  bioWrap: { paddingHorizontal: 20, marginTop: 18, marginBottom: 18 },
+  bioText: { color: "rgba(226,232,240,0.92)", fontSize: 15, lineHeight: 23, fontStyle: "italic" },
+  bioPlaceholder: { color: "rgba(148,163,184,0.55)", fontSize: 14, fontStyle: "italic" },
+  interestsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
+  interestChip: {
+    backgroundColor: "rgba(56,189,248,0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(56,189,248,0.24)",
+    borderRadius: 999,
+    paddingHorizontal: 11,
+    paddingVertical: 4,
+  },
+  interestChipText: { color: "#7dd3fc", fontSize: 11.5, fontWeight: "600" },
 
-  logoutDirectBtn: {
+  journeyCard: {
+    marginHorizontal: 20,
+    marginBottom: 16,
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: "rgba(0,210,180,0.055)",
+    borderWidth: 1,
+    borderColor: "rgba(0,210,180,0.28)",
+  },
+  journeyTop: { flexDirection: "row", alignItems: "center" },
+  journeyIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,210,180,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 14,
+  },
+  journeyBody: { flex: 1, marginRight: 8 },
+  journeySeries: { color: "rgba(148,163,184,0.65)", fontSize: 11, marginTop: 10, fontStyle: "italic" },
+  inlineSkeletonRow: { height: 13, marginTop: 9, justifyContent: "center" },
+  inlineSkeletonBar: { width: "55%", height: 12, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.07)" },
+
+  cardTitle: { color: "#fff", fontSize: 15.5, fontWeight: "700", letterSpacing: -0.2 },
+  cardMeta: { color: "rgba(203,213,225,0.75)", fontSize: 12.5, marginTop: 5, fontWeight: "500" },
+  cardMetaAccent: { color: ACCENT, fontWeight: "800" },
+  progressTrack: {
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    marginTop: 11,
+    overflow: "hidden",
+  },
+  progressFill: { height: "100%", borderRadius: 4, backgroundColor: ACCENT },
+
+  streakCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginHorizontal: 20,
+    marginBottom: 16,
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: "rgba(120,63,4,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.45)",
+  },
+  streakIconWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(245,158,11,0.12)",
+    marginRight: 14,
+  },
+  streakBody: { flex: 1 },
+  streakLabel: { color: AMBER, fontSize: 10.5, fontWeight: "800", letterSpacing: 1.2 },
+  streakNumbers: { flexDirection: "row", alignItems: "baseline", gap: 6, marginTop: 2 },
+  streakNumber: { color: "#fff", fontSize: 38, fontWeight: "800", letterSpacing: -1 },
+  streakDays: { color: "rgba(203,213,225,0.75)", fontSize: 20, fontWeight: "700" },
+
+  referCard: {
+    marginHorizontal: 20,
+    marginBottom: 16,
+    borderRadius: 18,
+    padding: 16,
+    backgroundColor: "rgba(0,210,180,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(0,210,180,0.30)",
+  },
+  referTop: { flexDirection: "row", alignItems: "center" },
+  referIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,210,180,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  referBody: { flex: 1, marginRight: 8 },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: ACCENT,
+    borderRadius: 999,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+  },
+  copyText: { color: "#04211d", fontSize: 12, fontWeight: "800" },
+  referCodeBox: {
+    marginTop: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,210,180,0.09)",
+    borderWidth: 1,
+    borderColor: "rgba(0,210,180,0.18)",
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  referCodeLabel: { color: "rgba(148,163,184,0.85)", fontSize: 9.5, fontWeight: "800", letterSpacing: 1.4 },
+  referCode: { color: "#fff", fontSize: 21, fontWeight: "800", letterSpacing: 1.6, marginTop: 4 },
+
+  actionsWrap: { marginHorizontal: 20, marginTop: 4, gap: 12 },
+  actionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    height: 62,
+    paddingHorizontal: 18,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.07)",
+  },
+  actionRowPressed: { backgroundColor: "rgba(255,255,255,0.075)" },
+  actionIcon: { width: 26, alignItems: "flex-start" },
+  actionLabel: { flex: 1, color: "#f1f5f9", fontSize: 15.5, fontWeight: "600", marginLeft: 10 },
+
+  logoutBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(239, 68, 68, 0.25)",
-    borderRadius: 14,
-    paddingVertical: 16,
     gap: 10,
+    marginHorizontal: 20,
+    marginTop: 22,
+    paddingVertical: 15,
+    borderRadius: 999,
+    backgroundColor: "rgba(120,20,20,0.35)",
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.55)",
   },
-  logoutDirectBtnText: {
-    color: "#ef4444",
-    fontSize: 16,
-    fontWeight: "700",
+  logoutText: { color: "#f87171", fontSize: 15.5, fontWeight: "700" },
+  footer: { color: "rgba(148,163,184,0.55)", fontSize: 11, textAlign: "center", marginTop: 18, fontWeight: "500" },
+
+  cardPressed: { opacity: 0.92, transform: [{ scale: 0.995 }] },
+
+  previewOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 20,
   },
+  previewWrap: {
+    width: PREVIEW_SIZE,
+    height: PREVIEW_SIZE,
+    borderRadius: PREVIEW_SIZE / 2,
+    borderWidth: 3,
+    borderColor: ACCENT,
+    overflow: "hidden",
+    backgroundColor: "#0d0d12",
+    shadowColor: ACCENT,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 26,
+    elevation: 24,
+  },
+  previewImage: { width: "100%", height: "100%", borderRadius: PREVIEW_SIZE / 2 },
+  previewHint: { color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: "500", marginTop: 22 },
 
-  footer: { fontSize: 11, color: "#555", textAlign: "center", paddingVertical: 15, fontWeight: "500" },
+  sheetBody: { paddingHorizontal: 20, paddingTop: 6 },
+  sheetPrimary: {
+    backgroundColor: ACCENT,
+    borderRadius: 15,
+    paddingVertical: 15,
+    alignItems: "center",
+    marginTop: 10,
+  },
+  sheetPrimaryText: { color: "#04211d", fontSize: 15, fontWeight: "800" },
+  sheetSecondary: {
+    backgroundColor: "rgba(255,255,255,0.07)",
+    borderRadius: 15,
+    paddingVertical: 15,
+    alignItems: "center",
+    marginTop: 10,
+  },
+  sheetSecondaryText: { color: "#e2e8f0", fontSize: 15, fontWeight: "700" },
+  sheetHint: { color: "rgba(148,163,184,0.65)", fontSize: 11.5, textAlign: "center", marginTop: 12 },
+  sheetRow: { flexDirection: "row", gap: 14, marginTop: 16, paddingHorizontal: 4 },
+  sheetBtn: { flex: 1, paddingVertical: 14, borderRadius: 13, alignItems: "center" },
+  sheetCancel: { backgroundColor: "rgba(255,255,255,0.08)" },
+  sheetDanger: { backgroundColor: DANGER },
+  sheetBtnText: { color: "#fff", fontSize: 14.5, fontWeight: "700" },
 
+  infoSheetBody: { paddingHorizontal: 24, paddingTop: 8 },
   panelDescription: { fontSize: 14, lineHeight: 22, color: "#d1d5db", textAlign: "center" },
-  infoSheetBody: { paddingHorizontal: 24 },
-  logoutSheetBody: { paddingHorizontal: 24 },
-  logoutActions: { flexDirection: "row", gap: 16, marginTop: 24, paddingHorizontal: 12 },
-  logoutBtn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: "center" },
-  logoutDismissBtn: { backgroundColor: "rgba(255,255,255,0.08)", borderWidth: 1, borderColor: "rgba(255,255,255,0.05)" },
-  logoutConfirmBtn: { backgroundColor: "#ef4444" },
-  logoutBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" }
+
+  errorCard: {
+    width: "100%",
+    backgroundColor: pallete.bgcard,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+    padding: 22,
+    alignItems: "center",
+  },
+  errorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
+  errorText: { color: "rgba(148,163,184,0.85)", fontSize: 13, lineHeight: 20, textAlign: "center", marginTop: 8 },
+  retryBtn: {
+    marginTop: 18,
+    backgroundColor: ACCENT,
+    borderRadius: 12,
+    paddingHorizontal: 26,
+    paddingVertical: 11,
+  },
+  retryText: { color: "#04211d", fontSize: 14, fontWeight: "800" },
 });
 
 export default ProfileScreen;

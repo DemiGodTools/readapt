@@ -9,9 +9,11 @@ import {
   FlatList,
   Animated,
   ScrollView,
-  Platform
+  Platform,
+  RefreshControl,
+  DeviceEventEmitter,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CachedImage, { isRenderableUrl } from '../../components/props/CachedImage';
 import Svg, { Path } from 'react-native-svg';
@@ -357,41 +359,79 @@ export default function TrendingBooks() {
         .slice(0, 15);
     }
 
-    // Atomic update: only re-render if data has fundamentally changed
-    setData(prev => {
-      const sameBooks = prev.books.length === topBooks.length && prev.books[0]?._id === topBooks[0]?._id;
-      const sameSeries = prev.series.length === topSeries.length && prev.series[0]?._id === topSeries[0]?._id;
-      if (sameBooks && sameSeries && prev.books.length > 0) return prev;
-      return { books: topBooks, series: topSeries };
-    });
+    setData({ books: topBooks, series: topSeries });
     setLoading(false);
   }, [isStrictlyStandalone]);
 
-  useEffect(() => {
-    let isMounted = true;
-    const fetchTrendingData = async () => {
-      try {
+  const [refreshing, setRefreshing] = useState(false);
+  const isFetchingRef = useRef(false);
+
+  const fetchTrendingData = useCallback(async (isPull = false) => {
+    if (isFetchingRef.current && !isPull) return;
+    isFetchingRef.current = true;
+    if (isPull) setRefreshing(true);
+
+    try {
+      if (!isPull) {
         const rawCache = await AsyncStorage.getItem("cached_feed_data");
-        if (rawCache && isMounted) {
-          processPayload(JSON.parse(rawCache));
+        if (rawCache) {
+          try {
+            processPayload(JSON.parse(rawCache));
+          } catch {}
         }
-        
-        const headers: Record<string, string> = {};
-        if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-        const res = await api.get("/feed", { headers });
-        const payload = res?.data?.data ?? res?.data;
-        if (isMounted) {
-          processPayload(payload);
-        }
-      } catch (error) {
-        console.error("Error fetching top trending:", error);
-        if (isMounted) setLoading(false);
       }
-    };
-    
-    fetchTrendingData();
-    return () => { isMounted = false; };
+      
+      const headers: Record<string, string> = {};
+      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+      const res = await api.get("/feed", { headers, timeout: 25000 });
+      const payload = res?.data?.data ?? res?.data;
+      if (payload) {
+        processPayload(payload);
+        AsyncStorage.setItem("cached_feed_data", JSON.stringify(payload)).catch(() => {});
+      }
+    } catch (error: any) {
+      // Graceful fallback: disk cache remains active; avoid loud uncaught crash overlays
+      if (error?.message !== "canceled") {
+        console.warn("Top trending sync notice:", error?.message || "Network request failed");
+      }
+    } finally {
+      isFetchingRef.current = false;
+      setLoading(false);
+      setRefreshing(false);
+    }
   }, [accessToken, processPayload]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchTrendingData();
+    }, [fetchTrendingData])
+  );
+
+  // Real-time optimistic update when user likes/unlikes a chapter
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("like-updated", ({ chapterId, liked, count }: any) => {
+      setData((prev) => {
+        let changed = false;
+        const newBooks = prev.books.map((b: any) => {
+          if (String(b._id || b.id) === String(chapterId)) {
+            changed = true;
+            return {
+              ...b,
+              likes: count !== undefined ? count : (b.likes || 0) + (liked ? 1 : -1),
+              isLiked: liked,
+            };
+          }
+          return b;
+        });
+        return changed ? { ...prev, books: newBooks } : prev;
+      });
+    });
+    return () => sub.remove();
+  }, []);
+
+  const onRefresh = useCallback(() => {
+    fetchTrendingData(true);
+  }, [fetchTrendingData]);
 
   const handleBookPress = useCallback((bookId: string) => {
     (navigation as any).navigate("ReadBook", { bookId });
@@ -520,6 +560,14 @@ export default function TrendingBooks() {
                 ItemSeparatorComponent={ListSeparator}
                 contentContainerStyle={styles.listContent}
                 showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    tintColor={pallete.accent}
+                    colors={[pallete.accent]}
+                  />
+                }
                 
                 // ⚡ FLATLIST PERFORMANCE OPTIMIZATIONS:
                 initialNumToRender={6}          // Only render initial viewport items on launch
@@ -548,6 +596,14 @@ export default function TrendingBooks() {
                 ItemSeparatorComponent={ListSeparator}
                 contentContainerStyle={styles.listContent}
                 showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    tintColor={pallete.accent}
+                    colors={[pallete.accent]}
+                  />
+                }
                 
                 // ⚡ FLATLIST PERFORMANCE OPTIMIZATIONS:
                 initialNumToRender={6}

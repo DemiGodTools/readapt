@@ -16,7 +16,7 @@ export const getRecentReadsKey = (userId?: string): string => {
  * 1. Reads from fast local cache (scoped to userId).
  * 2. If empty and userId is present, fetches from MongoDB cloud sync (/api/user/recent-reads).
  */
-export const getRecentReads = async (userId?: string): Promise<IRecentRead[]> => {
+export const getRecentReads = async (userId?: string, forceSync = false): Promise<IRecentRead[]> => {
   try {
     if (!userId) {
       const guestRaw = await AsyncStorage.getItem("recentReads_guest");
@@ -24,20 +24,22 @@ export const getRecentReads = async (userId?: string): Promise<IRecentRead[]> =>
     }
 
     const key = getRecentReadsKey(userId);
-    const raw = await AsyncStorage.getItem(key);
+    let localReads: IRecentRead[] = [];
 
+    const raw = await AsyncStorage.getItem(key);
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          localReads = parsed;
+          if (!forceSync) return localReads;
         }
       } catch {}
     }
 
-    // If local cache is empty for this user, fetch from cloud MongoDB
+    // If local cache is empty or forceSync requested, fetch from cloud MongoDB
     try {
-      const res = await api.get("/recent-reads");
+      const res = await api.get("/recent-reads", { timeout: 8000 });
       if (res.data?.success && Array.isArray(res.data?.data)) {
         const serverReads: IRecentRead[] = res.data.data;
         if (serverReads.length > 0) {
@@ -47,7 +49,7 @@ export const getRecentReads = async (userId?: string): Promise<IRecentRead[]> =>
       }
     } catch {}
 
-    return [];
+    return localReads;
   } catch (error) {
     console.warn("Failed to load user recent reads:", error);
     return [];

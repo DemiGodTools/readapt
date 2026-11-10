@@ -12,7 +12,7 @@ import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IUser } from "../../types/User";
 import { notifyAuthChange } from "../../hooks/useAuth";
-import { api } from "../../lib/api";
+import { api, setApiUserEmail } from "../../lib/api";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { useGlobalAudioActions } from "../../hooks/useGlobalAudio";
 
@@ -71,7 +71,9 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   const [token, setToken] = useState<string>("");
   const [loadingUser, setLoadingUser] = useState(true);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasHydratedCacheRef = useRef(false);
   const { isConnected } = useNetworkStatus();
+  const wasConnectedRef = useRef(isConnected);
 
   // Static actions reference — prevents audio state updates from re-rendering the entire app!
   const audioActions = useGlobalAudioActions();
@@ -135,6 +137,23 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
   const getUser = useCallback(
     async (tokenOverride?: string) => {
+      // Paint the last known profile immediately on cold start instead of
+      // leaving the avatar/name blank until /get-self answers.
+      if (!hasHydratedCacheRef.current) {
+        hasHydratedCacheRef.current = true;
+        try {
+          const cachedProfile = await AsyncStorage.getItem(USER_CACHE_KEY);
+          if (cachedProfile) {
+            const parsed = JSON.parse(cachedProfile);
+            if (parsed) {
+              setUser((prev) => prev ?? parsed);
+              if (parsed.email) setApiUserEmail(parsed.email);
+              setLoadingUser(false);
+            }
+          }
+        } catch {}
+      }
+
       try {
         const activeToken = tokenOverride || (await resolveToken());
 
@@ -153,6 +172,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
         if (data?.data) {
           setUser(data.data);
+          setApiUserEmail(data.data.email);
           AsyncStorage.setItem(
             USER_CACHE_KEY,
             JSON.stringify(data.data)
@@ -169,7 +189,11 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
       } catch {
         try {
           const cached = await AsyncStorage.getItem(USER_CACHE_KEY);
-          if (cached) setUser(JSON.parse(cached));
+          if (cached) {
+            const parsed = JSON.parse(cached);
+            setUser(parsed);
+            if (parsed?.email) setApiUserEmail(parsed.email);
+          }
         } catch {}
       } finally {
         setLoadingUser(false);
@@ -183,6 +207,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
       setToken(newToken);
       if (newUser) {
         setUser(newUser);
+        if (newUser.email) setApiUserEmail(newUser.email);
         AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(newUser)).catch(
           () => {}
         );
@@ -236,6 +261,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
     setUser(null);
     setToken("");
+    setApiUserEmail(null);
     try {
       audioActions.removeAllTracks();
     } catch {}
@@ -245,7 +271,15 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     getUser();
-  }, [getUser, isConnected]);
+  }, [getUser]);
+
+  // Only refresh when connectivity actually comes back, not on every toggle
+  // (the old effect fired /get-self twice during a normal cold start).
+  useEffect(() => {
+    const wasConnected = wasConnectedRef.current;
+    wasConnectedRef.current = isConnected;
+    if (isConnected && !wasConnected) getUser();
+  }, [isConnected, getUser]);
 
   // Presence Heartbeat & AppState Listener (Instant logged in detection)
   useEffect(() => {

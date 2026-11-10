@@ -40,6 +40,7 @@ const SeriesCard = ({
 
   const isFramework = type === "framework";
   const isCompact = cardWidth !== undefined && cardWidth < 220;
+  const isSubtleMini = cardWidth !== undefined && cardWidth < 140;
 
   const handlePressIn = () => {
     Animated.spring(scaleAnim, {
@@ -64,7 +65,11 @@ const SeriesCard = ({
   const renderTitle = () => {
     return (
       <Text
-        style={[styles.seriesTitle, isCompact && styles.compactTitle]}
+        style={[
+          styles.seriesTitle,
+          isCompact && styles.compactTitle,
+          isSubtleMini && styles.miniTitle,
+        ]}
         numberOfLines={2}>
         {title}
       </Text>
@@ -82,6 +87,7 @@ const SeriesCard = ({
           width: cardWidth,
           minWidth: cardWidth,
           marginRight: 0,
+          paddingTop: isSubtleMini ? 10 : 16,
         },
         style,
       ]}>
@@ -93,6 +99,7 @@ const SeriesCard = ({
             styles.stackLayer1,
             isFramework && { backgroundColor: "#38bdf8" },
             isCompact && styles.compactStack1,
+            isSubtleMini && styles.miniStack1,
           ]}
         />
         <View
@@ -100,23 +107,33 @@ const SeriesCard = ({
             styles.stackLayer2,
             isFramework && { backgroundColor: "#38bdf8" },
             isCompact && styles.compactStack2,
+            isSubtleMini && styles.miniStack2,
           ]}
         />
 
         {/* Main Card */}
-        <View style={styles.seriesMain}>
+        <View
+          style={[
+            styles.seriesMain,
+            isSubtleMini && { borderRadius: 10 },
+          ]}>
           <CachedImage
             uri={cover}
             label={title}
             style={styles.seriesImage}
-            letterSize={44}
+            letterSize={isSubtleMini ? 26 : 44}
           />
 
           {/* Badge */}
-          <View style={[styles.seriesBadge, isCompact && styles.compactBadge]}>
+          <View
+            style={[
+              styles.seriesBadge,
+              isCompact && styles.compactBadge,
+              isSubtleMini && styles.miniBadge,
+            ]}>
             <Svg
-              width={isCompact ? 12 : 16}
-              height={isCompact ? 12 : 16}
+              width={isSubtleMini ? 10 : isCompact ? 12 : 16}
+              height={isSubtleMini ? 10 : isCompact ? 12 : 16}
               viewBox="0 0 24 24"
               fill="none"
               stroke={isFramework ? "#38bdf8" : pallete.accent}
@@ -130,24 +147,42 @@ const SeriesCard = ({
               <Line x1="3" y1="12" x2="3.01" y2="12" />
               <Line x1="3" y1="18" x2="3.01" y2="18" />
             </Svg>
-            <Text style={[styles.badgeText, isCompact && styles.compactBadgeText]}>
+            <Text
+              style={[
+                styles.badgeText,
+                isCompact && styles.compactBadgeText,
+                isSubtleMini && styles.miniBadgeText,
+              ]}>
               {chapterCount} {isFramework ? "LVL" : "CH"}
             </Text>
           </View>
         </View>
 
         {/* Info */}
-        <View style={[styles.seriesInfo, isCompact && styles.compactInfo]}>
+        <View
+          style={[
+            styles.seriesInfo,
+            isCompact && styles.compactInfo,
+            isSubtleMini && styles.miniInfo,
+          ]}>
           {renderTitle()}
           <View style={styles.seriesMeta}>
             <Text
-              style={[styles.metaText, isCompact && styles.compactMetaText]}
+              style={[
+                styles.metaText,
+                isCompact && styles.compactMetaText,
+                isSubtleMini && styles.miniMetaText,
+              ]}
               numberOfLines={1}>
               {author}
             </Text>
-            <View style={styles.dot} />
+            <View style={[styles.dot, isSubtleMini && styles.miniDot]} />
             <Text
-              style={[styles.metaText, isCompact && styles.compactMetaText]}
+              style={[
+                styles.metaText,
+                isCompact && styles.compactMetaText,
+                isSubtleMini && styles.miniMetaText,
+              ]}
               numberOfLines={1}>
               {isFramework ? "Framework" : "Series"}
             </Text>
@@ -187,6 +222,11 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 8,
   },
+  miniStack1: {
+    top: -6,
+    height: 18,
+    borderRadius: 6,
+  },
   stackLayer2: {
     position: "absolute",
     top: -6,
@@ -203,6 +243,11 @@ const styles = StyleSheet.create({
     top: -4,
     height: 14,
     borderRadius: 8,
+  },
+  miniStack2: {
+    top: -3,
+    height: 10,
+    borderRadius: 6,
   },
   seriesMain: {
     aspectRatio: 16 / 9,
@@ -244,6 +289,13 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 7,
   },
+  miniBadge: {
+    right: 4,
+    bottom: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 5,
+  },
   badgeText: {
     color: "#fff",
     marginLeft: 6,
@@ -254,11 +306,19 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginLeft: 4,
   },
+  miniBadgeText: {
+    fontSize: 9,
+    marginLeft: 3,
+    fontWeight: "600",
+  },
   seriesInfo: {
     marginTop: 16,
   },
   compactInfo: {
     marginTop: 10,
+  },
+  miniInfo: {
+    marginTop: 6,
   },
   seriesTitle: {
     fontSize: 17,
@@ -271,6 +331,12 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     marginBottom: 4,
   },
+  miniTitle: {
+    fontSize: 11,
+    lineHeight: 14,
+    marginBottom: 3,
+    fontWeight: "600",
+  },
   seriesMeta: {
     flexDirection: "row",
     alignItems: "center",
@@ -282,6 +348,10 @@ const styles = StyleSheet.create({
   compactMetaText: {
     fontSize: 11,
   },
+  miniMetaText: {
+    fontSize: 9.5,
+    color: "rgba(255,255,255,0.5)",
+  },
   dot: {
     width: 4,
     height: 4,
@@ -289,6 +359,11 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginHorizontal: 8,
     opacity: 0.5,
+  },
+  miniDot: {
+    width: 3,
+    height: 3,
+    marginHorizontal: 4,
   },
 });
 

@@ -63,6 +63,15 @@ let seekDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let userScrubbing = false; 
 let pendingInitialSeekSec = 0;
 
+// Lock-screen / notification-center (system transport controls)
+const LOCK_SCREEN_OPTIONS = { showSeekForward: true, showSeekBackward: true };
+let lockScreenTrackId = "";
+let lockScreenOwnerPlayer: AudioPlayer | null = null;
+
+// Window during which a play() we just issued is trusted over the native state.
+// Outside it, play/pause coming from the lock screen or notification must win.
+let playIntentLockUntil = 0;
+
 let globalStatus: AudioStatus = {
   isLoaded: false,
   playing: false,
@@ -87,6 +96,100 @@ export const resolveBestStreamUrl = (track?: IChapter | null): string => {
   if (typeof rawHls === "string" && rawHls.trim().length > 0) return rawHls.trim();
   const rawMedia = track.media || DEFAULT_FALLBACK_URL;
   return rawMedia;
+};
+
+interface LockScreenMetadata {
+  title: string;
+  artist: string;
+  albumTitle: string;
+  artworkUrl?: string;
+}
+
+const buildLockScreenMetadata = (track?: IChapter | null): LockScreenMetadata | null => {
+  if (!track) return null;
+
+  const rawSeries = (track as any).series;
+  const seriesObj = rawSeries && typeof rawSeries === "object" ? rawSeries : null;
+  const seriesTitle = seriesObj ? String(seriesObj.title || "").trim() : "";
+  const seriesAuthor = seriesObj ? String(seriesObj.author || "").trim() : "";
+
+  const ownCover = typeof track.cover === "string" ? track.cover.trim() : "";
+  const seriesCover =
+    seriesObj && typeof seriesObj.cover === "string" ? seriesObj.cover.trim() : "";
+
+  const tocTitle = Array.isArray((track as any).toc)
+    ? String((track as any).toc[0]?.title || "").trim()
+    : "";
+
+  const title = String(track.title || "").trim() || tocTitle || seriesTitle || "Readapt Audio";
+  const artist = String(track.author || "").trim() || seriesAuthor || "Readapt";
+
+  const metadata: LockScreenMetadata = {
+    title,
+    artist,
+    albumTitle: seriesTitle || "Readapt Audio",
+  };
+
+  // Only remote artwork is supported by the native now-playing APIs
+  const cover = [ownCover, seriesCover].find((c) => /^https?:\/\//i.test(c));
+  if (cover) metadata.artworkUrl = cover;
+
+  return metadata;
+};
+
+/**
+ * Publishes the current track to the OS media session so Android shows its stock
+ * MediaStyle playback notification and iOS fills the lock screen / control center
+ * with the default system transport controls (play/pause + skip).
+ */
+const syncLockScreenControls = (
+  player: AudioPlayer | null,
+  track: IChapter | null,
+  force = false
+) => {
+  if (!player || !track) return;
+  const trackId = getTrackId(track);
+  if (!trackId) return;
+  if (!force && lockScreenOwnerPlayer === player && lockScreenTrackId === trackId) return;
+
+  const metadata = buildLockScreenMetadata(track);
+  if (!metadata) return;
+
+  try {
+    if (typeof (player as any).setActiveForLockScreen === "function") {
+      (player as any).setActiveForLockScreen(true, metadata, LOCK_SCREEN_OPTIONS);
+      lockScreenTrackId = trackId;
+      lockScreenOwnerPlayer = player;
+    }
+  } catch (_) {}
+};
+
+const refreshLockScreenMetadata = (track?: IChapter | null) => {
+  const owner = lockScreenOwnerPlayer || globalPlayer;
+  if (!track || !owner) return;
+  if (lockScreenTrackId !== getTrackId(track)) return;
+
+  const metadata = buildLockScreenMetadata(track);
+  if (!metadata) return;
+
+  try {
+    if (typeof (owner as any).updateLockScreenMetadata === "function") {
+      (owner as any).updateLockScreenMetadata(metadata);
+    }
+  } catch (_) {}
+};
+
+const clearLockScreenControls = (player?: AudioPlayer | null) => {
+  const target = player || globalPlayer;
+  const isOwner = !target || target === lockScreenOwnerPlayer;
+  lockScreenTrackId = "";
+  lockScreenOwnerPlayer = null;
+  if (!target || !isOwner) return;
+  try {
+    if (typeof (target as any).clearLockScreenControls === "function") {
+      (target as any).clearLockScreenControls();
+    }
+  } catch (_) {}
 };
 
 export const detectStreamProtocol = (uri: string): StreamProtocol => {
@@ -210,6 +313,7 @@ const enforceHotPoolLimit = (excludeTrackId?: string) => {
       hotPlayerPool.delete(oldest.trackId);
       try {
         oldest.subscription?.remove();
+        if (lockScreenTrackId === oldest.trackId) clearLockScreenControls(oldest.player);
         oldest.player.pause();
         if (typeof (oldest.player as any).release === 'function') (oldest.player as any).release();
         else oldest.player.remove();
@@ -231,6 +335,16 @@ const attachStatusListener = (entry: HotPlayerEntry) => {
     const rawPosSec = typeof st.currentTime === "number" && !isNaN(st.currentTime) ? st.currentTime : 0;
     const rawDurSec = typeof st.duration === "number" && !isNaN(st.duration) && st.duration > 0 ? st.duration : entry.durationSec;
 
+    // Keep the system media session attached to the active player/track so the
+    // notification center + lock screen controls stay available while playing.
+    if (isLoadedBool) syncLockScreenControls(entry.player, globalCurrentTrack);
+
+    // Once native playback actually started, stop treating our play() request as fresh.
+    if (isLoadedBool && nativePlaying && now < playIntentLockUntil) {
+      playIntentLockUntil = Math.min(playIntentLockUntil, now + 1200);
+    }
+    const intentIsFresh = now < playIntentLockUntil;
+
     // ELIMINATE FLICKERING: Trust the globalPlayIntent (user intent) as the source of truth.
     // Only yield to native false if playback naturally finishes.
     if (st.didJustFinish) {
@@ -248,7 +362,25 @@ const attachStatusListener = (entry: HotPlayerEntry) => {
       } catch (_) {}
     }
 
-    if (globalPlayIntent && isLoadedBool && !nativePlaying && !bufferingBool && !userScrubbing) {
+    // Play/pause that did not come from the app (notification, lock screen, headset
+    // button) owns the state now; adopt it instead of resuming against the user.
+    if (
+      isLoadedBool &&
+      !bufferingBool &&
+      !intentIsFresh &&
+      globalPlayIntent !== nativePlaying
+    ) {
+      globalPlayIntent = nativePlaying;
+    }
+
+    if (
+      globalPlayIntent &&
+      isLoadedBool &&
+      !nativePlaying &&
+      !bufferingBool &&
+      !userScrubbing &&
+      intentIsFresh
+    ) {
       try { entry.player.play(); } catch (_) {}
     }
 
@@ -286,9 +418,11 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
 
   if (globalPlayer && getTrackId(globalCurrentTrack) === trackId && hotPlayerPool.has(trackId)) {
     globalPlayIntent = true;
+    playIntentLockUntil = Date.now() + 2000;
     updateGlobalStatus({ playing: true }, true);
     if (initialPositionSec > 0) void seekToInternal(initialPositionSec);
     try { globalPlayer.play(); } catch (_) {}
+    syncLockScreenControls(globalPlayer, globalCurrentTrack);
     return;
   }
 
@@ -300,6 +434,7 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
 
   globalCurrentTrack = track;
   globalPlayIntent = true;
+  playIntentLockUntil = Date.now() + 8000;
   
   updateGlobalStatus({
     isLoaded: false,
@@ -344,6 +479,9 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
 
     pendingInitialSeekSec = initialPositionSec;
     player.play();
+
+    // Hand the track to the OS so the system notification / lock screen controls appear
+    syncLockScreenControls(player, track, true);
     
     if (!isCached && protocol === "range-chunk") {
       AudioCacheManager.cacheTrackInBackground(trackId, remoteUrl).catch(()=>{});
@@ -361,6 +499,7 @@ const togglePlayInternal = () => {
   }
   if (!globalPlayer) return;
   globalPlayIntent = !globalStatus.playing;
+  playIntentLockUntil = Date.now() + (globalPlayIntent ? 2000 : 600);
   updateGlobalStatus({ playing: globalPlayIntent }, true);
   try {
     if (globalPlayIntent) globalPlayer.play();
@@ -421,6 +560,7 @@ const removeAllTracksInternal = () => {
   
   if (active) {
     try {
+      clearLockScreenControls(active);
       active.pause();
       if (typeof (active as any).release === 'function') (active as any).release();
       else active.remove();
@@ -440,6 +580,7 @@ const removeAllTracksInternal = () => {
 export const updateCurrentTrackMetadata = (track: Partial<IChapter>) => {
   if (globalCurrentTrack && (!track._id || String(track._id) === String(globalCurrentTrack._id))) {
     globalCurrentTrack = { ...globalCurrentTrack, ...track };
+    refreshLockScreenMetadata(globalCurrentTrack);
     notifyStateListeners();
   }
 };
@@ -447,7 +588,12 @@ export const updateCurrentTrackMetadata = (track: Partial<IChapter>) => {
 export const useGlobalAudioActions = () => {
   const playTrack = useCallback((t: IChapter, sec?: number) => playTrackInternal(t, sec), []);
   const togglePlay = useCallback(() => togglePlayInternal(), []);
-  const pause = useCallback(() => { globalPlayIntent = false; globalPlayer?.pause(); updateGlobalStatus({ playing: false }, true); }, []);
+  const pause = useCallback(() => {
+    globalPlayIntent = false;
+    playIntentLockUntil = Date.now() + 600;
+    globalPlayer?.pause();
+    updateGlobalStatus({ playing: false }, true);
+  }, []);
   const seekTo = useCallback((sec: number) => seekToInternal(sec), []);
   const setPlaybackRate = useCallback((rate: number) => setPlaybackRateInternal(rate), []);
   const setVolume = useCallback((vol: number) => setVolumeDirect(vol), []);

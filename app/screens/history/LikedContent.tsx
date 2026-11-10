@@ -1,7 +1,6 @@
-import React, { useMemo } from "react";
-import { View, Dimensions } from "react-native";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
+import { View, Dimensions, FlatList, StyleSheet, Text, RefreshControl, DeviceEventEmitter } from "react-native";
 import ContentCard from "../../../components/props/ContentCard";
-import { FlatList, StyleSheet, Text } from "react-native";
 import { useUser } from "../../../hooks/useUser";
 import pallete from "../../../lib/Colors";
 
@@ -11,6 +10,9 @@ import { Path, Svg } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Offline from "../../../components/state/Offline";
 import { useNetworkStatus } from "../../../hooks/useNetwork";
+import { useFocusEffect } from "@react-navigation/native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { api } from "../../../lib/api";
 
 type Props = NativeStackScreenProps<RootStackParamList, "LikedContent">;
 
@@ -23,19 +25,119 @@ const CARD_WIDTH = Math.floor(
 );
 
 const LikedContent = ({ route, navigation }: Props) => {
-  const { user, loadingUser } = useUser();
+  const { user, loadingUser, reload } = useUser();
   const insets = useSafeAreaInsets();
   const { isConnected } = useNetworkStatus();
+  const [refreshing, setRefreshing] = useState(false);
+  const [resolvedLikes, setResolvedLikes] = useState<any[]>([]);
+
+  // 1. Refresh user on screen focus so liked changes always reflect immediately
+  useFocusEffect(
+    useCallback(() => {
+      reload().catch(() => {});
+    }, [reload])
+  );
+
+  // 2. Real-time update when like event fires across the app
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("like-updated", () => {
+      reload().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [reload]);
+
+  // 3. Robust resolution: handles populated objects, string IDs, and filters nulls
+  useEffect(() => {
+    let isMounted = true;
+    const resolveUnpopulated = async () => {
+      if (!user?.likes || !Array.isArray(user.likes)) {
+        if (isMounted) setResolvedLikes([]);
+        return;
+      }
+
+      const stringIds: string[] = [];
+      const populatedItems: any[] = [];
+
+      user.likes.forEach((item: any) => {
+        if (!item) return;
+        if (typeof item === "string") {
+          stringIds.push(item);
+        } else if (typeof item === "object" && (item._id || item.id)) {
+          populatedItems.push(item);
+        }
+      });
+
+      if (stringIds.length === 0) {
+        if (isMounted) setResolvedLikes(populatedItems);
+        return;
+      }
+
+      // Check feed cache for matching chapter objects
+      let feedPool: any[] = [];
+      try {
+        const rawFeed = await AsyncStorage.getItem("cached_feed_data");
+        if (rawFeed) {
+          const parsed = JSON.parse(rawFeed);
+          feedPool = [
+            ...(parsed.trending || []),
+            ...(parsed.personalized || []),
+            ...(parsed.all || []),
+          ];
+        }
+      } catch {}
+
+      const foundFromFeed: any[] = [];
+      const missingIds: string[] = [];
+
+      stringIds.forEach((id) => {
+        const found = feedPool.find((b: any) => String(b?._id || b?.id) === String(id));
+        if (found) foundFromFeed.push(found);
+        else missingIds.push(id);
+      });
+
+      if (missingIds.length > 0) {
+        try {
+          const res = await api.post("/chapter/by-IDs", { ids: missingIds });
+          if (res?.data?.success && Array.isArray(res.data.data)) {
+            foundFromFeed.push(...res.data.data);
+          }
+        } catch {}
+      }
+
+      const allCombined = [...populatedItems, ...foundFromFeed];
+      const uniqueMap = new Map<string, any>();
+      allCombined.forEach((it) => {
+        const id = String(it._id || it.id);
+        if (!uniqueMap.has(id)) uniqueMap.set(id, it);
+      });
+
+      if (isMounted) {
+        setResolvedLikes(Array.from(uniqueMap.values()));
+      }
+    };
+
+    resolveUnpopulated();
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.likes]);
 
   const sortedLikes = useMemo(() => {
-    if (!user?.likes || !Array.isArray(user.likes)) return [];
-    return [...user.likes].sort((a: any, b: any) => {
+    return [...resolvedLikes].sort((a: any, b: any) => {
       const timeB = new Date(b?.updatedAt || b?.likedAt || b?.createdAt || 0).getTime();
       const timeA = new Date(a?.updatedAt || a?.likedAt || a?.createdAt || 0).getTime();
       if (timeB !== timeA) return timeB - timeA;
       return 0;
     });
-  }, [user?.likes]);
+  }, [resolvedLikes]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await reload();
+    } catch {}
+    setRefreshing(false);
+  }, [reload]);
 
   const renderContentCard = ({ item, index }: { item: any; index: number }) => {
     return (
@@ -68,6 +170,14 @@ const LikedContent = ({ route, navigation }: Props) => {
           renderItem={renderContentCard}
           numColumns={NUM_COLUMNS}
           scrollEnabled={true}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={pallete.accent || "#01796F"}
+              colors={[pallete.accent || "#01796F"]}
+            />
+          }
           columnWrapperStyle={{
             gap: GRID_GAP,
           }}
