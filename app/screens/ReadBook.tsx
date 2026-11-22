@@ -100,6 +100,7 @@ import { useDownloads } from "../../hooks/useDownloads";
 import NextChapter from "../../components/props/NextChapter";
 import FrameworkLevelProgress from "../../components/props/FrameworkLevelProgress";
 import LevelCompletionModal from "../../components/props/LevelCompletionModal";
+import { useReadingTracker } from "../../hooks/useReadingTracker";
 import ContentCard from "../../components/props/ContentCard";
 import {
   checkIsDownloaded,
@@ -895,8 +896,25 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const { accessToken } = useAuth();
   const { showToast } = useToast();
   const { user, reload } = useUser();
-  const { downloadChapter } = useDownloads();
+  const { downloadChapter, downloadStatuses } = useDownloads();
   const { removeAllTracks } = useGlobalAudio();
+
+  const currentBookDownloadStatus = activeChapterId ? downloadStatuses[activeChapterId] : undefined;
+  useEffect(() => {
+    if (currentBookDownloadStatus) {
+      if (currentBookDownloadStatus.status === "downloading") {
+        setIsDownloading(true);
+        setDownloadProgress(currentBookDownloadStatus.percent / 100);
+      } else if (currentBookDownloadStatus.status === "completed") {
+        setIsDownloading(false);
+        setIsDownloadedRecently(true);
+        setDownloadProgress(1);
+      } else if (currentBookDownloadStatus.status === "failed") {
+        setIsDownloading(false);
+        setDownloadProgress(0);
+      }
+    }
+  }, [currentBookDownloadStatus]);
 
   const initialBookParam = (route.params as any)?.initialBookData || null;
   const [showQnaNoticeToast, setShowQnaNoticeToast] = useState(
@@ -1019,6 +1037,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       navigation.navigate("Home" as any);
     }
   }, [navigation, clearAllSecurityTimers]);
+
+  // Reading time tracking (streak is calculated in background & celebrated on exit/home)
+  const { onUserActivity, onPageChange } = useReadingTracker({
+    isActive: !isAccessBlocked,
+    isAudio: false,
+  });
 
   const handleUpgradeFromPopup = useCallback(() => {
     if (hasEjectedRef.current) return;
@@ -1983,7 +2007,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 ...mergedBook,
                 likes: freshData.likes ?? prev?.likes ?? 0,
               }));
-              setQuestions(freshQuestions.length > 0 ? freshQuestions : null);
+              setQuestions(freshQuestions);
+              setIsQnaLoading(false);
             }
 
             // If media url changed or wasn't set, mount streaming immediately & background cache
@@ -2057,16 +2082,16 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   const handleOpenQnaModal = useCallback(async () => {
     setShowQnaPanel(true);
-    if ((!questions || questions.length === 0) && activeChapterId) {
+    if (questions === null && activeChapterId) {
       setIsQnaLoading(true);
       try {
         const resolved = await resolveQuestionsFallback(
           activeChapterId,
           book?.questions
         );
-        if (resolved && resolved.length > 0) setQuestions(resolved);
-        else if (isConnected) loadChapterAndPdfFast(activeChapterId);
+        setQuestions(resolved);
       } catch (e) {
+        setQuestions([]);
       } finally {
         setIsQnaLoading(false);
       }
@@ -2074,10 +2099,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   }, [
     questions,
     activeChapterId,
-    isConnected,
     book?.questions,
     resolveQuestionsFallback,
-    loadChapterAndPdfFast,
   ]);
 
   useEffect(() => {
@@ -2116,17 +2139,31 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       max: incomingPage + BUFFER_LOOKAHEAD_PAGES,
     };
     const initialValidQs = extractValidQuestions(initialBookParam?.questions);
-    setQuestions(initialValidQs.length > 0 ? initialValidQs : null);
+    setQuestions(initialValidQs.length > 0 ? initialValidQs : initialBookParam ? [] : null);
     setShowQnaPanel(false);
     setSolvedIds(new Set());
+    setUserAnswersMap({});
     if (activeChapterId) {
-      AsyncStorage.getItem(`@chapter_solved_qna_${activeChapterId}`)
-        .then((raw) => {
-          if (raw) {
-            const arr = JSON.parse(raw);
-            if (Array.isArray(arr) && arr.length > 0) {
-              setSolvedIds(new Set(arr));
-            }
+      AsyncStorage.multiGet([
+        `@chapter_solved_qna_${activeChapterId}`,
+        `@chapter_qna_answers_${activeChapterId}`,
+      ])
+        .then(([solvedRaw, answersRaw]) => {
+          if (solvedRaw?.[1]) {
+            try {
+              const arr = JSON.parse(solvedRaw[1]);
+              if (Array.isArray(arr) && arr.length > 0) {
+                setSolvedIds(new Set(arr.map(String)));
+              }
+            } catch {}
+          }
+          if (answersRaw?.[1]) {
+            try {
+              const answersObj = JSON.parse(answersRaw[1]);
+              if (answersObj && typeof answersObj === "object") {
+                setUserAnswersMap(answersObj);
+              }
+            } catch {}
           }
         })
         .catch(() => {});
@@ -2305,8 +2342,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       };
 
       if (!isAccessBlocked) queueDebouncedSaveProgress(newPage, numberOfPages);
+      onPageChange(newPage);
     },
-    [queueDebouncedSaveProgress, isAccessBlocked]
+    [queueDebouncedSaveProgress, isAccessBlocked, onPageChange]
   );
 
   const onPdfLoadComplete = useCallback(
@@ -2333,19 +2371,21 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   );
 
   const onPdfPageSingleTap = useCallback(() => {
+    onUserActivity();
     if (!isAnnotating && !isTocOpen && !showDetailsPanel) {
       setShowPdfControls((prev) => !prev);
     }
-  }, [isAnnotating, isTocOpen, showDetailsPanel]);
+  }, [isAnnotating, isTocOpen, showDetailsPanel, onUserActivity]);
 
   const onPdfScaleChanged = useCallback(
     (currentScale: number) => {
+      onUserActivity();
       if (!isAnnotating) {
         const shouldShow = currentScale <= 1.05;
         setShowPdfControls((prev) => (prev === shouldShow ? prev : shouldShow));
       }
     },
-    [isAnnotating]
+    [isAnnotating, onUserActivity]
   );
 
   const onPdfError = useCallback(
@@ -2455,7 +2495,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         const list = await getRecentReads(user?._id || user?.userId);
         if (!list || cancelled || list.length === 0) return;
         const entry = (Array.isArray(list) ? list : []).find(
-          (item: any) => String(item?.content?._id) === String(activeChapterId)
+          (item: any) => String(item?.content?._id || (item?.content as any)?.id || item?.content) === String(activeChapterId)
         );
         const savedPage = parseInt(String(entry?.readtill || "0"), 10);
         if (!cancelled && Number.isFinite(savedPage) && savedPage > 1) {
@@ -2664,41 +2704,42 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     try {
       setIsDownloading(true);
       setDownloadProgress(0);
-      const targetDir = FileSystem.documentDirectory;
-      const cleanUrl = normalizeMediaUrl(book.media);
-      const urlHash = getFastHash(cleanUrl);
-      const downloadPath = `${targetDir}fastpdf_${book._id}_${urlHash}.pdf`;
-      const downloadResumable = FileSystem.createDownloadResumable(
-        cleanUrl,
-        downloadPath,
-        {},
-        (downloadProgressData) => {
-          const progressVal =
-            downloadProgressData.totalBytesWritten /
-            downloadProgressData.totalBytesExpectedToWrite;
-          setDownloadProgress(Math.min(1, Math.max(0, progressVal)));
-        }
-      );
-      const result = await downloadResumable.downloadAsync();
-      if (result?.uri) {
-        ramPdfUriMap.set(book._id, result.uri);
-        ramUrlMap.set(book._id, cleanUrl);
-        await AsyncStorage.multiSet([
-          [`fast_pdf_uri_${book._id}`, result.uri],
-          [`fast_pdf_url_${book._id}`, cleanUrl],
-        ]);
-        setPdfPath(result.uri);
-        downloadChapter(book as any);
+
+      // Resolve best media source (local cache, pdfPath, or book.media)
+      const targetMedia =
+        (pdfPath && pdfPath.startsWith("file://") ? pdfPath : "") ||
+        book.media ||
+        pdfPath ||
+        ramPdfUriMap.get(book._id) ||
+        "";
+
+      const bookToDownload: any = {
+        ...book,
+        _id: String(activeChapterId || book._id),
+        media: targetMedia,
+        questions: Array.isArray(questions) && questions.length > 0 ? questions : (book.questions || []),
+        likes: typeof book.likes === "number" ? book.likes : 0,
+        comments: typeof book.comments === "number" ? book.comments : 0,
+      };
+
+      const uri = await downloadChapter(bookToDownload);
+      if (uri) {
+        ramPdfUriMap.set(book._id, uri);
+        setPdfPath(uri);
         setIsDownloading(false);
         setIsDownloadedRecently(true);
+        showToast({ title: "Chapter downloaded" });
         setTimeout(() => {
           setIsDownloadedRecently(false);
           setDownloadProgress(0);
-        }, 1200);
+        }, 1500);
       } else {
-        throw new Error("Download URI missing");
+        setIsDownloading(false);
+        setDownloadProgress(0);
+        showToast({ title: "Failed to download chapter" });
       }
     } catch (e) {
+      console.error("PDF download error:", e);
       setIsDownloading(false);
       setDownloadProgress(0);
       showToast({ title: "Failed to download chapter" });
@@ -4012,19 +4053,27 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                                   ? book.qnaComments.length
                                   : 0
                               }
+                              initialAnswer={userAnswersMap[String(item._id)]}
                               onCommentClick={() => {
                                 setCommentedQueId(item._id);
                                 setShowQnaComments(true);
                               }}
                               onAttempted={(isCorrect: boolean, selectedIndex?: number) => {
                                 const qId = String(item._id);
-                                setUserAnswersMap((prev) => ({
-                                  ...prev,
-                                  [qId]: {
-                                    selectedIndex: selectedIndex !== undefined ? selectedIndex : 0,
-                                    isCorrect,
-                                  },
-                                }));
+                                setUserAnswersMap((prev) => {
+                                  const updatedMap = {
+                                    ...prev,
+                                    [qId]: {
+                                      selectedIndex: selectedIndex !== undefined ? selectedIndex : 0,
+                                      isCorrect,
+                                    },
+                                  };
+                                  AsyncStorage.setItem(
+                                    `@chapter_qna_answers_${activeChapterId}`,
+                                    JSON.stringify(updatedMap)
+                                  ).catch(() => {});
+                                  return updatedMap;
+                                });
                                 setSolvedIds((prev) => {
                                   const next = new Set(prev);
                                   next.add(qId);
@@ -4032,7 +4081,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                                     `@chapter_solved_qna_${activeChapterId}`,
                                     JSON.stringify(Array.from(next))
                                   ).catch(() => {});
-                                  if (questions && questions.length > 0 && next.size >= questions.length) {
+                                  // Industrial grade: strict validation that ALL chapter questions are attempted
+                                  const allCompleted =
+                                    Array.isArray(questions) &&
+                                    questions.length > 0 &&
+                                    questions.every((q) => q?._id && next.has(String(q._id)));
+                                  if (allCompleted) {
                                     markChapterQnaCompleted(activeChapterId);
                                     setTimeout(() => {
                                       setShowCompletionModal(true);
@@ -4067,13 +4121,21 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             <CommentsDrawer
               visible={showQnaComments}
               reload={() => loadChapterAndPdfFast(activeChapterId)}
-              onClose={() => setShowQnaComments(false)}
-              chapterId={activeChapterId}
+              onClose={() => {
+                setShowQnaComments(false);
+                setCommentedQueId("");
+              }}
+              chapterId={String(book?._id || activeChapterId || "").trim()}
               initialComments={
                 Array.isArray(book?.qnaComments)
                   ? (book?.qnaComments as any)
                   : []
               }
+              onCommentsUpdated={(updatedComments) => {
+                setBook((prev) =>
+                  prev ? { ...prev, qnaComments: updatedComments as any } : prev
+                );
+              }}
               isQuestion={true}
             />
           </Modal>
@@ -4112,10 +4174,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             visible={showComments}
             reload={() => loadChapterAndPdfFast(activeChapterId)}
             onClose={() => setShowComments(false)}
-            chapterId={activeChapterId}
+            chapterId={String(book?._id || activeChapterId || "").trim()}
             initialComments={
               Array.isArray(book?.comments) ? (book?.comments as any) : []
             }
+            onCommentsUpdated={(updatedComments) => {
+              setBook((prev) =>
+                prev ? { ...prev, comments: updatedComments as any } : prev
+              );
+            }}
             isQuestion={false}
           />
 

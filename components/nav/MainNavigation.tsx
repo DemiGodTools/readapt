@@ -21,6 +21,8 @@ import SubCategoryOverview from "../../app/screens/SubCategoryOverview";
 import ProfileCreation from "../../app/screens/ProfileCreation"; 
 import SearchScreen from "../../app/screens/SearchScreen"; 
 import SettingsScreen from "../../app/screens/SettingsScreen"; 
+import ReferralCodeScreen from "../../app/screens/ReferralCodeScreen";
+import ReferAndEarnScreen from "../../app/screens/ReferAndEarnScreen"; 
 import { useUser } from "../../hooks/useUser";
 import AudioControls from "../props/AudioControls";
 import { useToast } from "../../hooks/useToast";
@@ -44,6 +46,8 @@ export type RootStackParamList = {
   DailyRewards: undefined;
   ProfileCreation: undefined; 
   Settings: undefined; 
+  ReferralCodeScreen?: { isTestMode?: boolean };
+  ReferAndEarn: undefined;
   SubCategoryOverview: {
     subCategoryId: string;
     categoryId?: string;
@@ -219,6 +223,24 @@ export default function MainNavigation() {
           <Stack.Screen 
             name="Settings"
             component={SettingsScreen}
+            options={{
+              headerShown: false,
+              cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
+            }}
+          />
+
+          <Stack.Screen 
+            name="ReferralCodeScreen"
+            component={ReferralCodeScreen}
+            options={{
+              headerShown: false,
+              cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
+            }}
+          />
+
+          <Stack.Screen 
+            name="ReferAndEarn"
+            component={ReferAndEarnScreen}
             options={{
               headerShown: false,
               cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,

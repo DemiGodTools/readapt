@@ -271,6 +271,14 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     getUser();
+
+    const authSub = DeviceEventEmitter.addListener("AUTH_STATE_CHANGED", () => {
+      getUser();
+    });
+
+    return () => {
+      authSub.remove();
+    };
   }, [getUser]);
 
   // Only refresh when connectivity actually comes back, not on every toggle

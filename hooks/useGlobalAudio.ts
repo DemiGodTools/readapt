@@ -62,6 +62,8 @@ let seekLockUntil = 0;
 let seekDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let userScrubbing = false; 
 let pendingInitialSeekSec = 0;
+let targetSeekPosition: number | null = null;
+let targetSeekTimestamp = 0;
 
 // Lock-screen / notification-center (system transport controls)
 const LOCK_SCREEN_OPTIONS = { showSeekForward: true, showSeekBackward: true };
@@ -204,8 +206,11 @@ export const detectStreamProtocol = (uri: string): StreamProtocol => {
 // UI Thread Communication
 export const setUserScrubbingActive = (active: boolean) => {
   userScrubbing = active;
-  if (active) seekLockUntil = Date.now() + 86400000; 
-  else seekLockUntil = Date.now() + 800;
+  if (active) {
+    seekLockUntil = Date.now() + 86400000;
+  } else {
+    seekLockUntil = Date.now() + 2500;
+  }
 };
 
 export const parseAnyDurationToSec = (val: any): number => {
@@ -357,17 +362,40 @@ const attachStatusListener = (entry: HotPlayerEntry) => {
     if (isLoadedBool && pendingInitialSeekSec > 0) {
       const seekTarget = pendingInitialSeekSec;
       pendingInitialSeekSec = 0;
+      targetSeekPosition = seekTarget;
+      targetSeekTimestamp = now;
+      seekLockUntil = now + 4000;
+      playIntentLockUntil = now + 6000;
       try {
         void entry.player.seekTo(seekTarget);
+        if (globalPlayIntent) {
+          void entry.player.play();
+        }
       } catch (_) {}
     }
 
+    // Check if target seek has arrived at destination
+    if (targetSeekPosition !== null) {
+      const timeDiff = Math.abs(rawPosSec - targetSeekPosition);
+      if (timeDiff < 1.5 || (now - targetSeekTimestamp > 4500)) {
+        targetSeekPosition = null;
+        seekLockUntil = now + 400;
+        if (globalPlayIntent && isLoadedBool && !nativePlaying) {
+          try { entry.player.play(); } catch (_) {}
+        }
+      }
+    }
+
+    const isSeekingInProgress = targetSeekPosition !== null || userScrubbing || now < seekLockUntil;
+
     // Play/pause that did not come from the app (notification, lock screen, headset
     // button) owns the state now; adopt it instead of resuming against the user.
+    // ONLY adopt when seek/scrub is not in progress!
     if (
       isLoadedBool &&
       !bufferingBool &&
       !intentIsFresh &&
+      !isSeekingInProgress &&
       globalPlayIntent !== nativePlaying
     ) {
       globalPlayIntent = nativePlaying;
@@ -379,14 +407,16 @@ const attachStatusListener = (entry: HotPlayerEntry) => {
       !nativePlaying &&
       !bufferingBool &&
       !userScrubbing &&
-      intentIsFresh
+      (intentIsFresh || isSeekingInProgress)
     ) {
       try { entry.player.play(); } catch (_) {}
     }
 
     // Ignore native time updates if user is scrubbing or recently triggered a seek
     let resolvedTime = rawPosSec;
-    if (now < seekLockUntil || userScrubbing) {
+    if (targetSeekPosition !== null) {
+      resolvedTime = targetSeekPosition;
+    } else if (now < seekLockUntil || userScrubbing) {
       resolvedTime = globalStatus.currentTime;
     }
 
@@ -416,6 +446,7 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
   const remoteUrl = resolveBestStreamUrl(track);
   const protocol = detectStreamProtocol(remoteUrl);
 
+  // If already playing this track on globalPlayer, just resume or seek
   if (globalPlayer && getTrackId(globalCurrentTrack) === trackId && hotPlayerPool.has(trackId)) {
     globalPlayIntent = true;
     playIntentLockUntil = Date.now() + 2000;
@@ -426,10 +457,60 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     return;
   }
 
-  const loadToken = ++currentLoadToken;
+  // ⚡ Complete isolation: pause the old player and clear previous lock-screen controls immediately
   if (globalPlayer) {
-    try { globalPlayer.pause(); } catch (_) {}
+    try {
+      clearLockScreenControls(globalPlayer);
+      globalPlayer.pause();
+    } catch (_) {}
   }
+
+  // ⚡ Warm Player Reuse: If track already has an active player in pool, activate it instantly
+  const existingWarmEntry = hotPlayerPool.get(trackId);
+  if (existingWarmEntry && existingWarmEntry.player) {
+    globalPlayer = existingWarmEntry.player;
+    globalCurrentTrack = track;
+    globalPlayIntent = true;
+    playIntentLockUntil = Date.now() + 6000;
+    existingWarmEntry.lastUsedAt = Date.now();
+    applyRateToPlayer(globalPlayer, globalPlaybackRate);
+    applyVolumeToPlayer(globalPlayer, globalVolume);
+    attachStatusListener(existingWarmEntry);
+
+    updateGlobalStatus({
+      isLoaded: true,
+      playing: true,
+      currentTime: initialPositionSec,
+      duration: existingWarmEntry.durationSec || 0,
+      isBuffering: false,
+      playbackRate: globalPlaybackRate,
+      volume: globalVolume,
+      protocol: existingWarmEntry.protocol,
+      error: null,
+    }, true);
+
+    if (initialPositionSec > 0) {
+      pendingInitialSeekSec = initialPositionSec;
+      void seekToInternal(initialPositionSec);
+    }
+    try { globalPlayer.play(); } catch (_) {}
+    syncLockScreenControls(globalPlayer, globalCurrentTrack, true);
+    return;
+  }
+
+  // Clean up any stale unlinked player entry for this trackId
+  if (hotPlayerPool.has(trackId)) {
+    const oldEntry = hotPlayerPool.get(trackId);
+    try {
+      oldEntry?.subscription?.remove();
+      oldEntry?.player.pause();
+      if (typeof (oldEntry?.player as any).release === "function") (oldEntry?.player as any).release();
+      else oldEntry?.player.remove();
+    } catch (_) {}
+    hotPlayerPool.delete(trackId);
+  }
+
+  const loadToken = ++currentLoadToken;
   void ensureAudioSession();
 
   globalCurrentTrack = track;
@@ -484,7 +565,13 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     syncLockScreenControls(player, track, true);
     
     if (!isCached && protocol === "range-chunk") {
-      AudioCacheManager.cacheTrackInBackground(trackId, remoteUrl).catch(()=>{});
+      AudioCacheManager.cacheTrackInBackground(trackId, remoteUrl)
+        .then(() => {
+          if (globalCurrentTrack && getTrackId(globalCurrentTrack) === trackId) {
+            updateGlobalStatus({ isCached: true }, true);
+          }
+        })
+        .catch(() => {});
     }
   } catch (err: any) {
     globalPlayIntent = false;
@@ -512,9 +599,13 @@ const seekToInternal = (seconds: number) => {
   const maxDur = globalStatus.duration > 0 ? globalStatus.duration : Number.MAX_SAFE_INTEGER;
   const clamped = Math.max(0, Math.min(seconds, maxDur));
 
+  targetSeekPosition = clamped;
+  targetSeekTimestamp = Date.now();
+  seekLockUntil = Date.now() + 5000;
+  playIntentLockUntil = Date.now() + 8000;
+
   // Optimistic UI Update immediately so UI slider moves instantaneously
-  seekLockUntil = Date.now() + 600;
-  updateGlobalStatus({ currentTime: clamped }, false);
+  updateGlobalStatus({ currentTime: clamped, isBuffering: true }, false);
 
   // Debounce the native seek to bundle rapid clicks/scrubs
   if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
@@ -527,7 +618,7 @@ const seekToInternal = (seconds: number) => {
         }
       }
     } catch (_) {}
-  }, 70);
+  }, 50);
 };
 
 const setPlaybackRateInternal = (rate: number) => {

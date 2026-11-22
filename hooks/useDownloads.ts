@@ -4,6 +4,7 @@ import ReactNativeBlobUtil from 'react-native-blob-util';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { IChapter } from '../types/Chapter';
 import * as FileSystem from 'expo-file-system/legacy';
+import { api } from '../lib/api';
 
 export interface DownloadedChapter extends IChapter {
   localUri: string;
@@ -155,25 +156,54 @@ export const useDownloads = () => {
       activeDownloadsMap.set(chapterId, activeItem);
       notifyActiveDownloadListeners();
 
-      const fileExtension =
-        chapter.media
-          ?.split('?')[0]
-          .split('.')
-          .pop()
-          ?.toLowerCase() ||
-        (chapter.type === 'audio' ? 'mp3' : 'pdf');
-
       const targetDir = FileSystem.documentDirectory;
       if (!targetDir) {
         throw new Error('Document directory is unavailable');
       }
 
+      const fileExtension =
+        (chapter.media || (chapter as any).content?.media || '')
+          .split('?')[0]
+          .split('.')
+          .pop()
+          ?.toLowerCase() ||
+        (chapter.type === 'audio' ? 'mp3' : 'pdf');
+
       const localPath = `${targetDir}${chapterId}.${fileExtension}`;
+
+      // ⚡ FAST-TRACK: Check if already cached locally or source is already on disk
+      const rawMedia = String(chapter.media || (chapter as any).content?.media || '').trim();
+      const isSourceLocal = rawMedia.startsWith('file://');
+
+      let existingCacheUri = '';
+      if (!isSourceLocal && (chapter.type === 'pdf' || !chapter.type)) {
+        try {
+          const cachedFastUri = await AsyncStorage.getItem(`fast_pdf_uri_${chapterId}`);
+          if (cachedFastUri && cachedFastUri.startsWith('file://')) {
+            const checkFast = await FileSystem.getInfoAsync(cachedFastUri);
+            if (checkFast.exists && (checkFast.size ?? 0) > 512) {
+              existingCacheUri = checkFast.uri;
+            }
+          }
+        } catch {}
+      }
+
+      if (isSourceLocal || existingCacheUri) {
+        const sourcePath = isSourceLocal ? rawMedia : existingCacheUri;
+        try {
+          const sourceInfo = await FileSystem.getInfoAsync(sourcePath);
+          if (sourceInfo.exists && (sourceInfo.size ?? 0) > 512) {
+            if (sourceInfo.uri !== localPath) {
+              await FileSystem.copyAsync({ from: sourceInfo.uri, to: localPath }).catch(() => {});
+            }
+          }
+        } catch (_) {}
+      }
 
       // Check whether already downloaded on disk
       const fileInfo = await FileSystem.getInfoAsync(localPath);
 
-      if (fileInfo.exists) {
+      if (fileInfo.exists && (fileInfo.size ?? 0) > 512) {
         const size = 'size' in fileInfo ? Number(fileInfo.size || 0) : 0;
         const newEntry: DownloadedChapter = {
           ...chapter,
@@ -185,7 +215,7 @@ export const useDownloads = () => {
 
         const jsonValue = await AsyncStorage.getItem(userKey);
         const existing: DownloadedChapter[] = jsonValue ? JSON.parse(jsonValue) : [];
-        const updated = [newEntry, ...existing.filter((item) => item._id !== chapterId)];
+        const updated = [newEntry, ...existing.filter((item) => String(item._id) !== String(chapterId))];
 
         await AsyncStorage.setItem(userKey, JSON.stringify(updated));
         setDownloads(updated);
@@ -204,41 +234,67 @@ export const useDownloads = () => {
         return fileInfo.uri;
       }
 
-      // Create resumable download with progress tracking
-      const downloadResumable = FileSystem.createDownloadResumable(
-        chapter.media,
-        localPath,
-        {},
-        (downloadProgress) => {
-          const written = downloadProgress.totalBytesWritten;
-          const total = downloadProgress.totalBytesExpectedToWrite;
-          const pct = total > 0 ? Math.min(100, Math.round((written / total) * 100)) : 0;
-
-          const item = activeDownloadsMap.get(chapterId);
-          if (item) {
-            item.percent = pct;
-            item.bytesWritten = written;
-            item.totalBytes = total;
-            notifyActiveDownloadListeners();
+      // Resolve valid remote download URL
+      let downloadUrl = rawMedia;
+      if (!downloadUrl || !downloadUrl.startsWith('http')) {
+        try {
+          const res = await api.get(`/chapter/${chapterId}`, { timeout: 7000 });
+          if (res.data?.data?.media) {
+            downloadUrl = res.data.data.media;
+          } else if (res.data?.media) {
+            downloadUrl = res.data.media;
           }
-        }
-      );
+        } catch {}
+      }
 
-      const result = await downloadResumable.downloadAsync();
-      if (!result?.uri) {
+      if (!downloadUrl || !downloadUrl.startsWith('http')) {
+        throw new Error('Valid download media URL not found');
+      }
+
+      // Create resumable download with progress tracking, falling back to downloadAsync
+      let finalDownloadedUri: string | null = null;
+      try {
+        const downloadResumable = FileSystem.createDownloadResumable(
+          downloadUrl,
+          localPath,
+          {},
+          (downloadProgress) => {
+            const written = downloadProgress.totalBytesWritten;
+            const total = downloadProgress.totalBytesExpectedToWrite;
+            const pct = total > 0 ? Math.min(100, Math.round((written / total) * 100)) : (written > 0 ? 50 : 0);
+
+            const item = activeDownloadsMap.get(chapterId);
+            if (item) {
+              item.percent = pct;
+              item.bytesWritten = written;
+              item.totalBytes = total > 0 ? total : written;
+              notifyActiveDownloadListeners();
+            }
+          }
+        );
+
+        const result = await downloadResumable.downloadAsync();
+        finalDownloadedUri = result?.uri || null;
+      } catch (resumableError) {
+        console.warn('createDownloadResumable failed, trying downloadAsync fallback:', resumableError);
+        const fallbackRes = await FileSystem.downloadAsync(downloadUrl, localPath);
+        finalDownloadedUri = fallbackRes?.uri || null;
+      }
+
+      if (!finalDownloadedUri) {
         throw new Error('Download completed but URI is missing');
       }
 
-      const downloadedInfo = await FileSystem.getInfoAsync(result.uri);
-      if (!downloadedInfo.exists) {
-        throw new Error('Downloaded file does not exist');
+      const downloadedInfo = await FileSystem.getInfoAsync(finalDownloadedUri);
+      if (!downloadedInfo.exists || (downloadedInfo.size ?? 0) === 0) {
+        throw new Error('Downloaded file does not exist or is empty');
       }
 
       const fileSize = 'size' in downloadedInfo ? Number(downloadedInfo.size || 0) : 0;
       const fileSizeFormatted = formatFileSize(fileSize);
       const newEntry: DownloadedChapter = {
         ...chapter,
-        localUri: result.uri,
+        localUri: finalDownloadedUri,
         dateAdded: new Date().toISOString(),
         fileSize: fileSizeFormatted,
         userId: activeUid,
@@ -246,7 +302,7 @@ export const useDownloads = () => {
 
       const jsonValue = await AsyncStorage.getItem(userKey);
       const existing: DownloadedChapter[] = jsonValue ? JSON.parse(jsonValue) : [];
-      const updated = [newEntry, ...existing.filter((item) => item._id !== chapterId)];
+      const updated = [newEntry, ...existing.filter((item) => String(item._id) !== String(chapterId))];
 
       await AsyncStorage.setItem(userKey, JSON.stringify(updated));
       setDownloads(updated);
@@ -255,14 +311,14 @@ export const useDownloads = () => {
       activeItem.status = 'completed';
       notifyActiveDownloadListeners();
       DeviceEventEmitter.emit('DOWNLOADS_CHANGED');
-      DeviceEventEmitter.emit('DOWNLOAD_COMPLETED', { chapter, uri: result.uri });
+      DeviceEventEmitter.emit('DOWNLOAD_COMPLETED', { chapter, uri: finalDownloadedUri });
 
       setTimeout(() => {
         activeDownloadsMap.delete(chapterId);
         notifyActiveDownloadListeners();
       }, 1200);
 
-      return result.uri;
+      return finalDownloadedUri;
     } catch (error: any) {
       console.error('Download error:', error);
       const item = activeDownloadsMap.get(chapterId);
@@ -286,16 +342,19 @@ export const useDownloads = () => {
       const activeUid = await getActiveUserId();
       const userKey = await getUserDownloadsKey(activeUid);
 
-      const itemToDelete = downloads.find((item) => item._id === id);
+      const itemToDelete = downloads.find((item) => String(item._id) === String(id));
       if (itemToDelete) {
+        if (itemToDelete.localUri) {
+          await FileSystem.deleteAsync(itemToDelete.localUri, { idempotent: true }).catch(() => {});
+        }
         const path = itemToDelete.localUri.replace(/^file:\/\//, '');
-        const exists = await ReactNativeBlobUtil.fs.exists(path);
+        const exists = await ReactNativeBlobUtil.fs.exists(path).catch(() => false);
         if (exists) {
-          await ReactNativeBlobUtil.fs.unlink(path);
+          await ReactNativeBlobUtil.fs.unlink(path).catch(() => {});
         }
       }
 
-      const updated = downloads.filter((item) => item._id !== id);
+      const updated = downloads.filter((item) => String(item._id) !== String(id));
       await AsyncStorage.setItem(userKey, JSON.stringify(updated));
       setDownloads(updated);
       DeviceEventEmitter.emit('DOWNLOADS_CHANGED');

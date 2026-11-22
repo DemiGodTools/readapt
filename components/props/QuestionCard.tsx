@@ -33,6 +33,7 @@ type Props = {
   index?: number;
   total?: number;
   qnaCommentCount?: number;
+  initialAnswer?: { selectedIndex: number; isCorrect: boolean } | null;
   onAttempted?: (isCorrect: boolean, selectedIndex?: number) => void;
   onCommentClick: () => void;
 };
@@ -42,6 +43,7 @@ const OPTION_LABELS = ["A", "B", "C", "D", "E", "F"];
 const QuestionCard = ({
   question: rawQuestion,
   qnaCommentCount = 0,
+  initialAnswer,
   onAttempted,
   onCommentClick,
 }: Props) => {
@@ -61,14 +63,34 @@ const QuestionCard = ({
   const { user } = useUser();
   const { isConnected } = useNetworkStatus();
 
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
-  const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
-  const [showExplanation, setShowExplanation] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(
+    typeof initialAnswer?.selectedIndex === "number" ? initialAnswer.selectedIndex : null
+  );
+  const [isCorrect, setIsCorrect] = useState<boolean | null>(
+    typeof initialAnswer?.isCorrect === "boolean" ? initialAnswer.isCorrect : null
+  );
+  const [showExplanation, setShowExplanation] = useState(
+    initialAnswer !== undefined && initialAnswer !== null
+  );
   const [submitting, setSubmitting] = useState(false);
 
   // Animation values
-  const explanationOpacity = useRef(new Animated.Value(0)).current;
-  const explanationTranslateY = useRef(new Animated.Value(15)).current;
+  const explanationOpacity = useRef(
+    new Animated.Value(initialAnswer !== undefined && initialAnswer !== null ? 1 : 0)
+  ).current;
+  const explanationTranslateY = useRef(
+    new Animated.Value(initialAnswer !== undefined && initialAnswer !== null ? 0 : 15)
+  ).current;
+
+  useEffect(() => {
+    if (initialAnswer && typeof initialAnswer.selectedIndex === "number") {
+      setSelectedIndex(initialAnswer.selectedIndex);
+      setIsCorrect(initialAnswer.isCorrect);
+      setShowExplanation(true);
+      explanationOpacity.setValue(1);
+      explanationTranslateY.setValue(0);
+    }
+  }, [initialAnswer]);
 
   const handleSelect = async (optIndex: number, isForce: boolean = false) => {
     if (!isConnected && !isForce) {
@@ -107,20 +129,27 @@ const QuestionCard = ({
       return;
     }
 
-    updateStreak(user?._id || user?.userId);
+    if (user?._id || user?.userId) {
+      updateStreak(user?._id || user?.userId);
+    }
 
     try {
-     /* await api.post(
-        "/question/attempt",
-        {
-          questionId: question._id,
-          Answer: optIndex,
-          iscorrect: correct,
-        },
-        {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }
-      ); */
+      if (accessToken && question?._id) {
+        api
+          .post(
+            "/question/attempt",
+            {
+              questionId: question._id,
+              Answer: optIndex,
+              iscorrect: correct,
+            },
+            {
+              headers: { Authorization: `Bearer ${accessToken}` },
+              timeout: 8000,
+            }
+          )
+          .catch(() => {});
+      }
     } catch (err) {
       console.log("Question attempt error:", err);
     } finally {

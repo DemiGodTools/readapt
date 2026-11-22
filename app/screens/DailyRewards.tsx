@@ -1,778 +1,485 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  View, Text, StyleSheet, Pressable, Dimensions, 
-  ScrollView, StatusBar, Vibration 
+import React, { useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Dimensions,
+  StatusBar,
+  Vibration,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Animated, { 
-  useSharedValue, useAnimatedStyle, withTiming, withRepeat, 
-  withSequence, interpolate, Easing, runOnJS
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+  withSpring,
+  interpolate,
+  Extrapolation,
+  Easing,
+  runOnJS,
 } from 'react-native-reanimated';
-import Svg, { Path, Circle, Rect, Line } from 'react-native-svg';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Svg, {
+  Path,
+  Circle,
+  Defs,
+  LinearGradient as SvgLinearGradient,
+  RadialGradient,
+  Stop,
+} from 'react-native-svg';
 import { LinearGradient } from 'expo-linear-gradient';
-import CachedImage from '../../components/props/CachedImage';
-
-// Use React Native's built-in vibration API instead of requiring expo-haptics.
-const Haptics = {
-  ImpactFeedbackStyle: { Light: 'light', Medium: 'medium' },
-  NotificationFeedbackType: { Success: 'success', Warning: 'warning' },
-  impactAsync: async (style: string) => {
-    Vibration.vibrate(style === 'medium' ? 20 : 10);
-  },
-  notificationAsync: async (type: string) => {
-    Vibration.vibrate(type === 'success' ? [0, 15, 50, 25] : [0, 40, 50, 40]);
-  },
-  selectionAsync: async () => {
-    Vibration.vibrate(5);
-  },
-};
 
 const { width, height } = Dimensions.get('window');
 
-// --- Crisp Native SVGs ---
-const Icons = {
-  Back: () => (
-    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Path d="M19 12H5M12 19l-7-7 7-7" />
-    </Svg>
-  ),
-  GiftOutline: ({ color = "#00D2B4", size = 32 }: { color?: string; size?: number }) => (
-    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-      <Rect x="3" y="8" width="18" height="14" rx="2" />
-      <Path d="M12 5a3 3 0 1 0-3 3h6a3 3 0 1 0-3-3z" />
-      <Line x1="12" y1="8" x2="12" y2="22" />
-      <Line x1="3" y1="13" x2="21" y2="13" />
-    </Svg>
-  ),
-  Flame: ({ color = "#F59E0B", size = 24 }: { color?: string; size?: number }) => (
-    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z" />
-    </Svg>
-  ),
-  Book: ({ color = "#A78BFA", size = 24 }: { color?: string; size?: number }) => (
-    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-      <Path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-    </Svg>
-  ),
-  PlusSpin: ({ color = "#00D2B4", size = 24 }: { color?: string; size?: number }) => (
-    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Circle cx="12" cy="12" r="10" />
-      <Line x1="12" y1="8" x2="12" y2="16" />
-      <Line x1="8" y1="12" x2="16" y2="12" />
-    </Svg>
-  ),
-  Lock: ({ color = "#9CA3AF" }) => (
-    <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-      <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
-    </Svg>
-  ),
-  Cross: () => (
-    <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Line x1="18" y1="6" x2="6" y2="18" />
-      <Line x1="6" y1="6" x2="18" y2="18" />
-    </Svg>
-  ),
-  ChevronRight: () => (
-    <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-      <Path d="M9 18l6-6-6-6" />
-    </Svg>
-  ),
+// App Accent Palette (Readapt Theme)
+const COLORS = {
+  bgTop: '#020914',
+  bgBottom: '#01050A',
+  accent: '#00D2B4',
+  accentBright: '#34F5D8',
+  accentLight: '#5EEAD4',
+  accentMid: '#2DD4BF',
+  accentDark: '#01796F',
+  accentDeep: '#015049',
+  textPrimary: '#FFFFFF',
+  textSecondary: '#B0BAC9',
+  textMuted: '#8A94A6',
 };
 
-// --- Mock Data ---
-const RECENT_REWARDS = [
-  { id: '1', type: 'streak', title: '+3 Streak Days', time: 'Today · 12:34 PM', status: 'Active', color: '#F59E0B', icon: Icons.Flame },
-  { id: '2', type: 'book', title: 'The 48 Laws of Power (7 days)', time: 'Yesterday · 09:21 PM', status: 'Active', subtitle: '7 days left', color: '#A78BFA', icon: Icons.Book },
-  { id: '3', type: 'spin', title: '+1 Extra Spin', time: '2 days ago · 04:12 PM', status: 'Used', color: '#00D2B4', icon: Icons.PlusSpin },
-  { id: '4', type: 'streak', title: '+6 Streak Days', time: '4 days ago · 11:03 AM', status: 'Expired', color: '#F59E0B', icon: Icons.Flame },
-  { id: '5', type: 'none', title: 'No Reward', time: '5 days ago · 08:17 PM', status: '-', color: '#9CA3AF', icon: Icons.Lock },
-];
-
-// --- Smooth Native Non-Bouncy Pressable Button ---
-const CleanButton = ({ onPress, children, style, disabled = false }: any) => {
-  const opacity = useSharedValue(1);
-  const animStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  
+// --- 3D Isometric Teal Gift Box (Matched to ReferralCodeScreen, without side confetti) ---
+const IsometricGiftBox = () => {
   return (
-    <Pressable
-      disabled={disabled}
-      onPressIn={() => {
-        if (disabled) return;
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        opacity.value = withTiming(0.85, { duration: 80 });
-      }}
-      onPressOut={() => {
-        opacity.value = withTiming(1, { duration: 120 });
-      }}
-      onPress={onPress}
-    >
-      <Animated.View style={[style, animStyle]}>{children}</Animated.View>
-    </Pressable>
+    <Svg width={176} height={164} viewBox="0 0 176 164" fill="none">
+      <Defs>
+        <RadialGradient id="giftAmbientGlow" cx="50%" cy="54%" r="50%">
+          <Stop offset="0%" stopColor={COLORS.accent} stopOpacity="0.38" />
+          <Stop offset="65%" stopColor={COLORS.accentDark} stopOpacity="0.12" />
+          <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
+        </RadialGradient>
+
+        <SvgLinearGradient id="boxLeftGrad" x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0%" stopColor={COLORS.accent} />
+          <Stop offset="100%" stopColor={COLORS.accentDark} />
+        </SvgLinearGradient>
+
+        <SvgLinearGradient id="boxRightGrad" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0%" stopColor="#0D9488" />
+          <Stop offset="100%" stopColor={COLORS.accentDeep} />
+        </SvgLinearGradient>
+
+        <SvgLinearGradient id="lidTopGrad" x1="0" y1="0" x2="1" y2="1">
+          <Stop offset="0%" stopColor="#99F6E4" />
+          <Stop offset="55%" stopColor={COLORS.accentLight} />
+          <Stop offset="100%" stopColor={COLORS.accent} />
+        </SvgLinearGradient>
+
+        <SvgLinearGradient id="ribbonShine" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0%" stopColor="#F0FDFA" />
+          <Stop offset="100%" stopColor="#99F6E4" />
+        </SvgLinearGradient>
+      </Defs>
+
+      {/* Soft Teal Ambient Glow */}
+      <Circle cx="88" cy="86" r="78" fill="url(#giftAmbientGlow)" />
+
+      {/* Base Shadow */}
+      <Path
+        d="M46 134 L88 150 L130 134 L88 120 Z"
+        fill="#000000"
+        opacity="0.5"
+      />
+
+      {/* Box Body - Left Face */}
+      <Path d="M48 82 L88 98 L88 144 L48 128 Z" fill="url(#boxLeftGrad)" />
+      {/* Box Body - Right Face */}
+      <Path d="M88 98 L128 82 L128 128 L88 144 Z" fill="url(#boxRightGrad)" />
+
+      {/* Inner Shadow under Lid */}
+      <Path
+        d="M48 82 L88 98 L128 82 L128 87 L88 103 L48 87 Z"
+        fill="#042F2E"
+        opacity="0.4"
+      />
+
+      {/* Vertical Ribbon - Left Face */}
+      <Path
+        d="M64 88.5 L72 91.7 L72 137.7 L64 134.5 Z"
+        fill="url(#ribbonShine)"
+      />
+      {/* Vertical Ribbon - Right Face */}
+      <Path
+        d="M104 91.7 L112 88.5 L112 134.5 L104 137.7 Z"
+        fill="#CCFBF1"
+      />
+
+      {/* Box Lid - Left Rim */}
+      <Path d="M42 66 L88 84 L88 95 L42 77 Z" fill={COLORS.accentMid} />
+      {/* Box Lid - Right Rim */}
+      <Path d="M88 84 L134 66 L134 77 L88 95 Z" fill={COLORS.accentDark} />
+      {/* Box Lid - Top Face */}
+      <Path d="M88 49 L134 66 L88 84 L42 66 Z" fill="url(#lidTopGrad)" />
+
+      {/* Lid Rim Ribbons */}
+      <Path d="M61 73.5 L69 76.6 L69 87.6 L61 84.5 Z" fill="#F0FDFA" />
+      <Path d="M107 76.6 L115 73.5 L115 84.5 L107 87.6 Z" fill="#CCFBF1" />
+
+      {/* Lid Top Cross Ribbons */}
+      <Path d="M62 58.5 L70 55.5 L114 73.5 L106 76.6 Z" fill="#F0FDFA" />
+      <Path d="M106 55.5 L114 58.5 L70 76.6 L62 73.5 Z" fill="#CCFBF1" />
+
+      {/* Symmetrical 3D Bow Loops */}
+      <Path
+        d="M86 64 C70 50, 52 46, 56 60 C59 69, 75 67, 86 65 Z"
+        fill={COLORS.accentDark}
+      />
+      <Path
+        d="M86 64 C72 44, 53 40, 56 54 C58 63, 74 65, 86 64 Z"
+        fill="#CCFBF1"
+      />
+
+      <Path
+        d="M90 64 C106 50, 124 46, 120 60 C117 69, 101 67, 90 65 Z"
+        fill={COLORS.accentDeep}
+      />
+      <Path
+        d="M90 64 C104 44, 123 40, 120 54 C118 63, 102 65, 90 64 Z"
+        fill="#F0FDFA"
+      />
+
+      {/* Center Bow Knot */}
+      <Circle cx="88" cy="63" r="6.5" fill={COLORS.accent} />
+      <Circle cx="87" cy="61.5" r="3" fill="#F0FDFA" opacity="0.85" />
+    </Svg>
   );
 };
 
-// --- Main Screen Component ---
+// --- Decorative Sweeping Top & Bottom Waves ---
+const BackgroundWaves = () => (
+  <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+    <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+      <Defs>
+        <SvgLinearGradient id="topWaveGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <Stop offset="0%" stopColor={COLORS.accent} stopOpacity="0.16" />
+          <Stop offset="50%" stopColor="#00A890" stopOpacity="0.06" />
+          <Stop offset="100%" stopColor={COLORS.bgTop} stopOpacity="0" />
+        </SvgLinearGradient>
+
+        <SvgLinearGradient id="bottomWaveBack" x1="0%" y1="0%" x2="100%" y2="0%">
+          <Stop offset="0%" stopColor={COLORS.accentDark} stopOpacity="0.24" />
+          <Stop offset="50%" stopColor={COLORS.accent} stopOpacity="0.14" />
+          <Stop offset="100%" stopColor={COLORS.accentBright} stopOpacity="0.3" />
+        </SvgLinearGradient>
+
+        <SvgLinearGradient id="bottomWaveFront" x1="0%" y1="0%" x2="100%" y2="100%">
+          <Stop offset="0%" stopColor={COLORS.accent} stopOpacity="0.35" />
+          <Stop offset="50%" stopColor={COLORS.accentDeep} stopOpacity="0.12" />
+          <Stop offset="100%" stopColor={COLORS.accentBright} stopOpacity="0.42" />
+        </SvgLinearGradient>
+
+        <SvgLinearGradient id="strokeHighlight" x1="0%" y1="0%" x2="100%" y2="0%">
+          <Stop offset="0%" stopColor={COLORS.accent} stopOpacity="0.35" />
+          <Stop offset="50%" stopColor={COLORS.accentBright} stopOpacity="0.15" />
+          <Stop offset="100%" stopColor={COLORS.accent} stopOpacity="0.45" />
+        </SvgLinearGradient>
+      </Defs>
+
+      {/* Top Sweeping Wave */}
+      <Path
+        d={`M0 0 L${width * 0.85} 0 C${width * 0.65} ${height * 0.09}, ${width * 0.25} ${height * 0.08}, 0 ${height * 0.19} Z`}
+        fill="url(#topWaveGrad)"
+      />
+      <Path
+        d={`M0 ${height * 0.19} C${width * 0.25} ${height * 0.08}, ${width * 0.65} ${height * 0.09}, ${width * 0.85} 0`}
+        stroke="url(#strokeHighlight)"
+        strokeWidth="1.2"
+        fill="none"
+      />
+
+      {/* Subtle Ambient Mid Arc */}
+      <Path
+        d={`M${width * 0.15} ${height * 0.12} C${width * 0.55} ${height * 0.05}, ${width * 0.88} ${height * 0.14}, ${width} ${height * 0.24}`}
+        stroke={COLORS.accent}
+        strokeOpacity="0.12"
+        strokeWidth="1"
+        fill="none"
+      />
+
+      {/* Bottom Sweeping Layered Waves */}
+      <Path
+        d={`M0 ${height * 0.89} C${width * 0.32} ${height * 0.96}, ${width * 0.68} ${height * 0.86}, ${width} ${height * 0.85} L${width} ${height} L0 ${height} Z`}
+        fill="url(#bottomWaveBack)"
+      />
+      <Path
+        d={`M0 ${height * 0.86} C${width * 0.28} ${height * 0.85}, ${width * 0.58} ${height * 0.97}, ${width} ${height * 0.91} L${width} ${height} L0 ${height} Z`}
+        fill="url(#bottomWaveFront)"
+      />
+      <Path
+        d={`M0 ${height * 0.86} C${width * 0.28} ${height * 0.85}, ${width * 0.58} ${height * 0.97}, ${width} ${height * 0.91}`}
+        stroke="url(#strokeHighlight)"
+        strokeWidth="1.2"
+        fill="none"
+      />
+      <Path
+        d={`M0 ${height * 0.93} C${width * 0.35} ${height * 0.99}, ${width * 0.72} ${height * 0.91}, ${width} ${height * 0.87}`}
+        stroke={COLORS.accentBright}
+        strokeOpacity="0.25"
+        strokeWidth="1"
+        fill="none"
+      />
+    </Svg>
+  </View>
+);
+
+const triggerLightHaptic = () => {
+  Vibration.vibrate(8);
+};
+
 export default function DailyRewards({ navigation }: any) {
   const insets = useSafeAreaInsets();
-  
-  // States: 'idle' | 'searching' | 'result-streak' | 'result-book' | 'result-none'
-  const [spinState, setSpinState] = useState<'idle' | 'searching' | 'result-streak' | 'result-book' | 'result-none'>('idle');
-  const [showBottomSheet, setShowBottomSheet] = useState(false);
-  const [activeFilter, setActiveFilter] = useState('All');
-  const [streakCount, setStreakCount] = useState(7);
+  const btnScale = useSharedValue(1);
 
-  // Animations (Clean & Non-Bouncy)
-  const idlePulse = useSharedValue(1);
-  const searchGlow = useSharedValue(0);
-  const liquidRotate1 = useSharedValue(0);
-  const liquidRotate2 = useSharedValue(0);
-  const particleOrbit = useSharedValue(0);
-  const resultOpacity = useSharedValue(0);
-  const resultScale = useSharedValue(0.96);
-  const sheetTranslateY = useSharedValue(height);
+  // Idle hover & 3D touch-drag shared values
+  const giftFloat = useSharedValue(0);
+  const dragX = useSharedValue(0);
+  const dragY = useSharedValue(0);
+  const isInteracting = useSharedValue(0);
 
-  // Background Ambient Breathing Pulse (Idle)
+  // Subtle idle floating breath when untouched
   useEffect(() => {
-    idlePulse.value = withRepeat(
+    giftFloat.value = withRepeat(
       withSequence(
-        withTiming(1.08, { duration: 1800, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 1800, easing: Easing.inOut(Easing.ease) })
+        withTiming(-5, { duration: 2200, easing: Easing.inOut(Easing.sin) }),
+        withTiming(3, { duration: 2200, easing: Easing.inOut(Easing.sin) })
       ),
       -1,
       true
     );
-  }, []);
+  }, [giftFloat]);
 
-  const idlePulseStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: idlePulse.value }],
-    opacity: interpolate(idlePulse.value, [1, 1.08], [0.45, 0.15]),
-  }));
+  // Single-touch 3D rotation & smooth return on release
+  const panGesture = Gesture.Pan()
+    .onBegin(() => {
+      isInteracting.value = withTiming(1, { duration: 150 });
+      runOnJS(triggerLightHaptic)();
+    })
+    .onUpdate((event) => {
+      dragX.value = Math.max(-140, Math.min(140, event.translationX));
+      dragY.value = Math.max(-140, Math.min(140, event.translationY));
+    })
+    .onFinalize(() => {
+      isInteracting.value = withTiming(0, { duration: 300 });
+      dragX.value = withSpring(0, {
+        damping: 18,
+        stiffness: 150,
+        mass: 0.8,
+      });
+      dragY.value = withSpring(0, {
+        damping: 18,
+        stiffness: 150,
+        mass: 0.8,
+      });
+    });
 
-  // Liquid blur particle rotation styles (Searching state)
-  const liquidStyle1 = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${liquidRotate1.value}deg` }],
-  }));
-
-  const liquidStyle2 = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${liquidRotate2.value}deg` }],
-  }));
-
-  const particleStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${particleOrbit.value}deg` }],
-    opacity: searchGlow.value,
-  }));
-
-  // Sudden Fullscreen Popup: Fast, clean, NO bouncy spring
-  const resultStyle = useAnimatedStyle(() => ({
-    opacity: resultOpacity.value,
-    transform: [{ scale: resultScale.value }],
-    pointerEvents: resultOpacity.value > 0 ? 'auto' : 'none',
-  }));
-
-  // Bottom Sheet Style (Fast & Smooth with NO bouncy spring)
-  const sheetStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: sheetTranslateY.value }],
-  }));
-
-  // --- Start Liquid Blur Searching (NO Wheel Spin) ---
-  const handleStartSearch = () => {
-    if (spinState !== 'idle') return;
-
-    // Trigger initial tactile flutter
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setSpinState('searching');
-
-    // Activate liquid blur search animations
-    searchGlow.value = withTiming(1, { duration: 250 });
-    liquidRotate1.value = withRepeat(
-      withTiming(360, { duration: 1200, easing: Easing.linear }),
-      -1,
-      false
+  // 3D perspective rotation style driven by single-touch drag
+  const gift3DStyle = useAnimatedStyle(() => {
+    const rotateY = interpolate(
+      dragX.value,
+      [-140, 140],
+      [-34, 34],
+      Extrapolation.CLAMP
     );
-    liquidRotate2.value = withRepeat(
-      withTiming(-360, { duration: 900, easing: Easing.linear }),
-      -1,
-      false
+    const rotateX = interpolate(
+      dragY.value,
+      [-140, 140],
+      [28, -28],
+      Extrapolation.CLAMP
     );
-    particleOrbit.value = withRepeat(
-      withTiming(360, { duration: 700, easing: Easing.linear }),
-      -1,
-      false
+    const rotateZ = interpolate(
+      dragX.value,
+      [-140, 140],
+      [-6, 6],
+      Extrapolation.CLAMP
     );
+    const scale = interpolate(isInteracting.value, [0, 1], [1, 1.07]);
+    const idleOffset = interpolate(isInteracting.value, [0, 1], [giftFloat.value, 0]);
 
-    // Rapid subtle haptic pulses during search
-    const hapticInterval = setInterval(() => {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }, 180);
+    return {
+      transform: [
+        { perspective: 750 },
+        { translateY: idleOffset + dragY.value * 0.08 },
+        { translateX: dragX.value * 0.08 },
+        { rotateX: `${rotateX}deg` },
+        { rotateY: `${rotateY}deg` },
+        { rotateZ: `${rotateZ}deg` },
+        { scale },
+      ],
+    };
+  });
 
-    // Sudden transition to fullscreen pop-up after ~1.5s
-    setTimeout(() => {
-      clearInterval(hapticInterval);
-      runOnJS(triggerSuddenResult)();
-    }, 1500);
-  };
+  const btnAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: btnScale.value }],
+  }));
 
-  // --- Sudden Pop-up Trigger ---
-  const triggerSuddenResult = () => {
-    // Choose randomly between: streak extension, book access, or no reward
-    const outcomes: ('result-streak' | 'result-book' | 'result-none')[] = [
-      'result-streak',
-      'result-book',
-      'result-streak',
-      'result-none',
-    ];
-    const picked = outcomes[Math.floor(Math.random() * outcomes.length)];
-
-    setSpinState(picked);
-
-    if (picked === 'result-streak') {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setStreakCount(prev => prev + 3);
-    } else if (picked === 'result-book') {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  const handleGotIt = () => {
+    Vibration.vibrate(12);
+    if (navigation?.canGoBack?.()) {
+      navigation.goBack();
     } else {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      navigation?.navigate?.('Home');
     }
-
-    // Fast, crisp entry (200ms cubic-bezier, no bouncing)
-    resultScale.value = withTiming(1, { 
-      duration: 200, 
-      easing: Easing.bezier(0.16, 1, 0.3, 1) 
-    });
-    resultOpacity.value = withTiming(1, { 
-      duration: 180, 
-      easing: Easing.out(Easing.ease) 
-    });
   };
-
-  const closeResult = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    resultOpacity.value = withTiming(0, { duration: 160 }, () => {
-      resultScale.value = 0.96;
-      searchGlow.value = 0;
-      liquidRotate1.value = 0;
-      liquidRotate2.value = 0;
-      particleOrbit.value = 0;
-      runOnJS(setSpinState)('idle');
-    });
-  };
-
-  // Bottom Sheet (Fast & Non-bouncy)
-  const openSheet = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setShowBottomSheet(true);
-    sheetTranslateY.value = withTiming(0, { 
-      duration: 220, 
-      easing: Easing.bezier(0.16, 1, 0.3, 1) 
-    });
-  };
-
-  const closeSheet = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    sheetTranslateY.value = withTiming(height, { 
-      duration: 180, 
-      easing: Easing.in(Easing.ease) 
-    }, () => {
-      runOnJS(setShowBottomSheet)(false);
-    });
-  };
-
-  // Status Pill Renderer
-  const renderStatusPill = (status: string) => {
-    let color = '#9CA3AF';
-    let bg = 'rgba(156, 163, 175, 0.1)';
-    if (status === 'Active') { color = '#00D2B4'; bg = 'rgba(0, 210, 180, 0.12)'; }
-    if (status === 'Used') { color = '#6B7280'; bg = 'rgba(107, 114, 128, 0.15)'; }
-
-    return (
-      <View style={[styles.pill, { backgroundColor: bg }]}>
-        <Text style={[styles.pillText, { color }]}>{status}</Text>
-      </View>
-    );
-  };
-
-  const filteredRewards = activeFilter === 'All' 
-    ? RECENT_REWARDS 
-    : RECENT_REWARDS.filter(r => 
-        (activeFilter === 'Streak' && r.type === 'streak') ||
-        (activeFilter === 'Books' && r.type === 'book') ||
-        (activeFilter === 'Extra Spins' && r.type === 'spin')
-      );
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
-      
-      {/* Background Gradient */}
-      <LinearGradient colors={['#020914', '#01050A']} style={StyleSheet.absoluteFillObject} />
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.bgTop} />
 
-      {/* --- MAIN DAILY REWARDS SCREEN --- */}
-      <ScrollView 
-        contentContainerStyle={[styles.scrollContent, { paddingTop: Math.max(insets.top, 24) }]}
-        showsVerticalScrollIndicator={false}
+      {/* Base Dark Gradient */}
+      <LinearGradient
+        colors={[COLORS.bgTop, '#030D1C', COLORS.bgBottom]}
+        locations={[0, 0.5, 1]}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      {/* Sweeping Top & Bottom Waves */}
+      <BackgroundWaves />
+
+      {/* Main Content */}
+      <View
+        style={[
+          styles.content,
+          {
+            paddingTop: Math.max(insets.top, 24),
+            paddingBottom: Math.max(insets.bottom, 32),
+          },
+        ]}
       >
-        {/* Top Header */}
-        <View style={styles.header}>
-          <Pressable onPress={() => navigation?.goBack?.()} hitSlop={12} style={styles.iconBtn}>
-            <Icons.Back />
-          </Pressable>
-          <Text style={styles.headerTitle}>Daily Rewards</Text>
-          <View style={{ width: 40 }} />
+        {/* Top Hero: Interactive 3D Rotatable Gift Box */}
+        <View style={styles.heroArea}>
+          <GestureDetector gesture={panGesture}>
+            <Animated.View style={[styles.giftTouchTarget, gift3DStyle]}>
+              <IsometricGiftBox />
+            </Animated.View>
+          </GestureDetector>
         </View>
 
-        {/* Hero Section */}
-        <View style={styles.heroSection}>
-          <View style={styles.heroTexts}>
-            <Text style={styles.heroTitle}>Your streak, your reward.</Text>
-            <Text style={styles.heroSub}>Keep your streak alive and spin for a chance to win something special.</Text>
-          </View>
-          <View style={styles.topRightGiftGlow}>
-            <Icons.GiftOutline color="#00D2B4" size={28} />
-          </View>
-        </View>
-
-        {/* Current Streak Card */}
-        <View style={styles.streakCard}>
-          <View style={styles.streakCardLeft}>
-            <View style={styles.flameIconWrap}>
-              <Icons.Flame color="#F59E0B" size={22} />
-            </View>
-            <View>
-              <Text style={styles.streakCardLabel}>Current <Text style={{ color: '#F59E0B' }}>Streak</Text></Text>
-              <Text style={styles.streakCardValue}>{streakCount} Days</Text>
-            </View>
-          </View>
-          {renderStatusPill('Active')}
-        </View>
-
-        {/* --- LIQUID BLUR SEARCHING CIRCLE (NO SPIN WHEEL) --- */}
-        <View style={styles.circleContainer}>
-          {/* Ambient Outer Idle Glow */}
-          <Animated.View style={[styles.circleGlowPulse, idlePulseStyle]} />
-          
-          {/* Swirling Liquid Blur Aura (Active during search) */}
-          <Animated.View style={[styles.liquidAura, liquidStyle1]}>
-            <LinearGradient 
-              colors={['rgba(0, 210, 180, 0.4)', 'rgba(56, 189, 248, 0.25)', 'transparent']} 
-              style={StyleSheet.absoluteFillObject} 
-            />
-          </Animated.View>
-
-          <Animated.View style={[styles.liquidAuraSecondary, liquidStyle2]}>
-            <LinearGradient 
-              colors={['rgba(167, 139, 250, 0.3)', 'rgba(245, 158, 11, 0.2)', 'transparent']} 
-              style={StyleSheet.absoluteFillObject} 
-            />
-          </Animated.View>
-
-          {/* Orbiting Liquid Search Particles */}
-          <Animated.View style={[styles.particlesOrbitContainer, particleStyle]}>
-            <View style={[styles.particleDot, { top: 10, left: 100 }]} />
-            <View style={[styles.particleDot, { bottom: 18, right: 80, backgroundColor: '#F59E0B' }]} />
-            <View style={[styles.particleDot, { top: 90, right: 12, backgroundColor: '#38BDF8' }]} />
-            <View style={[styles.particleDot, { bottom: 80, left: 16 }]} />
-          </Animated.View>
-
-          {/* Central Main Circle Button */}
-          <Pressable 
-            onPress={handleStartSearch}
-            disabled={spinState !== 'idle'}
-            style={({ pressed }) => [
-              styles.mainCircle,
-              pressed && { transform: [{ scale: 0.98 }] },
-              spinState === 'searching' && styles.mainCircleSearching
-            ]}
-          >
-            <LinearGradient 
-              colors={['rgba(0, 210, 180, 0.12)', 'rgba(2, 9, 20, 0.95)']} 
-              style={StyleSheet.absoluteFillObject} 
-            />
-
-            {spinState === 'searching' ? (
-              <View style={styles.searchingContent}>
-                <View style={styles.radarPing} />
-                <Icons.GiftOutline color="#00D2B4" size={32} />
-                <Text style={styles.searchingText}>SEARCHING...</Text>
-                <Text style={styles.searchingSubText}>Scanning reward frequency</Text>
-              </View>
-            ) : (
-              <View style={styles.circleInnerContent}>
-                <Icons.GiftOutline color="#00D2B4" size={38} />
-                <Text style={styles.circleTitle}>Daily Reward</Text>
-                <Text style={styles.circleSubTitle}>One chance today</Text>
-              </View>
-            )}
-          </Pressable>
-        </View>
-
-        {/* Primary Action Button */}
-        <CleanButton 
-          disabled={spinState !== 'idle'}
-          style={[styles.mainButton, spinState !== 'idle' && { opacity: 0.7 }]} 
-          onPress={handleStartSearch}
-        >
-          <Text style={styles.mainButtonText}>
-            {spinState === 'searching' ? 'Searching reward...' : 'Spin for reward'}
+        {/* Center Typography */}
+        <View style={styles.textBlock}>
+          <Text style={styles.title}>Rewards are{'\n'}Coming Soon!</Text>
+          <Text style={styles.subtitle}>
+            Keep inviting your friends.{'\n'}
+            Exciting rewards will be available{'\n'}
+            with the upcoming subscription launch.
           </Text>
-        </CleanButton>
-        <Text style={styles.disclaimerText}>Rewards are random. Some spins may give no reward.</Text>
-
-        {/* Mini Recent Rewards Card */}
-        <View style={styles.recentMiniCard}>
-          <View style={styles.recentMiniHeader}>
-            <Text style={styles.recentMiniTitle}>Recent Rewards</Text>
-            <Pressable onPress={openSheet} hitSlop={12}>
-              <Text style={styles.viewAllText}>View all</Text>
-            </Pressable>
-          </View>
-          
-          {RECENT_REWARDS.slice(0, 3).map((reward, i) => (
-            <View key={reward.id} style={[styles.rewardListItem, i !== 2 && styles.borderBottom]}>
-              <View style={styles.rewardListLeft}>
-                <View style={[styles.rewardIconWrap, { borderColor: reward.color + '40', backgroundColor: reward.color + '15' }]}>
-                  <reward.icon color={reward.color} size={20} />
-                </View>
-                <View>
-                  <Text style={styles.rewardTitle}>{reward.title}</Text>
-                  <Text style={styles.rewardTime}>{reward.time}</Text>
-                </View>
-              </View>
-              <View style={styles.rewardListRight}>
-                {renderStatusPill(reward.status)}
-                {reward.subtitle && <Text style={styles.rewardSubtitle}>{reward.subtitle}</Text>}
-              </View>
-            </View>
-          ))}
         </View>
-      </ScrollView>
 
-      {/* --- SUDDEN FULLSCREEN RESULT POP-UP (NO BOUNCY ANIMATION) --- */}
-      {spinState !== 'idle' && spinState !== 'searching' && (
-        <Animated.View style={[styles.resultOverlay, resultStyle]}>
-          <LinearGradient colors={['#020914', '#01050A']} style={StyleSheet.absoluteFillObject} />
-          
-          <View style={styles.resultInner}>
-            {/* Top Close / Skip */}
-            <Pressable onPress={closeResult} style={styles.skipBtn} hitSlop={10}>
-              <Text style={styles.skipText}>Skip</Text>
-            </Pressable>
-
-            {/* 1. STREAK EXTENSION RESULT */}
-            {spinState === 'result-streak' && (
-              <View style={styles.resultCenter}>
-                <View style={styles.resultStreakRing}>
-                  <Icons.Flame color="#F59E0B" size={32} />
-                  <Text style={styles.resultBigNumber}>+3</Text>
-                </View>
-                <Text style={styles.resultTitle}>+3 Streak Days</Text>
-                <Text style={styles.resultDesc}>
-                  Your streak has been extended by <Text style={{ color: '#F59E0B', fontWeight: '700' }}>3</Text> days.{'\n'}Keep going!
-                </Text>
-              </View>
-            )}
-
-            {/* 2. BOOK ACCESS UNLOCKED RESULT */}
-            {spinState === 'result-book' && (
-              <View style={styles.resultCenter}>
-                <View style={styles.resultBookCoverWrapper}>
-                  <CachedImage
-                    uri={'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=400'}
-                    label="Reward"
-                    style={styles.resultBookCover}
-                    letterSize={30}
-                  />
-                  <View style={styles.bookSpineHighlight} />
-                </View>
-                <Text style={styles.resultTitle}>7-Day Access Unlocked!</Text>
-                <Text style={styles.resultDesc}>
-                  You can now access this book for{'\n'}7 days from now.
-                </Text>
-                <CleanButton style={[styles.mainButton, { marginBottom: 12 }]} onPress={() => {}}>
-                  <Text style={styles.mainButtonText}>View Book</Text>
-                </CleanButton>
-              </View>
-            )}
-
-            {/* 3. NO REWARD RESULT */}
-            {spinState === 'result-none' && (
-              <View style={styles.resultCenter}>
-                <View style={[styles.resultStreakRing, { borderColor: '#374151', backgroundColor: 'rgba(55, 65, 81, 0.1)' }]}>
-                  <Icons.GiftOutline color="#6B7280" size={48} />
-                </View>
-                <Text style={styles.resultTitle}>No reward this time</Text>
-                <Text style={styles.resultDesc}>
-                  Don't worry! Keep your streak going.{'\n'}The next spin could be better.
-                </Text>
-              </View>
-            )}
-
-            {/* Bottom Continue & Context Card */}
-            <View style={styles.resultBottomSection}>
-              <CleanButton 
-                style={spinState === 'result-book' ? styles.outlineButton : styles.mainButton} 
-                onPress={closeResult}
-              >
-                <Text style={spinState === 'result-book' ? styles.outlineButtonText : styles.mainButtonText}>
-                  Continue
-                </Text>
-              </CleanButton>
-
-              {/* Context Bottom Card */}
-              {spinState === 'result-streak' && (
-                <View style={styles.streakResultCard}>
-                  <View style={styles.streakCardLeft}>
-                    <View style={styles.flameIconWrap}>
-                      <Icons.Flame color="#F59E0B" size={20} />
-                    </View>
-                    <View>
-                      <Text style={styles.streakCardLabel}>Updated Streak</Text>
-                      <Text style={styles.streakCardValue}>{streakCount} Days</Text>
-                    </View>
-                  </View>
-                  <Icons.ChevronRight />
-                </View>
-              )}
-
-              {spinState === 'result-book' && (
-                <View style={styles.streakResultCard}>
-                  <View style={styles.streakCardLeft}>
-                    <View style={[styles.flameIconWrap, { backgroundColor: 'rgba(167, 139, 250, 0.15)', borderColor: 'rgba(167, 139, 250, 0.3)' }]}>
-                      <Icons.Book color="#A78BFA" size={20} />
-                    </View>
-                    <View>
-                      <Text style={styles.streakCardLabel}>Your Reward</Text>
-                      <Text style={styles.streakCardValue}>Atomic Habits</Text>
-                      <Text style={{ color: '#9CA3AF', fontSize: 11, marginTop: 2 }}>Valid for 7 days</Text>
-                    </View>
-                  </View>
-                  <Icons.ChevronRight />
-                </View>
-              )}
-
-              {spinState === 'result-none' && (
-                <View style={styles.streakResultCard}>
-                  <View style={styles.streakCardLeft}>
-                    <View style={styles.flameIconWrap}>
-                      <Icons.Flame color="#F59E0B" size={20} />
-                    </View>
-                    <View>
-                      <Text style={styles.streakCardLabel}>Your Streak</Text>
-                      <Text style={styles.streakCardValue}>{streakCount} Days</Text>
-                    </View>
-                  </View>
-                  <Icons.ChevronRight />
-                </View>
-              )}
-            </View>
-          </View>
-        </Animated.View>
-      )}
-
-      {/* --- NATIVE SLIDING RECENT REWARDS BOTTOM SHEET --- */}
-      {showBottomSheet && (
-        <Pressable style={StyleSheet.absoluteFillObject} onPress={closeSheet}>
-          <View style={styles.sheetBackdrop} />
-        </Pressable>
-      )}
-      <Animated.View style={[styles.bottomSheet, sheetStyle]}>
-        <View style={styles.dragHandle} />
-        <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>Recent Rewards</Text>
-          <Pressable onPress={closeSheet} hitSlop={10}>
-            <Icons.Cross />
+        {/* Primary Pill CTA Button */}
+        <View style={styles.ctaBlock}>
+          <Pressable
+            onPressIn={() => {
+              btnScale.value = withTiming(0.97, { duration: 90 });
+            }}
+            onPressOut={() => {
+              btnScale.value = withTiming(1, { duration: 120 });
+            }}
+            onPress={handleGotIt}
+          >
+            <Animated.View style={[styles.gotItButton, btnAnimStyle]}>
+              <LinearGradient
+                colors={[COLORS.accentBright, COLORS.accent, '#00A890']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <Text style={styles.gotItText}>Got It</Text>
+            </Animated.View>
           </Pressable>
+
+          {/* Footer Tagline */}
+          <Text style={styles.footerTagline}>
+            Together, let's build a{'\n'}bigger learning community!
+          </Text>
         </View>
-
-        {/* Filter Chips */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterChipsRow}>
-          {['All', 'Streak', 'Books', 'Extra Spins'].map((chip) => {
-            const isActive = activeFilter === chip;
-            return (
-              <Pressable 
-                key={chip} 
-                onPress={() => { Haptics.selectionAsync(); setActiveFilter(chip); }}
-                style={[styles.filterChip, isActive && styles.filterChipActive]}
-              >
-                <Text style={[styles.filterChipText, isActive && styles.filterChipTextActive]}>{chip}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-
-        {/* Sheet Items List */}
-        <ScrollView style={styles.sheetList} showsVerticalScrollIndicator={false}>
-          {filteredRewards.map((reward) => (
-            <View key={reward.id} style={styles.sheetListItem}>
-              <View style={styles.rewardListLeft}>
-                <View style={[styles.rewardIconWrap, { borderColor: reward.color + '40', backgroundColor: reward.color + '15' }]}>
-                  <reward.icon color={reward.color} size={20} />
-                </View>
-                <View>
-                  <Text style={styles.rewardTitle}>{reward.title}</Text>
-                  <Text style={styles.rewardTime}>{reward.time}</Text>
-                </View>
-              </View>
-              <View style={styles.rewardListRight}>
-                {renderStatusPill(reward.status)}
-                {reward.subtitle && <Text style={styles.rewardSubtitle}>{reward.subtitle}</Text>}
-              </View>
-            </View>
-          ))}
-          <Text style={styles.viewHistoryText}>View all history →</Text>
-        </ScrollView>
-      </Animated.View>
-      
+      </View>
     </View>
   );
 }
 
-// --- Styles (Pixel-Perfect to Designs) ---
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#020914' },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
-  iconBtn: { width: 40, height: 40, justifyContent: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
-  
-  heroSection: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
-  heroTexts: { flex: 1, paddingRight: 16 },
-  heroTitle: { fontSize: 23, fontWeight: '800', color: '#fff', marginBottom: 6, letterSpacing: -0.3 },
-  heroSub: { fontSize: 13, color: '#9CA3AF', lineHeight: 20 },
-  topRightGiftGlow: { 
-    width: 48, height: 48, borderRadius: 16, backgroundColor: 'rgba(0, 210, 180, 0.12)', 
-    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(0, 210, 180, 0.35)',
-    shadowColor: '#00D2B4', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.4, shadowRadius: 10
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.bgTop,
   },
-
-  streakCard: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)', borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.25)',
-    borderRadius: 18, padding: 16, marginBottom: 28
+  content: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
   },
-  streakCardLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  flameIconWrap: {
-    width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    borderWidth: 1, borderColor: 'rgba(245, 158, 11, 0.3)', alignItems: 'center', justifyContent: 'center'
+  heroArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    height: 210,
+    width: '100%',
   },
-  streakCardLabel: { fontSize: 12, color: '#9CA3AF', fontWeight: '500', marginBottom: 2 },
-  streakCardValue: { fontSize: 18, fontWeight: '800', color: '#fff' },
-
-  // Liquid Blur Searching Circle
-  circleContainer: { alignItems: 'center', justifyContent: 'center', height: 230, marginBottom: 24 },
-  circleGlowPulse: {
-    position: 'absolute', width: 220, height: 220, borderRadius: 110,
-    backgroundColor: 'rgba(0, 210, 180, 0.2)',
+  giftTouchTarget: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 12,
   },
-  liquidAura: {
-    position: 'absolute', width: 215, height: 215, borderRadius: 107.5,
-    overflow: 'hidden', opacity: 0.6,
+  textBlock: {
+    alignItems: 'center',
+    marginBottom: 42,
   },
-  liquidAuraSecondary: {
-    position: 'absolute', width: 225, height: 225, borderRadius: 112.5,
-    overflow: 'hidden', opacity: 0.4,
+  title: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+    textAlign: 'center',
+    lineHeight: 37,
+    letterSpacing: -0.4,
+    marginBottom: 16,
   },
-  particlesOrbitContainer: {
-    position: 'absolute', width: 210, height: 210,
+  subtitle: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+    lineHeight: 23,
+    paddingHorizontal: 8,
   },
-  particleDot: {
-    position: 'absolute', width: 6, height: 6, borderRadius: 3,
-    backgroundColor: '#00D2B4', shadowColor: '#00D2B4', shadowRadius: 6, shadowOpacity: 0.9,
+  ctaBlock: {
+    width: '100%',
+    alignItems: 'center',
   },
-  mainCircle: {
-    width: 195, height: 195, borderRadius: 97.5,
-    borderWidth: 2, borderColor: '#00D2B4',
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: '#020914', overflow: 'hidden',
-    shadowColor: '#00D2B4', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.45, shadowRadius: 24, elevation: 10
+  gotItButton: {
+    width: width - 56,
+    height: 58,
+    borderRadius: 29,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    shadowColor: COLORS.accent,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 8,
   },
-  mainCircleSearching: {
-    borderColor: '#38BDF8',
-    shadowColor: '#38BDF8',
+  gotItText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#01050A',
+    letterSpacing: 0.2,
   },
-  circleInnerContent: { alignItems: 'center', justifyContent: 'center' },
-  circleTitle: { fontSize: 20, fontWeight: '800', color: '#fff', marginTop: 10, marginBottom: 2 },
-  circleSubTitle: { fontSize: 11, color: '#9CA3AF' },
-
-  searchingContent: { alignItems: 'center', justifyContent: 'center' },
-  radarPing: {
-    position: 'absolute', width: 70, height: 70, borderRadius: 35,
-    borderWidth: 1, borderColor: '#00D2B4', opacity: 0.5,
+  footerTagline: {
+    marginTop: 26,
+    fontSize: 13.5,
+    fontWeight: '400',
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    lineHeight: 20,
   },
-  searchingText: { fontSize: 12, fontWeight: '800', color: '#00D2B4', letterSpacing: 1.5, marginTop: 10 },
-  searchingSubText: { fontSize: 10, color: '#9CA3AF', marginTop: 2 },
-
-  mainButton: { backgroundColor: '#00D2B4', borderRadius: 14, height: 52, alignItems: 'center', justifyContent: 'center', width: '100%' },
-  mainButtonText: { color: '#01050A', fontSize: 16, fontWeight: '800' },
-  outlineButton: { backgroundColor: 'transparent', borderRadius: 14, height: 52, alignItems: 'center', justifyContent: 'center', width: '100%', borderWidth: 1, borderColor: '#00D2B4' },
-  outlineButtonText: { color: '#00D2B4', fontSize: 16, fontWeight: '700' },
-  disclaimerText: { fontSize: 11, color: '#6B7280', textAlign: 'center', marginTop: 10, marginBottom: 24 },
-
-  recentMiniCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 18, padding: 16
-  },
-  recentMiniHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  recentMiniTitle: { fontSize: 15, fontWeight: '700', color: '#fff' },
-  viewAllText: { fontSize: 13, color: '#00D2B4', fontWeight: '600' },
-  
-  rewardListItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },
-  borderBottom: { borderBottomWidth: 1, borderBottomColor: 'rgba(255, 255, 255, 0.05)' },
-  rewardListLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  rewardIconWrap: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  rewardTitle: { fontSize: 14, fontWeight: '700', color: '#fff', marginBottom: 2 },
-  rewardTime: { fontSize: 11, color: '#9CA3AF' },
-  rewardListRight: { alignItems: 'flex-end', gap: 4 },
-  rewardSubtitle: { fontSize: 10, color: '#F87171' },
-  pill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  pillText: { fontSize: 11, fontWeight: '700' },
-
-  // Sudden Fullscreen Popup
-  resultOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 999, justifyContent: 'center', padding: 20 },
-  resultInner: { flex: 1, justifyContent: 'space-between', paddingVertical: 30, alignItems: 'center' },
-  skipBtn: { alignSelf: 'flex-end', padding: 8 },
-  skipText: { color: '#9CA3AF', fontSize: 13 },
-  resultCenter: { alignItems: 'center', width: '100%' },
-  resultStreakRing: {
-    width: 160, height: 160, borderRadius: 80, borderWidth: 2, borderColor: '#00D2B4',
-    alignItems: 'center', justifyContent: 'center', marginBottom: 24,
-    backgroundColor: 'rgba(0, 210, 180, 0.08)',
-    shadowColor: '#00D2B4', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.4, shadowRadius: 28
-  },
-  resultBookCoverWrapper: {
-    width: 140, height: 190, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(0, 210, 180, 0.5)',
-    marginBottom: 24, overflow: 'hidden', backgroundColor: '#0B132B',
-    shadowColor: '#00D2B4', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.35, shadowRadius: 25
-  },
-  resultBookCover: { width: '100%', height: '100%', resizeMode: 'cover' },
-  bookSpineHighlight: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 6, backgroundColor: 'rgba(255,255,255,0.15)' },
-  resultBigNumber: { fontSize: 46, fontWeight: '900', color: '#fff', marginTop: -4 },
-  resultTitle: { fontSize: 24, fontWeight: '800', color: '#fff', marginBottom: 8, textAlign: 'center' },
-  resultDesc: { fontSize: 14, color: '#9CA3AF', textAlign: 'center', lineHeight: 22, marginBottom: 28 },
-  resultBottomSection: { width: '100%', gap: 12 },
-  streakResultCard: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.03)', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 16, padding: 14
-  },
-
-  // Bottom Sheet
-  dragHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.2)', alignSelf: 'center', marginBottom: 14 },
-  sheetBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.65)' },
-  bottomSheet: {
-    position: 'absolute', bottom: 0, left: 0, right: 0, height: height * 0.72,
-    backgroundColor: '#04101A', borderTopLeftRadius: 28, borderTopRightRadius: 28,
-    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.12)', padding: 20, zIndex: 200,
-  },
-  sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
-  sheetTitle: { fontSize: 18, fontWeight: '700', color: '#fff' },
-  filterChipsRow: { gap: 10, paddingBottom: 16 },
-  filterChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'transparent' },
-  filterChipActive: { borderColor: '#00D2B4', backgroundColor: 'rgba(0, 210, 180, 0.15)' },
-  filterChipText: { fontSize: 13, fontWeight: '600', color: '#9CA3AF' },
-  filterChipTextActive: { color: '#00D2B4' },
-  sheetList: { flex: 1 },
-  sheetListItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
-  viewHistoryText: { textAlign: 'center', color: '#00D2B4', fontSize: 14, fontWeight: '600', marginTop: 26, marginBottom: 20 }
 });

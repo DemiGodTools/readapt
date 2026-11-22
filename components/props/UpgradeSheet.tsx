@@ -139,14 +139,16 @@ const UpgradeSheet = ({
                 <View style={styles.grabHandle} />
               </View>
 
-              <View style={styles.headerRow}>
-                <View style={styles.headerTextWrap}>
-                  <Text style={styles.title}>{title}</Text>
-                  {subtitle ? (
-                    <Text style={styles.subtitle}>{subtitle}</Text>
-                  ) : null}
+              {Boolean(title) ? (
+                <View style={styles.headerRow}>
+                  <View style={styles.headerTextWrap}>
+                    <Text style={styles.title}>{title}</Text>
+                    {subtitle ? (
+                      <Text style={styles.subtitle}>{subtitle}</Text>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
+              ) : null}
             </View>
           </GestureDetector>
 

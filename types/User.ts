@@ -25,8 +25,15 @@ export interface IUser {
   questionsAttempted: IAttemptedQuestion[];
   correctAnsStreak?: number;
   streakData?: {
-    streak: number;
-    lastDate: string;
+    currentStreak: number;
+    longestStreak: number;
+    lastActiveDate: string;
+    todayReadingSeconds: number;
+    isCompletedToday: boolean;
+    lastCompletedDate?: string;
+    timezone?: string;
+    streak?: number;
+    lastDate?: string;
   };
   recentReads?: {
     chapter: any;
@@ -40,6 +47,10 @@ export interface IUser {
   visibility?: "Public" | "Private";
   isProfileCompleted?: boolean;
   usernameLastChangedAt?: Date | string | null;
+  referralCode?: string;
+  referredBy?: string | null;
+  hasRedeemedReferral?: boolean;
+  totalReferralsCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }

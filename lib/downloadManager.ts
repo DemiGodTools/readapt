@@ -44,7 +44,7 @@ export const checkIsDownloaded = async (chapterId: string, targetUserId?: string
     const key = await getDownloadsKey(targetUserId);
     const jsonValue = await AsyncStorage.getItem(key);
     const downloaded: DownloadedChapter[] = jsonValue != null ? JSON.parse(jsonValue) : [];
-    return downloaded.some((item) => item._id === chapterId);
+    return downloaded.some((item) => String(item._id) === String(chapterId));
   } catch (e) {
     console.error('Error reading downloads', e);
     return false;
@@ -57,7 +57,7 @@ export const getSingleDownloaded = async (chapterId: string, targetUserId?: stri
     const key = await getDownloadsKey(targetUserId);
     const jsonValue = await AsyncStorage.getItem(key);
     const downloads: DownloadedChapter[] = jsonValue != null ? JSON.parse(jsonValue) : [];
-    return downloads.find((item) => item._id === chapterId);
+    return downloads.find((item) => String(item._id) === String(chapterId));
   } catch (e) {
     console.error('Error reading downloads', e);
     return undefined;
@@ -129,5 +129,37 @@ export const deleteDownloadedChapter = async (id: string, targetUserId?: string)
     await AsyncStorage.setItem(key, JSON.stringify(updated));
   } catch (e) {
     console.error('Failed to delete chapter', e);
+  }
+};
+
+// Update existing downloaded chapter metadata (e.g. fresh likes, comments count, questions)
+export const updateDownloadedChapterMetadata = async (
+  chapterId: string,
+  patch: Partial<DownloadedChapter>,
+  targetUserId?: string
+) => {
+  try {
+    const activeUid = targetUserId || (await getActiveUserId());
+    const key = await getDownloadsKey(activeUid);
+    const downloads = await getDownloadedChapters(activeUid);
+    let hasChanges = false;
+    const updated = downloads.map((item) => {
+      if (item._id === chapterId) {
+        hasChanges = true;
+        return {
+          ...item,
+          ...patch,
+          // ensure localUri is never lost
+          localUri: item.localUri,
+        };
+      }
+      return item;
+    });
+
+    if (hasChanges) {
+      await AsyncStorage.setItem(key, JSON.stringify(updated));
+    }
+  } catch (e) {
+    console.error('Failed to update downloaded chapter metadata', e);
   }
 };

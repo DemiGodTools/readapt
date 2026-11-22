@@ -1,8 +1,11 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from "react";
-import { View, TextInput, StyleSheet, ViewStyle, TextStyle, LayoutChangeEvent, Vibration } from "react-native";
+import { View, TextInput, StyleSheet, ViewStyle, TextStyle, LayoutChangeEvent, Vibration, Dimensions } from "react-native";
 import { subscribeToPlaybackTime, parseAnyDurationToSec, setUserScrubbingActive } from "../../hooks/useGlobalAudio";
 import Reanimated, { useSharedValue, useAnimatedStyle, withTiming, runOnJS, clamp } from "react-native-reanimated";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const DEFAULT_TRACK_WIDTH = Math.max(100, SCREEN_WIDTH - 48);
 
 let Haptics: any = null;
 try { Haptics = require("expo-haptics"); } catch (_) {}
@@ -45,6 +48,7 @@ interface SmoothAudioSliderProps {
   mini?: boolean;
   active?: boolean;
   toc?: any;
+  onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
 export const SmoothAudioSlider = memo(({
@@ -52,6 +56,7 @@ export const SmoothAudioSlider = memo(({
   minimumTrackTintColor = "#FFFFFF", maximumTrackTintColor = "rgba(255, 255, 255, 0.24)",
   thumbTintColor = "#FFFFFF", style, sliderStyle, showTimeLabels = true,
   timeTextStyle, timeRowStyle, mini = false, active = true, toc,
+  onScrubbingChange,
 }: SmoothAudioSliderProps) => {
   const [liveDuration, setLiveDuration] = useState<number>(duration > 0 ? duration : 0);
 
@@ -134,7 +139,7 @@ export const SmoothAudioSlider = memo(({
       .filter((x): x is { ratio: number; title: string; cut: string } => x !== null);
   }, [parsedTocList, effDuration]);
 
-  const trackWidth = useSharedValue(0);
+  const trackWidth = useSharedValue(DEFAULT_TRACK_WIDTH);
   const ratioAnim = useSharedValue(effDuration > 0 ? safeCurrentTime / effDuration : 0);
   const isSeekingShared = useSharedValue(false);
   const thumbScaleAnim = useSharedValue(1);
@@ -185,58 +190,72 @@ export const SmoothAudioSlider = memo(({
     return unsubscribe;
   }, [active, effDuration, safeCurrentTime, ratioAnim, syncLiveTimeLabel, isSeekingShared]);
 
-  const onScrubStart = useCallback(() => {
+  const onScrubStart = useCallback((initialRatio?: number) => {
     isSeekingRef.current = true;
     setUserScrubbingActive(true);
+    onScrubbingChange?.(true);
     triggerTactileHaptic("light");
-  }, []);
+    if (typeof initialRatio === "number") {
+      syncLiveTimeLabel(initialRatio * durationRef.current);
+    }
+  }, [onScrubbingChange, syncLiveTimeLabel]);
+
+  const onLiveScrub = useCallback((ratio: number) => {
+    syncLiveTimeLabel(ratio * durationRef.current);
+  }, [syncLiveTimeLabel]);
 
   const onScrubCommit = useCallback((finalRatio: number) => {
     isSeekingRef.current = false;
     setUserScrubbingActive(false);
+    onScrubbingChange?.(false);
     const finalSec = finalRatio * durationRef.current;
     syncLiveTimeLabel(finalSec);
     triggerTactileHaptic("medium");
     onSeek(finalSec);
-  }, [onSeek, syncLiveTimeLabel]);
+  }, [onSeek, onScrubbingChange, syncLiveTimeLabel]);
 
   const panGesture = useMemo(() => Gesture.Pan()
-    .activeOffsetX([-4, 4])
+    .minDistance(0)
+    .activeOffsetX([-3, 3])
+    .failOffsetY([-14, 14])
+    .shouldCancelWhenOutside(false)
+    .hitSlop({ top: 20, bottom: 20, left: 16, right: 16 })
     .onBegin((e) => {
       "worklet";
       if (disabledRef.current) return;
       isSeekingShared.value = true;
-      thumbScaleAnim.value = withTiming(1.2, { duration: 60 });
+      thumbScaleAnim.value = withTiming(1.25, { duration: 60 });
       rippleScaleAnim.value = withTiming(1, { duration: 100 });
       rippleOpacityAnim.value = withTiming(0.8, { duration: 100 });
-      ratioAnim.value = clamp(e.x / (trackWidth.value || 1), 0, 1);
-      runOnJS(onScrubStart)();
+      const w = trackWidth.value > 0 ? trackWidth.value : DEFAULT_TRACK_WIDTH;
+      const initialR = clamp(e.x / w, 0, 1);
+      ratioAnim.value = initialR;
+      runOnJS(onScrubStart)(initialR);
     })
     .onUpdate((e) => {
       "worklet";
-      if (!disabledRef.current) ratioAnim.value = clamp(e.x / (trackWidth.value || 1), 0, 1);
+      if (!disabledRef.current) {
+        const w = trackWidth.value > 0 ? trackWidth.value : DEFAULT_TRACK_WIDTH;
+        const r = clamp(e.x / w, 0, 1);
+        ratioAnim.value = r;
+        runOnJS(onLiveScrub)(r);
+      }
     })
     .onFinalize((e) => {
       "worklet";
       isSeekingShared.value = false;
-      thumbScaleAnim.value = withTiming(1.0, { duration: 60 });
-      rippleScaleAnim.value = withTiming(0.4, { duration: 100 });
-      rippleOpacityAnim.value = withTiming(0, { duration: 100 });
-      const finalRatio = clamp(e.x / (trackWidth.value || 1), 0, 1);
+      thumbScaleAnim.value = withTiming(1.0, { duration: 80 });
+      rippleScaleAnim.value = withTiming(0.3, { duration: 120 });
+      rippleOpacityAnim.value = withTiming(0, { duration: 120 });
+      const w = trackWidth.value > 0 ? trackWidth.value : DEFAULT_TRACK_WIDTH;
+      const finalRatio = clamp(e.x / w, 0, 1);
       ratioAnim.value = finalRatio;
       runOnJS(onScrubCommit)(finalRatio);
-    }), [onScrubStart, onScrubCommit, isSeekingShared, thumbScaleAnim, rippleScaleAnim, rippleOpacityAnim, trackWidth, ratioAnim]
+    }),
+    [onScrubStart, onLiveScrub, onScrubCommit, isSeekingShared, thumbScaleAnim, rippleScaleAnim, rippleOpacityAnim, trackWidth, ratioAnim]
   );
 
-  const tapGesture = useMemo(() => Gesture.Tap().maxDuration(300).onEnd((e) => {
-    "worklet";
-    if (disabledRef.current) return;
-    const finalRatio = clamp(e.x / (trackWidth.value || 1), 0, 1);
-    ratioAnim.value = finalRatio;
-    runOnJS(onScrubCommit)(finalRatio);
-  }), [onScrubCommit, trackWidth, ratioAnim]);
-
-  const sliderGesture = useMemo(() => Gesture.Race(panGesture, tapGesture), [panGesture, tapGesture]);
+  const sliderGesture = panGesture;
   const handleLayout = useCallback((e: LayoutChangeEvent) => { trackWidth.value = e.nativeEvent.layout.width; }, [trackWidth]);
 
   const isMini = mini || !showTimeLabels;

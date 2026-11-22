@@ -5,6 +5,7 @@
   "dependencies": {
     "@config-plugins/react-native-blob-util": "^14.0.1",
     "@config-plugins/react-native-pdf": "^14.0.1",
+    "@expo-google-fonts/poppins": "^0.4.1",
     "@expo/metro-runtime": "~6.1.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/slider": "5.0.1",

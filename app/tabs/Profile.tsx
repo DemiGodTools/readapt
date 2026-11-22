@@ -4,6 +4,8 @@ import {
   Animated,
   AppState,
   Dimensions,
+  Easing,
+  Image,
   Linking,
   Modal,
   Pressable,
@@ -17,7 +19,16 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Circle, Line, Path, Polyline, Rect } from "react-native-svg";
+import Svg, {
+  Circle,
+  Defs,
+  Line,
+  LinearGradient as SvgLinearGradient,
+  Path,
+  Polyline,
+  Rect,
+  Stop,
+} from "react-native-svg";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import Constants from "expo-constants";
@@ -89,6 +100,352 @@ const ChevronRight = ({ color = "rgba(255,255,255,0.55)", size = 18 }) => (
   </Svg>
 );
 
+const InfoQuestionIcon = ({ onPress, size = 15, color = "rgba(255,255,255,0.6)" }: { onPress: () => void; size?: number; color?: string }) => (
+  <Pressable onPress={onPress} hitSlop={10} style={{ padding: 2, justifyContent: "center", alignItems: "center" }}>
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+      <Circle cx="12" cy="12" r="10" />
+      <Path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <Line x1="12" y1="17" x2="12.01" y2="17" />
+    </Svg>
+  </Pressable>
+);
+
+const GiftBoxIcon = ({ size = 24, color = ACCENT }: { size?: number; color?: string }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+    <Polyline points="20 12 20 22 4 22 4 12" />
+    <Rect x="2" y="7" width="20" height="5" rx="1" />
+    <Line x1="12" y1="22" x2="12" y2="7" />
+    <Path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
+    <Path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+  </Svg>
+);
+
+const EarlyBadgeWithGlow = ({ onPress }: { onPress: () => void }) => {
+  const spark1Anim = useRef(new Animated.Value(0)).current;
+  const spark2Anim = useRef(new Animated.Value(0)).current;
+  const spark3Anim = useRef(new Animated.Value(0)).current;
+  const spark4Anim = useRef(new Animated.Value(0)).current;
+  const spark5Anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const createSparkLoop = (anim: Animated.Value, duration: number, delay: number) => {
+      return Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, {
+            toValue: 1,
+            duration,
+            useNativeDriver: true,
+          }),
+          Animated.timing(anim, {
+            toValue: 0,
+            duration: 0,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+    };
+
+    const s1 = createSparkLoop(spark1Anim, 2400, 0);
+    const s2 = createSparkLoop(spark2Anim, 2600, 500);
+    const s3 = createSparkLoop(spark3Anim, 2300, 1100);
+    const s4 = createSparkLoop(spark4Anim, 2500, 1600);
+    const s5 = createSparkLoop(spark5Anim, 2700, 800);
+
+    s1.start();
+    s2.start();
+    s3.start();
+    s4.start();
+    s5.start();
+
+    return () => {
+      s1.stop();
+      s2.stop();
+      s3.stop();
+      s4.stop();
+      s5.stop();
+    };
+  }, [spark1Anim, spark2Anim, spark3Anim, spark4Anim, spark5Anim]);
+
+  return (
+    <Pressable onPress={onPress} style={styles.badgeContainer} hitSlop={8}>
+      {/* Spark 1 - drifting bottom left */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.goldenSpark,
+          {
+            left: 8,
+            bottom: 3,
+            width: 3.5,
+            height: 3.5,
+            opacity: spark1Anim.interpolate({
+              inputRange: [0, 0.3, 0.8, 1],
+              outputRange: [0, 0.9, 0.7, 0],
+            }),
+            transform: [
+              {
+                translateY: spark1Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-1, 12],
+                }),
+              },
+              {
+                translateX: spark1Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -8],
+                }),
+              },
+              {
+                scale: spark1Anim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0.5, 1.25, 0.3],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+
+      {/* Spark 2 - drifting top right */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.goldenSpark,
+          {
+            right: 10,
+            top: 2,
+            width: 3,
+            height: 3,
+            opacity: spark2Anim.interpolate({
+              inputRange: [0, 0.3, 0.75, 1],
+              outputRange: [0, 0.85, 0.6, 0],
+            }),
+            transform: [
+              {
+                translateY: spark2Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [1, -11],
+                }),
+              },
+              {
+                translateX: spark2Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 7],
+                }),
+              },
+              {
+                scale: spark2Anim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0.6, 1.15, 0.3],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+
+      {/* Spark 3 - drifting bottom center-right */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.goldenSpark,
+          {
+            right: 22,
+            bottom: 1,
+            width: 4,
+            height: 4,
+            opacity: spark3Anim.interpolate({
+              inputRange: [0, 0.35, 0.8, 1],
+              outputRange: [0, 0.8, 0.5, 0],
+            }),
+            transform: [
+              {
+                translateY: spark3Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 11],
+                }),
+              },
+              {
+                translateX: spark3Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 5],
+                }),
+              },
+              {
+                scale: spark3Anim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0.4, 1.3, 0.3],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+
+      {/* Spark 4 - drifting top left */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.goldenSpark,
+          {
+            left: 18,
+            top: 1,
+            width: 3,
+            height: 3,
+            opacity: spark4Anim.interpolate({
+              inputRange: [0, 0.3, 0.75, 1],
+              outputRange: [0, 0.85, 0.55, 0],
+            }),
+            transform: [
+              {
+                translateY: spark4Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -10],
+                }),
+              },
+              {
+                translateX: spark4Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, -6],
+                }),
+              },
+              {
+                scale: spark4Anim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0.5, 1.1, 0.4],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+
+      {/* Spark 5 - drifting middle right */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.goldenSpark,
+          {
+            right: 4,
+            top: 10,
+            width: 2.8,
+            height: 2.8,
+            opacity: spark5Anim.interpolate({
+              inputRange: [0, 0.4, 0.8, 1],
+              outputRange: [0, 0.8, 0.6, 0],
+            }),
+            transform: [
+              {
+                translateY: spark5Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-2, 8],
+                }),
+              },
+              {
+                translateX: spark5Anim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 6],
+                }),
+              },
+              {
+                scale: spark5Anim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0.4, 1.2, 0.3],
+                }),
+              },
+            ],
+          },
+        ]}
+      />
+
+      {/* Early badge image - change dimensions in styles.earlyBadgeImage */}
+      <Image
+        source={require("../../assets/earlybadge.png")}
+        style={styles.earlyBadgeImage}
+      />
+    </Pressable>
+  );
+};
+
+const AnimatedCopyButton = ({
+  copied,
+  onPress,
+}: {
+  copied: boolean;
+  onPress: () => void;
+}) => {
+  const anim = useRef(new Animated.Value(copied ? 1 : 0)).current;
+
+  useEffect(() => {
+    Animated.spring(anim, {
+      toValue: copied ? 1 : 0,
+      tension: 180,
+      friction: 12,
+      useNativeDriver: false,
+    }).start();
+  }, [copied, anim]);
+
+  const backgroundColor = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [ACCENT, "#16a34a"],
+  });
+
+  const copyScale = anim.interpolate({
+    inputRange: [0, 0.4, 1],
+    outputRange: [1, 0.5, 0],
+  });
+
+  const copiedScale = anim.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0, 0.6, 1],
+  });
+
+  return (
+    <Pressable onPress={onPress} hitSlop={6} style={styles.copyBtnPressable}>
+      <Animated.View style={[styles.copyBtn, { backgroundColor }]}>
+        <View style={styles.copyBtnContent}>
+          {/* Default Copy state */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.copyBtnInner,
+              {
+                opacity: anim.interpolate({ inputRange: [0, 0.35, 1], outputRange: [1, 0, 0] }),
+                transform: [{ scale: copyScale }],
+              },
+            ]}
+          >
+            <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+              <Rect x="9" y="9" width="12" height="12" rx="2.5" />
+              <Path d="M5 15V5a2 2 0 0 1 2-2h10" />
+            </Svg>
+            <Text style={styles.copyText}>Copy</Text>
+          </Animated.View>
+
+          {/* Copied! state */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.copyBtnInner,
+              styles.copyBtnInnerAbsolute,
+              {
+                opacity: anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0, 1] }),
+                transform: [{ scale: copiedScale }],
+              },
+            ]}
+          >
+            <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round">
+              <Polyline points="20 6 9 17 4 12" />
+            </Svg>
+            <Text style={styles.copyTextSuccess}>Copied!</Text>
+          </Animated.View>
+        </View>
+      </Animated.View>
+    </Pressable>
+  );
+};
+
 const CircularProgress = ({ progress }: { progress: number }) => {
   const size = 46;
   const strokeWidth = 3.5;
@@ -140,10 +497,6 @@ const ActionRow = ({
   </Pressable>
 );
 
-/* -------------------------------------------------------------------------
- * Screen
- * ---------------------------------------------------------------------- */
-
 const ProfileScreen = () => {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -151,7 +504,7 @@ const ProfileScreen = () => {
   const { user, reload, loadingUser, updateUser, logout } = useUser() as any;
   const { showToast } = useToast();
   const { isConnected } = useNetworkStatus();
-  const { streak } = useStreak();
+  const { streak, refreshStreak } = useStreak();
 
   const [avatarOverride, setAvatarOverride] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -162,8 +515,18 @@ const ProfileScreen = () => {
   const [showStreakInfo, setShowStreakInfo] = useState(false);
   const [showLevelInfo, setShowLevelInfo] = useState(false);
   const [showLogoutSheet, setShowLogoutSheet] = useState(false);
+  const [showReferInfo, setShowReferInfo] = useState(false);
+  const [showEarlyBadgeInfo, setShowEarlyBadgeInfo] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [completeChapters, setCompleteChapters] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
 
   const previewScale = useRef(new Animated.Value(0.35)).current;
   const previewOpacity = useRef(new Animated.Value(0)).current;
@@ -245,9 +608,10 @@ const ProfileScreen = () => {
 
   useFocusEffect(
     useCallback(() => {
+      refreshStreak();
       // SWR: only hit the network if what we show is more than 30s old.
       if (Date.now() - lastFocusRefresh.current > 30_000) revalidate();
-    }, [revalidate])
+    }, [revalidate, refreshStreak])
   );
 
   useEffect(() => {
@@ -264,12 +628,12 @@ const ProfileScreen = () => {
     }
     setRefreshing(true);
     try {
-      await Promise.allSettled([reload?.(), refreshSeries?.()]);
+      await Promise.allSettled([reload?.(), refreshSeries?.(), refreshStreak()]);
     } finally {
       setRefreshing(false);
       lastFocusRefresh.current = Date.now();
     }
-  }, [isConnected, reload, refreshSeries, showToast]);
+  }, [isConnected, reload, refreshSeries, refreshStreak, showToast]);
 
   /* ---------------- Avatar ---------------- */
   const avatarSource = avatarOverride || avatarUri(user, "md");
@@ -385,14 +749,30 @@ const ProfileScreen = () => {
   /* ---------------- Derived profile bits ---------------- */
   const levelName = user?.profileLevel ? getLevelTitle(user.profileLevel) : "Novice";
   const levelColor = LEVEL_COLORS[levelName] || LEVEL_COLORS.Novice;
-  const referralCode = useMemo(
-    () => `READAPT${initialsCode(user?.userId || user?.name)}`,
-    [user?.userId, user?.name]
-  );
+  const referralCode = useMemo(() => {
+    if (user?.referralCode && typeof user.referralCode === "string" && user.referralCode.trim()) {
+      return user.referralCode.toUpperCase().trim();
+    }
+    const cleanId = (user?.userId || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    if (cleanId.length >= 5 && cleanId.length <= 12) {
+      return cleanId;
+    }
+    const cleanName = (user?.name || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+    if (cleanName.length >= 5 && cleanName.length <= 12) {
+      return cleanName;
+    }
+    return cleanId || cleanName || "READAPT";
+  }, [user?.referralCode, user?.userId, user?.name]);
 
   const copyReferral = useCallback(async () => {
-    if (await copyText(referralCode)) {
-      Vibration.vibrate(18);
+    const success = await copyText(referralCode);
+    if (success) {
+      Vibration.vibrate(22);
+      setCopied(true);
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = setTimeout(() => {
+        setCopied(false);
+      }, 2000);
       showToast({ title: "Referral code copied" });
       return;
     }
@@ -502,25 +882,7 @@ const ProfileScreen = () => {
               </View>
             </Pressable>
 
-            <Pressable
-              onPress={() => setShowLevelInfo(true)}
-              style={[styles.levelPill, { borderColor: levelColor }]}
-              hitSlop={6}
-            >
-              <Svg width={13} height={13} viewBox="0 0 24 24" fill={levelColor}>
-                <Path d="M12 2l2.4 6.1L21 9.3l-4.8 4.2 1.4 6.5L12 16.7 6.4 20l1.4-6.5L3 9.3l6.6-1.2z" />
-              </Svg>
-              <Text style={[styles.levelPillText, { color: levelColor }]}>{levelName}</Text>
-            </Pressable>
-
-            {!isBusy ? (
-              <Pressable style={styles.cameraChip} onPress={() => setPhotoMenuVisible(true)} hitSlop={10}>
-                <Svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#03110f" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-                  <Path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                  <Circle cx="12" cy="13" r="4" />
-                </Svg>
-              </Pressable>
-            ) : null}
+            <EarlyBadgeWithGlow onPress={() => setShowEarlyBadgeInfo(true)} />
           </View>
 
           <View style={styles.identityText}>
@@ -546,22 +908,12 @@ const ProfileScreen = () => {
             </View>
 
             <View style={styles.badgesRow}>
-              {user?.profession ? (
-                <View style={styles.metaPill}>
-                  <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                    <Path d="M22 10 12 5 2 10l10 5 10-5z" />
-                    <Path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5" />
-                  </Svg>
-                  <Text style={styles.metaPillText}>{user.profession}</Text>
-                </View>
-              ) : null}
-              {user?.profession && user?.visibility ? <View style={styles.badgeDivider} /> : null}
               <View style={styles.metaPill}>
                 <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round">
                   <Circle cx="12" cy="12" r="9" />
                   <Path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z" />
                 </Svg>
-                <Text style={styles.metaPillText}>{user.visibility === "Private" ? "Private" : "Public"}</Text>
+                <Text style={styles.metaPillText}>{user?.visibility === "Private" ? "Private" : "Public"}</Text>
               </View>
             </View>
           </View>
@@ -577,6 +929,9 @@ const ProfileScreen = () => {
 
         {/* Bio */}
         <Pressable onPress={() => setEditVisible(true)} style={styles.bioWrap}>
+          {user?.profession ? (
+            <Text style={styles.professionText}>{user.profession}</Text>
+          ) : null}
           {user?.bio ? (
             <Text style={styles.bioText}>{user.bio}</Text>
           ) : (
@@ -599,14 +954,9 @@ const ProfileScreen = () => {
           style={({ pressed }) => [styles.journeyCard, pressed && styles.cardPressed]}
         >
           <View style={styles.journeyTop}>
-            <View style={styles.journeyIcon}>
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill={ACCENT}>
-                <Path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM2 19.5c0-3 3.1-5 7-5s7 2 7 5V21H2v-1.5zM16.5 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM22 20v1h-4.6v-1.5c0-1.7-.7-3.2-1.9-4.3.6-.1 1.2-.2 1.9-.2 3.2 0 5.6 1.7 5.6 4.5V20z" />
-              </Svg>
-            </View>
             <View style={styles.journeyBody}>
               <Text style={styles.cardTitle}>
-                {joinedSeriesId ? "Your Learning Journey" : "Start your learning journey"}
+                {seriesData?.title || "Start your learning journey"}
               </Text>
               {joinedSeriesId && seriesQuery.isLoading && !seriesData ? (
                 <View style={styles.inlineSkeletonRow}>
@@ -636,7 +986,7 @@ const ProfileScreen = () => {
             </View>
             <ChevronRight color="rgba(255,255,255,0.75)" />
           </View>
-          {seriesData?.title ? <Text style={styles.journeySeries} numberOfLines={1}>{seriesData.title}</Text> : null}
+          {seriesData?.title ? <Text style={styles.journeySeries} numberOfLines={1}>Your Learning Journey</Text> : null}
         </Pressable>
 
         {/* Streak */}
@@ -652,7 +1002,10 @@ const ProfileScreen = () => {
             </Svg>
           </View>
           <View style={styles.streakBody}>
-            <Text style={styles.streakLabel}>CURRENT STREAK</Text>
+            <View style={styles.streakHeaderRow}>
+              <Text style={styles.streakLabel}>CURRENT STREAK</Text>
+              <InfoQuestionIcon onPress={() => setShowStreakInfo(true)} size={13} color="rgba(255,255,255,0.7)" />
+            </View>
             <View style={styles.streakNumbers}>
               <Text style={styles.streakNumber}>{streak}</Text>
               <Text style={styles.streakDays}>Days</Text>
@@ -662,28 +1015,27 @@ const ProfileScreen = () => {
         </Pressable>
 
         {/* Refer & Earn */}
-        <View style={styles.referCard}>
+        <Pressable
+          onPress={() => navigation.navigate("ReferAndEarn")}
+          onLongPress={() => {
+            Vibration.vibrate(20);
+            setShowReferInfo(true);
+          }}
+          delayLongPress={400}
+          style={({ pressed }) => [styles.referCard, pressed && styles.cardPressed]}
+        >
           <View style={styles.referTop}>
             <View style={styles.referIcon}>
-              <Svg width={24} height={24} viewBox="0 0 24 24" fill={ACCENT}>
-                <Path d="M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM2 19.5c0-3 3.1-5 7-5s7 2 7 5V21H2v-1.5zM18.5 9h-1V7.5h-2V9h-1.5v2H15.5v1.5h2V11h1v-2z" />
-              </Svg>
+              <GiftBoxIcon size={22} color={ACCENT} />
             </View>
             <View style={styles.referBody}>
-              <Text style={styles.cardTitle}>Refer &amp; Earn</Text>
+              <View style={styles.referTitleRow}>
+                <Text style={styles.cardTitle}>Refer &amp; Earn</Text>
+                <InfoQuestionIcon onPress={() => setShowReferInfo(true)} size={14} color="rgba(255,255,255,0.7)" />
+              </View>
               <Text style={styles.cardMeta}>Share your code with friends and earn rewards.</Text>
             </View>
-            <Pressable
-              onPress={copyReferral}
-              style={({ pressed }) => [styles.copyBtn, pressed && { opacity: 0.75 }]}
-              hitSlop={6}
-            >
-              <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-                <Rect x="9" y="9" width="12" height="12" rx="2.5" />
-                <Path d="M5 15V5a2 2 0 0 1 2-2h10" />
-              </Svg>
-              <Text style={styles.copyText}>Copy</Text>
-            </Pressable>
+            <AnimatedCopyButton copied={copied} onPress={copyReferral} />
           </View>
 
           <Pressable onPress={copyReferral} style={styles.referCodeBox}>
@@ -692,7 +1044,7 @@ const ProfileScreen = () => {
               {referralCode}
             </Text>
           </Pressable>
-        </View>
+        </Pressable>
 
         {/* Rows */}
         <View style={styles.actionsWrap}>
@@ -708,13 +1060,9 @@ const ProfileScreen = () => {
             onPress={() => navigation.navigate("RecentReads")}
           />
           <ActionRow
-            icon={
-              <Svg width={20} height={20} viewBox="0 0 24 24" fill={ACCENT}>
-                <Path d="M3 9h18v3H3zM5 12h14v9H5zM12 9v12M12 9c-2.8 0-4.5-1.3-4.5-3S9.2 3 12 6c2.8-3 4.5-1.3 4.5 0S14.8 9 12 9z" />
-              </Svg>
-            }
+            icon={<GiftBoxIcon size={20} color={ACCENT} />}
             label="Refer & Win"
-            onPress={shareReferral}
+            onPress={() => navigation.navigate("ReferAndEarn")}
           />
         </View>
 
@@ -772,14 +1120,139 @@ const ProfileScreen = () => {
       </UpgradeSheet>
 
       {/* Streak help */}
-      <UpgradeSheet visible={showStreakInfo} onClose={() => setShowStreakInfo(false)} title="How Streak Works?">
+      <UpgradeSheet
+        visible={showStreakInfo}
+        onClose={() => setShowStreakInfo(false)}
+        title="How Streak Works"
+      >
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.streakSheetScroll}
+        >
+          {/* Streak Status Pill */}
+          <View style={styles.streakSheetHero}>
+            <View style={styles.streakHeroPill}>
+              <Svg width={18} height={18} viewBox="0 0 24 24" fill={AMBER}>
+                <Path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+              </Svg>
+              <Text style={styles.streakHeroPillText}>
+                {streak > 0 ? `${streak} Day Streak Active` : "Start Your Streak Today"}
+              </Text>
+            </View>
+            <Text style={styles.streakHeroSub}>
+              Read daily to build unstoppable momentum and unlock milestone rewards.
+            </Text>
+          </View>
+
+          {/* Structured Step Cards */}
+          <View style={styles.streakStepsWrap}>
+            {/* Step 1 */}
+            <View style={styles.streakStepCard}>
+              <View style={[styles.streakStepIconWrap, { backgroundColor: "rgba(0,210,180,0.12)", borderColor: "rgba(0,210,180,0.3)" }]}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                  <Path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                </Svg>
+              </View>
+              <View style={styles.streakStepBody}>
+                <View style={styles.streakStepHeader}>
+                  <Text style={[styles.streakStepTag, { color: ACCENT }]}>STEP 1</Text>
+                  <Text style={styles.streakStepTitle}>Read or Listen Daily</Text>
+                </View>
+                <Text style={styles.streakStepDesc}>
+                  Complete at least <Text style={{ fontWeight: "700", color: "#f1f5f9" }}>1 chapter</Text> every day before midnight.
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 2 */}
+            <View style={styles.streakStepCard}>
+              <View style={[styles.streakStepIconWrap, { backgroundColor: "rgba(245,158,11,0.12)", borderColor: "rgba(245,158,11,0.3)" }]}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={AMBER} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+                </Svg>
+              </View>
+              <View style={styles.streakStepBody}>
+                <View style={styles.streakStepHeader}>
+                  <Text style={[styles.streakStepTag, { color: AMBER }]}>STEP 2</Text>
+                  <Text style={styles.streakStepTitle}>Never Break The Chain</Text>
+                </View>
+                <Text style={styles.streakStepDesc}>
+                  Every consecutive day grows your fire. Missing a day resets the counter to 0.
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 3 */}
+            <View style={styles.streakStepCard}>
+              <View style={[styles.streakStepIconWrap, { backgroundColor: "rgba(167,139,250,0.12)", borderColor: "rgba(167,139,250,0.3)" }]}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Polyline points="20 12 20 22 4 22 4 12" />
+                  <Rect x="2" y="7" width="20" height="5" rx="1" />
+                  <Line x1="12" y1="22" x2="12" y2="7" />
+                  <Path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
+                  <Path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+                </Svg>
+              </View>
+              <View style={styles.streakStepBody}>
+                <View style={styles.streakStepHeader}>
+                  <Text style={[styles.streakStepTag, { color: "#a78bfa" }]}>STEP 3</Text>
+                  <Text style={styles.streakStepTitle}>Unlock Milestone Rewards</Text>
+                </View>
+                <Text style={styles.streakStepDesc}>
+                  Hit 7, 14, and 21 days in a row to unlock lucky spins, badges, and perks.
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Milestones Target Grid */}
+          <View style={styles.milestoneBox}>
+            <Text style={styles.milestoneBoxTitle}>MILESTONE TARGETS</Text>
+            <View style={styles.milestoneGrid}>
+              <View style={[styles.milestonePill, streak >= 7 && styles.milestonePillActive]}>
+                <Text style={[styles.milestoneDays, streak >= 7 && styles.milestoneDaysActive]}>7 Days</Text>
+                <Text style={styles.milestoneSub}>Bronze Spin</Text>
+                {streak >= 7 ? <View style={styles.milestoneDot} /> : null}
+              </View>
+              <View style={[styles.milestonePill, streak >= 14 && styles.milestonePillActive]}>
+                <Text style={[styles.milestoneDays, streak >= 14 && styles.milestoneDaysActive]}>14 Days</Text>
+                <Text style={styles.milestoneSub}>Silver Spin</Text>
+                {streak >= 14 ? <View style={styles.milestoneDot} /> : null}
+              </View>
+              <View style={[styles.milestonePill, streak >= 21 && styles.milestonePillActive]}>
+                <Text style={[styles.milestoneDays, streak >= 21 && styles.milestoneDaysActive]}>21 Days</Text>
+                <Text style={styles.milestoneSub}>Gold Legend</Text>
+                {streak >= 21 ? <View style={styles.milestoneDot} /> : null}
+              </View>
+            </View>
+          </View>
+
+          {/* Action button */}
+          <TouchableOpacity
+            style={styles.streakPrimaryBtn}
+            activeOpacity={0.85}
+            onPress={() => {
+              setShowStreakInfo(false);
+              navigation.navigate("DailyRewards");
+            }}
+          >
+            <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.4}>
+              <Path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z" />
+            </Svg>
+            <Text style={styles.streakPrimaryBtnText}>Go to Daily Rewards</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </UpgradeSheet>
+
+      {/* Refer & Earn info sheet */}
+      <UpgradeSheet visible={showReferInfo} onClose={() => setShowReferInfo(false)} title="How Refer & Earn Works?">
         <View style={styles.infoSheetBody}>
-          <Text style={styles.panelDescription}>
-            <Text style={{ fontWeight: "700" }}>Read or listen</Text> to a chapter{" "}
-            <Text style={{ fontWeight: "700" }}>every day</Text> and keep your{" "}
-            <Text style={{ fontWeight: "700" }}>streak</Text> going! Keep learning for{" "}
-            <Text style={{ fontWeight: "700" }}>7, 14, and 21 days</Text> in a row and unlock rewards at
-            every milestone.
+          <Text style={{ fontSize: 14, lineHeight: 22, color: "#d1d5db", textAlign: "center" }}>
+            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>1.</Text> Invite friends using your unique referral code
+            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>2.</Text> When they sign up and start reading, you both earn rewards
+            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>3.</Text> Track your referral earnings in the app
+            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>4.</Text> Unlock exclusive badges and perks as your referrals grow
           </Text>
         </View>
       </UpgradeSheet>
@@ -796,6 +1269,105 @@ const ProfileScreen = () => {
             answer triggers an immediate level down.
           </Text>
         </View>
+      </UpgradeSheet>
+
+      {/* Early badge info sheet */}
+      <UpgradeSheet
+        visible={showEarlyBadgeInfo}
+        onClose={() => setShowEarlyBadgeInfo(false)}
+        title=""
+      >
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.earlySheetScroll}
+        >
+          {/* Top Dark Teal Hero Card */}
+          <View style={styles.earlySheetHeroCard}>
+            {/* Early badge PNG image in center top */}
+            <Image
+              source={require("../../assets/earlybadge.png")}
+              style={styles.earlySheetBadgeImage}
+            />
+
+            {/* Lifetime Badge pill shown right below center */}
+            <View style={styles.lifetimePill}>
+              <Text style={styles.lifetimePillText}>Lifetime Badge</Text>
+            </View>
+
+            {/* Early Reader title */}
+            <Text style={styles.earlySheetTitle}>Early Reader</Text>
+
+            {/* Subtitle */}
+            <Text style={styles.earlySheetSubtitle}>
+              Proud to have you with us from the beginning.
+            </Text>
+          </View>
+
+          {/* Middle Body */}
+          <View style={styles.earlySheetMiddle}>
+            <Text style={styles.earlySheetHeadline}>
+              A little recognition, just for you.
+            </Text>
+            <Text style={styles.earlySheetBodyText}>
+              You were among the early members who joined READAPT before its official subscription launch.
+            </Text>
+          </View>
+
+          {/* Divider */}
+          <View style={styles.earlySheetDivider} />
+
+          {/* Recognition Rows */}
+          <View style={styles.earlySheetRows}>
+            {/* Row 1: Awarded for */}
+            <View style={styles.earlySheetRow}>
+              <View style={styles.earlySheetIconCol}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                  <Line x1="16" y1="2" x2="16" y2="6" />
+                  <Line x1="8" y1="2" x2="8" y2="6" />
+                  <Line x1="3" y1="10" x2="21" y2="10" />
+                </Svg>
+              </View>
+              <View style={styles.earlySheetTextCol}>
+                <Text style={styles.earlySheetRowTitle}>Awarded for</Text>
+                <Text style={styles.earlySheetRowSub}>
+                  Joining during READAPT's early access phase
+                </Text>
+              </View>
+            </View>
+
+            {/* Row 2: Your recognition */}
+            <View style={styles.earlySheetRow}>
+              <View style={styles.earlySheetIconCol}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Circle cx="12" cy="8" r="6" />
+                  <Path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11" />
+                </Svg>
+              </View>
+              <View style={styles.earlySheetTextCol}>
+                <Text style={styles.earlySheetRowTitle}>Your recognition</Text>
+                <Text style={styles.earlySheetRowSub}>
+                  Permanent badge on your profile
+                </Text>
+              </View>
+            </View>
+
+            {/* Row 3: Our appreciation */}
+            <View style={styles.earlySheetRow}>
+              <View style={styles.earlySheetIconCol}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+                </Svg>
+              </View>
+              <View style={styles.earlySheetTextCol}>
+                <Text style={styles.earlySheetRowTitle}>Our appreciation</Text>
+                <Text style={styles.earlySheetRowSub}>
+                  Thank you for being part of our early journey.
+                </Text>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
       </UpgradeSheet>
 
       {/* Logout confirm */}
@@ -937,9 +1509,16 @@ const styles = StyleSheet.create({
   offlineText: { flex: 1, color: "#fcd34d", fontSize: 12, fontWeight: "600" },
   offlineAction: { color: AMBER, fontSize: 12, fontWeight: "800" },
 
+  professionText: {
+    color: "#94a3b8",
+    fontSize: 13.5,
+    fontWeight: "600",
+    letterSpacing: 0.2,
+    marginBottom: 5,
+  },
   bioWrap: { paddingHorizontal: 20, marginTop: 18, marginBottom: 18 },
-  bioText: { color: "rgba(226,232,240,0.92)", fontSize: 15, lineHeight: 23, fontStyle: "italic" },
-  bioPlaceholder: { color: "rgba(148,163,184,0.55)", fontSize: 14, fontStyle: "italic" },
+  bioText: { color: "rgba(241, 245, 249, 0.95)", fontSize: 14.5, lineHeight: 22 },
+  bioPlaceholder: { color: "rgba(148,163,184,0.55)", fontSize: 14 },
   interestsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   interestChip: {
     backgroundColor: "rgba(56,189,248,0.10)",
@@ -954,24 +1533,47 @@ const styles = StyleSheet.create({
   journeyCard: {
     marginHorizontal: 20,
     marginBottom: 16,
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 16,
     backgroundColor: "rgba(0,210,180,0.055)",
     borderWidth: 1,
     borderColor: "rgba(0,210,180,0.28)",
   },
   journeyTop: { flexDirection: "row", alignItems: "center" },
-  journeyIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
-    backgroundColor: "rgba(0,210,180,0.14)",
+  journeyBody: { flex: 1, marginRight: 8 },
+  journeySeries: {
+    color: "rgba(148,163,184,0.9)",
+    fontSize: 11,
+    marginTop: 10,
+  },
+  badgeContainer: {
+    position: "absolute",
+    bottom: -4,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 14,
+    zIndex: 10,
   },
-  journeyBody: { flex: 1, marginRight: 8 },
-  journeySeries: { color: "rgba(148,163,184,0.65)", fontSize: 11, marginTop: 10, fontStyle: "italic" },
+  goldenSpark: {
+    position: "absolute",
+    borderRadius: 999,
+    backgroundColor: "#fde047",
+    shadowColor: "#f59e0b",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.95,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  /* =========================================================================
+   * EARLY BADGE SIZE CONFIGURATION:
+   * To change badge size, adjust width and height below keeping the ~3.43 ratio:
+   * Standard: width: 95, height: 25.5
+   * Larger:   width: 103, height: 28  (or width: 110, height: 30)
+   * ========================================================================= */
+  earlyBadgeImage: {
+    width: 110,
+    height: 45.5,
+    resizeMode: "contain",
+  },
   inlineSkeletonRow: { height: 13, marginTop: 9, justifyContent: "center" },
   inlineSkeletonBar: { width: "55%", height: 12, borderRadius: 6, backgroundColor: "rgba(255,255,255,0.07)" },
 
@@ -992,7 +1594,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginHorizontal: 20,
     marginBottom: 16,
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 16,
     backgroundColor: "rgba(120,63,4,0.18)",
     borderWidth: 1,
@@ -1001,22 +1603,27 @@ const styles = StyleSheet.create({
   streakIconWrap: {
     width: 54,
     height: 54,
-    borderRadius: 16,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(245,158,11,0.12)",
     marginRight: 14,
   },
   streakBody: { flex: 1 },
+  streakHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   streakLabel: { color: AMBER, fontSize: 10.5, fontWeight: "800", letterSpacing: 1.2 },
   streakNumbers: { flexDirection: "row", alignItems: "baseline", gap: 6, marginTop: 2 },
-  streakNumber: { color: "#fff", fontSize: 38, fontWeight: "800", letterSpacing: -1 },
+  streakNumber: { color: "#c0c0c0", fontSize: 38, fontWeight: "800", fontStyle: "italic", letterSpacing: -1 },
   streakDays: { color: "rgba(203,213,225,0.75)", fontSize: 20, fontWeight: "700" },
 
   referCard: {
     marginHorizontal: 20,
     marginBottom: 16,
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 16,
     backgroundColor: "rgba(0,210,180,0.045)",
     borderWidth: 1,
@@ -1033,16 +1640,39 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   referBody: { flex: 1, marginRight: 8 },
-  copyBtn: {
+  referTitleRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: ACCENT,
+  },
+  copyBtnPressable: {
+    borderRadius: 999,
+  },
+  copyBtn: {
     borderRadius: 999,
     paddingHorizontal: 13,
-    paddingVertical: 8,
+    paddingVertical: 7,
+    minWidth: 78,
+    height: 33,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  copyBtnContent: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  copyBtnInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  copyBtnInnerAbsolute: {
+    position: "absolute",
   },
   copyText: { color: "#04211d", fontSize: 12, fontWeight: "800" },
+  copyTextSuccess: { color: "#ffffff", fontSize: 12, fontWeight: "800" },
   referCodeBox: {
     marginTop: 14,
     borderRadius: 12,
@@ -1138,6 +1768,259 @@ const styles = StyleSheet.create({
 
   infoSheetBody: { paddingHorizontal: 24, paddingTop: 8 },
   panelDescription: { fontSize: 14, lineHeight: 22, color: "#d1d5db", textAlign: "center" },
+
+  streakSheetScroll: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 28,
+  },
+  streakSheetHero: {
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  streakHeroPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(245,158,11,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(245,158,11,0.32)",
+    marginBottom: 8,
+  },
+  streakHeroPillText: {
+    color: "#fcd34d",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  streakHeroSub: {
+    color: "rgba(203,213,225,0.75)",
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 19,
+    paddingHorizontal: 12,
+  },
+  streakStepsWrap: {
+    gap: 10,
+    marginBottom: 14,
+  },
+  streakStepCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.035)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  streakStepIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  streakStepBody: {
+    flex: 1,
+  },
+  streakStepHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 2,
+  },
+  streakStepTag: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+  },
+  streakStepTitle: {
+    color: "#ffffff",
+    fontSize: 13.5,
+    fontWeight: "700",
+  },
+  streakStepDesc: {
+    color: "rgba(148,163,184,0.85)",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  milestoneBox: {
+    backgroundColor: "rgba(255,255,255,0.025)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 16,
+  },
+  milestoneBoxTitle: {
+    color: "rgba(148,163,184,0.75)",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  milestoneGrid: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  milestonePill: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.05)",
+    position: "relative",
+  },
+  milestonePillActive: {
+    backgroundColor: "rgba(245,158,11,0.12)",
+    borderColor: "rgba(245,158,11,0.36)",
+  },
+  milestoneDays: {
+    color: "#94a3b8",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  milestoneDaysActive: {
+    color: "#fcd34d",
+  },
+  milestoneSub: {
+    color: "rgba(148,163,184,0.7)",
+    fontSize: 10,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  milestoneDot: {
+    position: "absolute",
+    top: 5,
+    right: 5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: AMBER,
+  },
+  streakPrimaryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: AMBER,
+    borderRadius: 14,
+    paddingVertical: 14,
+  },
+  streakPrimaryBtnText: {
+    color: "#04211d",
+    fontSize: 14.5,
+    fontWeight: "800",
+  },
+
+  earlySheetScroll: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 28,
+  },
+  earlySheetHeroCard: {
+    backgroundColor: "#0d2822",
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: "rgba(0, 210, 180, 0.24)",
+    paddingVertical: 22,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  earlySheetBadgeImage: {
+    width: 140,
+    height: 41,
+    resizeMode: "contain",
+  },
+  earlySheetTitle: {
+    color: "#ffffff",
+    fontSize: 21,
+    fontWeight: "800",
+    letterSpacing: -0.3,
+    marginTop: 10,
+  },
+  lifetimePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#00D2B4",
+    backgroundColor: "rgba(0, 210, 180, 0.12)",
+    paddingHorizontal: 12,
+    paddingVertical: 3.5,
+    marginTop: 8,
+  },
+  lifetimePillText: {
+    color: "#00D2B4",
+    fontSize: 11.5,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+  },
+  earlySheetSubtitle: {
+    color: "rgba(203, 213, 225, 0.8)",
+    fontSize: 13,
+    textAlign: "center",
+    marginTop: 10,
+    lineHeight: 18,
+  },
+  earlySheetMiddle: {
+    marginTop: 20,
+    paddingHorizontal: 4,
+  },
+  earlySheetHeadline: {
+    color: "#ffffff",
+    fontSize: 16.5,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+  earlySheetBodyText: {
+    color: "rgba(226, 232, 240, 0.84)",
+    fontSize: 13.5,
+    lineHeight: 21,
+    marginTop: 8,
+  },
+  earlySheetDivider: {
+    height: 1,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    marginVertical: 18,
+    marginHorizontal: 4,
+  },
+  earlySheetRows: {
+    gap: 16,
+    paddingHorizontal: 4,
+  },
+  earlySheetRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  earlySheetIconCol: {
+    width: 28,
+    alignItems: "flex-start",
+    paddingTop: 1,
+  },
+  earlySheetTextCol: {
+    flex: 1,
+    marginLeft: 6,
+  },
+  earlySheetRowTitle: {
+    color: "#ffffff",
+    fontSize: 14.5,
+    fontWeight: "700",
+  },
+  earlySheetRowSub: {
+    color: "rgba(148, 163, 184, 0.85)",
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginTop: 2,
+  },
 
   errorCard: {
     width: "100%",

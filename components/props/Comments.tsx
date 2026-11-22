@@ -127,6 +127,7 @@ type Props = {
   chapterId: string; 
   initialComments?: Comment[]; 
   isQuestion?: boolean; 
+  onCommentsUpdated?: (comments: Comment[]) => void;
 };
 
 const triggerHaptic = (duration = 14) => {
@@ -147,15 +148,17 @@ const CommentsDrawer = ({
   chapterId,
   initialComments = [],
   isQuestion = false,
+  onCommentsUpdated,
 }: Props) => {
   const { accessToken } = useAuth();
-  const { user } = useUser();
+  const { user, reload: reloadUser } = useUser() as any;
   const { showToast } = useToast();
   const { isConnected } = useNetworkStatus();
 
   const [comments, setComments] = useState<Comment[]>([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [cachedUserAvatar, setCachedUserAvatar] = useState<string>("");
 
   // Posting & blinking animation states
   const [isPosting, setIsPosting] = useState(false);
@@ -216,10 +219,36 @@ const CommentsDrawer = ({
 
   useEffect(() => {
     if (!visible) return;
+    if (!user?.image) {
+      if (reloadUser) reloadUser().catch(() => {});
+      AsyncStorage.multiGet(["cached_user_profile", "recent_session_account"])
+        .then(([profile, session]) => {
+          try {
+            if (profile?.[1]) {
+              const p = JSON.parse(profile[1]);
+              const uri = avatarUri(p, "sm");
+              if (uri) {
+                setCachedUserAvatar(uri);
+                return;
+              }
+            }
+            if (session?.[1]) {
+              const s = JSON.parse(session[1]);
+              const uri = avatarUri(s, "sm");
+              if (uri) setCachedUserAvatar(uri);
+            }
+          } catch {}
+        })
+        .catch(() => {});
+    }
+  }, [visible, user?.image, reloadUser]);
+
+  useEffect(() => {
+    if (!visible) return;
 
     const cacheKey = commentsCacheKey(chapterId, isQuestion);
-    const memory = commentsMemoryCache.get(cacheKey);
-    if (memory && memory.length > 0) {
+    if (commentsMemoryCache.has(cacheKey)) {
+      const memory = commentsMemoryCache.get(cacheKey) || [];
       setComments(memory);
       setLoading(false);
     } else if (Array.isArray(initialComments) && initialComments.length > 0) {
@@ -230,26 +259,34 @@ const CommentsDrawer = ({
         setComments(valid);
         commentsMemoryCache.set(cacheKey, valid);
         setLoading(false);
+      } else {
+        setLoading(true);
       }
-    }
-
-    // Paint the last disk copy before the network answers (works offline too).
-    if (!memory || memory.length === 0) {
+    } else {
+      setLoading(true);
       AsyncStorage.getItem(`${COMMENTS_STORAGE_PREFIX}${cacheKey}`)
         .then((raw) => {
-          if (!raw) return;
+          if (!raw) {
+            setLoading(false);
+            return;
+          }
           const parsed = JSON.parse(raw);
-          if (!Array.isArray(parsed) || parsed.length === 0) return;
+          if (!Array.isArray(parsed)) {
+            setLoading(false);
+            return;
+          }
           const valid = parsed.filter(
             (c: any) => c && c._id && typeof c.text === "string"
           );
           commentsMemoryCache.set(cacheKey, valid);
-          setComments((prev) => (prev.length > 0 ? prev : valid));
+          setComments(valid);
           setLoading(false);
         })
-        .catch(() => {});
+        .catch(() => {
+          setLoading(false);
+        });
     }
-  }, [visible, chapterId, isQuestion]);
+  }, [visible, chapterId, isQuestion, initialComments]);
 
   useEffect(() => {
     if (visible) {
@@ -318,11 +355,24 @@ const CommentsDrawer = ({
     const cacheKey = commentsCacheKey(chapterId, isQuestion);
 
     // Only show the skeleton when we truly have nothing to render.
-    setLoading(!commentsMemoryCache.get(cacheKey)?.length);
+    const hasKnownData =
+      commentsMemoryCache.has(cacheKey) || Array.isArray(initialComments);
+    if (!hasKnownData) {
+      setLoading(true);
+    }
 
     try {
       const headers: Record<string, string> = {};
-      if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+      let token = accessToken;
+      if (!token) {
+        try {
+          const stored = await AsyncStorage.getItem("accessToken");
+          if (stored) token = JSON.parse(stored)?.token || stored;
+        } catch {}
+      }
+      if (token && typeof token === "string" && token.trim()) {
+        headers["Authorization"] = `Bearer ${token.trim()}`;
+      }
       if (user?.email) headers["x-user-email"] = user.email;
 
       // Lightweight endpoint: comments only, instead of the whole chapter.
@@ -330,7 +380,7 @@ const CommentsDrawer = ({
         .get("/chapter/comment", {
           params: { chapterId, qna: isQuestion ? 1 : 0 },
           headers,
-          timeout: 12000,
+          timeout: 15000,
         })
         .catch(() => null);
 
@@ -339,7 +389,7 @@ const CommentsDrawer = ({
       // Fallback for backends that do not expose the light endpoint yet.
       if (!Array.isArray(freshComments)) {
         const legacy = await api
-          .get(`/chapter/${chapterId}`, { headers })
+          .get(`/chapter/${chapterId}`, { headers, timeout: 15000 })
           .catch(() => null);
         freshComments = isQuestion
           ? legacy?.data?.data?.qnaComments
@@ -357,6 +407,10 @@ const CommentsDrawer = ({
           JSON.stringify(valid)
         ).catch(() => {});
         setComments(valid);
+        onCommentsUpdated?.(valid);
+      } else if (!hasKnownData) {
+        commentsMemoryCache.set(cacheKey, []);
+        setComments([]);
       }
     } catch (err) {
       console.warn("Silent comments fetch warning:", err);
@@ -463,10 +517,20 @@ const CommentsDrawer = ({
         item.by?.userId || (item as any).userHandle || (isMine ? (user?.userId || "user") : "user");
       // Smallest stored avatar: a comment row is ~36px, so pulling the 128px
       // variant keeps the drawer light on slow connections.
-      const image =
-        isMine && user?.image
-          ? avatarUri(user, "sm")
-          : avatarUri(item.by as any, "sm") || (item as any).userImage || "";
+      let image = "";
+      if (isMine) {
+        image =
+          avatarUri(user, "sm") ||
+          cachedUserAvatar ||
+          avatarUri(item.by as any, "sm") ||
+          (item as any).userImage ||
+          "";
+      } else {
+        image =
+          avatarUri(item.by as any, "sm") ||
+          (item as any).userImage ||
+          "";
+      }
 
       return {
         name,
@@ -474,7 +538,7 @@ const CommentsDrawer = ({
         image,
       };
     },
-    [isMyComment, user]
+    [isMyComment, user, cachedUserAvatar]
   );
 
   const handleLongPress = (item: Comment, e: any) => {
@@ -534,8 +598,16 @@ const CommentsDrawer = ({
     const commentIdToDelete = targetComment._id;
     const originalComments = [...comments];
 
-    // Optimistic removal: Remove immediately from state
-    setComments((prev) => prev.filter((c) => c._id !== commentIdToDelete));
+    // Optimistic removal: Remove immediately from state and update cache
+    const updated = comments.filter((c) => c._id !== commentIdToDelete);
+    setComments(updated);
+    const cacheKey = commentsCacheKey(chapterId, isQuestion);
+    commentsMemoryCache.set(cacheKey, updated);
+    AsyncStorage.setItem(
+      `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
+      JSON.stringify(updated)
+    ).catch(() => {});
+    onCommentsUpdated?.(updated);
 
     try {
       const headers: Record<string, string> = {};
@@ -556,13 +628,18 @@ const CommentsDrawer = ({
 
       if (res?.data?.success) {
         showToast({ title: "Comment deleted" });
-        reload?.();
       } else {
         throw new Error(res?.data?.message || "Failed to delete comment");
       }
     } catch (err: any) {
       console.error("Delete comment error:", err);
       setComments(originalComments);
+      commentsMemoryCache.set(cacheKey, originalComments);
+      AsyncStorage.setItem(
+        `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
+        JSON.stringify(originalComments)
+      ).catch(() => {});
+      onCommentsUpdated?.(originalComments);
       showToast({ title: err?.message || "Could not delete comment. Try again." });
     }
   };
@@ -577,7 +654,14 @@ const CommentsDrawer = ({
     const trimmed = text.trim();
     if (!trimmed || isPosting) return;
 
+    const validChapterId = String(chapterId || "").trim();
+    if (!validChapterId || validChapterId === "undefined" || validChapterId === "null") {
+      showToast({ title: "Content reference missing. Please reopen." });
+      return;
+    }
+
     const tempId = `posting_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const myAvatar = avatarUri(user, "sm") || cachedUserAvatar || user?.image || "";
     const optimisticComment: Comment = {
       _id: tempId,
       isPosting: true,
@@ -585,85 +669,150 @@ const CommentsDrawer = ({
         _id: user?._id || "temp_user",
         name: user?.name || "You",
         userId: user?.userId ? "@" + user.userId : "@you",
-        image: user?.image || "",
+        image: myAvatar,
         imageMd: (user as any)?.imageMd,
         imageSm: (user as any)?.imageSm,
       } as any,
       userEmail: user?.email || undefined,
       userName: user?.name || "You",
       userHandle: user?.userId || "you",
-      userImage: user?.image || "",
+      userImage: myAvatar,
       text: trimmed,
       createdAt: new Date().toISOString(),
     };
 
     // ⚡ Instant UI update: clear text and place subtle-gray card at the top
     setText("");
-    setComments((prev) => [optimisticComment, ...prev]);
+    const cacheKey = commentsCacheKey(validChapterId, isQuestion);
+    const newCommentsList = [optimisticComment, ...comments];
+    setComments(newCommentsList);
+    commentsMemoryCache.set(cacheKey, newCommentsList);
+    AsyncStorage.setItem(
+      `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
+      JSON.stringify(newCommentsList)
+    ).catch(() => {});
+    onCommentsUpdated?.(newCommentsList);
     setIsPosting(true);
     setPostingCommentId(tempId);
 
     const headers: Record<string, string> = {};
-    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+    let token = accessToken;
+    if (!token) {
+      try {
+        const stored = await AsyncStorage.getItem("accessToken");
+        if (stored) token = JSON.parse(stored)?.token || stored;
+      } catch {}
+    }
+    if (token && typeof token === "string" && token.trim()) {
+      headers["Authorization"] = `Bearer ${token.trim()}`;
+    }
     if (user?.email) headers["x-user-email"] = user.email;
 
-    const payload = { chapterId, text: trimmed, isQna: isQuestion };
+    const payload = {
+      chapterId: validChapterId,
+      text: trimmed,
+      isQna: Boolean(isQuestion),
+      qna: isQuestion ? 1 : 0,
+    };
+
+    const requestConfig = {
+      headers,
+      timeout: 16000,
+    };
 
     try {
       let res: any = null;
       try {
-        res = await api.post("/chapter/comment", payload, { headers });
+        res = await api.post("/chapter/comment", payload, requestConfig);
       } catch (postErr: any) {
         try {
-          res = await api.post("/chapter/comment/add", payload, { headers });
+          res = await api.post("/chapter/comment/add", payload, requestConfig);
         } catch (fallbackErr: any) {
-          const serverMsg =
-            fallbackErr?.response?.data?.message ||
-            postErr?.response?.data?.message ||
-            fallbackErr?.message ||
-            "Could not post comment";
-          throw new Error(serverMsg);
+          if (isQuestion) {
+            try {
+              res = await api.post("/question/comment", payload, requestConfig);
+            } catch (qErr: any) {
+              const serverMsg =
+                qErr?.response?.data?.message ||
+                fallbackErr?.response?.data?.message ||
+                postErr?.response?.data?.message ||
+                fallbackErr?.message ||
+                postErr?.message ||
+                "Could not post comment";
+              throw new Error(serverMsg);
+            }
+          } else {
+            const serverMsg =
+              fallbackErr?.response?.data?.message ||
+              postErr?.response?.data?.message ||
+              fallbackErr?.message ||
+              postErr?.message ||
+              "Could not post comment";
+            throw new Error(serverMsg);
+          }
         }
       }
 
-      if (res?.data?.success) {
+      const isSuccess =
+        res?.data?.success === true || res?.status === 200 || res?.status === 201;
+
+      if (isSuccess) {
         const realComment = res.data?.comment || res.data?.data;
-        if (realComment && realComment._id) {
-          const finalizedComment = {
-            ...realComment,
-            isPosting: false,
-            by: {
-              _id: user?._id || realComment.by?._id,
-              name: user?.name || realComment.by?.name || "You",
-              userId: user?.userId || realComment.by?.userId || "you",
-              image: user?.image || realComment.by?.image,
-              imageMd: (user as any)?.imageMd || realComment.by?.imageMd,
-              imageSm: (user as any)?.imageSm || realComment.by?.imageSm,
-              profileLevel: user?.profileLevel || realComment.by?.profileLevel || 1,
-            },
-            userEmail: user?.email,
-          };
+        const realId = realComment?._id ? String(realComment._id) : `comment_${Date.now()}`;
+        const finalizedComment: Comment = {
+          ...optimisticComment,
+          ...(typeof realComment === "object" ? realComment : {}),
+          _id: realId,
+          isPosting: false,
+          by: {
+            _id: user?._id || realComment?.by?._id,
+            name: user?.name || realComment?.by?.name || "You",
+            userId: user?.userId || realComment?.by?.userId || "you",
+            image: myAvatar || realComment?.by?.image || user?.image,
+            imageMd: (user as any)?.imageMd || realComment?.by?.imageMd,
+            imageSm: (user as any)?.imageSm || realComment?.by?.imageSm,
+            profileLevel: user?.profileLevel || realComment?.by?.profileLevel || 1,
+          },
+          userEmail: user?.email,
+          text: trimmed,
+        };
 
-          // Update comment from temp to real server comment
-          setComments((prev) =>
-            prev.map((c) => (c._id === tempId ? finalizedComment : c))
+        // Update comment from temp to real server comment
+        setComments((prev) => {
+          const next = prev.map((c) =>
+            c._id === tempId ? finalizedComment : c
           );
+          commentsMemoryCache.set(cacheKey, next);
+          AsyncStorage.setItem(
+            `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
+            JSON.stringify(next)
+          ).catch(() => {});
+          onCommentsUpdated?.(next);
+          return next;
+        });
 
-          // Card blinks and returns to normal state!
-          setBlinkingCommentId(finalizedComment._id);
-          triggerHaptic(10);
-          setTimeout(() => {
-            setBlinkingCommentId((curr) => (curr === finalizedComment._id ? null : curr));
-          }, 450);
-        }
-        reload?.();
+        // Card blinks and returns to normal state!
+        setBlinkingCommentId(finalizedComment._id);
+        triggerHaptic(10);
+        setTimeout(() => {
+          setBlinkingCommentId((curr) => (curr === finalizedComment._id ? null : curr));
+        }, 450);
       } else {
         throw new Error(res?.data?.message || "Failed to post comment");
       }
     } catch (err: any) {
       console.error("Comment post error:", err);
       // Remove posting card and restore draft
-      setComments((prev) => prev.filter((c) => c._id !== tempId));
+      setComments((prev) => {
+        const reverted = prev.filter((c) => c._id !== tempId);
+        commentsMemoryCache.set(cacheKey, reverted);
+        AsyncStorage.setItem(
+          `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
+          JSON.stringify(reverted)
+        ).catch(() => {});
+        onCommentsUpdated?.(reverted);
+        return reverted;
+      });
       setText(trimmed);
       showToast({ title: err?.message || "Could not post comment. Tap to retry." });
     } finally {

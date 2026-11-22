@@ -10,6 +10,7 @@ import {
   Platform,
   Pressable,
   Vibration,
+  BackHandler,
 } from "react-native";
 import Svg, { Path, Circle, Rect } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -24,13 +25,32 @@ import Animated, {
   withTiming,
   withDelay,
   withSequence,
+  withRepeat,
   Easing,
   runOnJS,
+  interpolate,
 } from "react-native-reanimated";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-// --- SVGs ---
+const THEME = {
+  bgBase: "#0B0F17",
+  cardBg: "#111625",
+  cardBorder: "rgba(255, 255, 255, 0.08)",
+  primaryBlue: "#38BDF8",
+  primaryBlueStrong: "#0EA5E9",
+  primaryBlueSoft: "rgba(56, 189, 248, 0.14)",
+  primaryBlueBorder: "rgba(56, 189, 248, 0.35)",
+  successGreen: "#10B981",
+  successGreenSoft: "rgba(16, 185, 129, 0.14)",
+  successGreenBorder: "rgba(16, 185, 129, 0.35)",
+  warningAmber: "#F59E0B",
+  dangerRed: "#EF4444",
+  textPrimary: "#F8FAFC",
+  textSecondary: "#94A3B8",
+  textOnAccent: "#06101D",
+};
+
 const BigCheckmarkIcon = () => (
   <Svg width={36} height={36} viewBox="0 0 24 24" fill="none">
     <Path
@@ -43,14 +63,19 @@ const BigCheckmarkIcon = () => (
   </Svg>
 );
 
-const ClockCheckIcon = () => (
+const ClockCheckIcon = ({ color = THEME.primaryBlue }: { color?: string }) => (
   <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
-    <Circle cx="12" cy="12" r="9" stroke="#10b981" strokeWidth={2} />
-    <Path d="M12 7v5l3 3" stroke="#10b981" strokeWidth={2} strokeLinecap="round" />
+    <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth={2} />
+    <Path
+      d="M12 7v5l3 3"
+      stroke={color}
+      strokeWidth={2}
+      strokeLinecap="round"
+    />
   </Svg>
 );
 
-const PercentCheckIcon = ({ color = "#10b981" }: { color?: string }) => (
+const PercentCheckIcon = ({ color = THEME.successGreen }: { color?: string }) => (
   <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
     <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth={2} />
     <Path
@@ -72,14 +97,26 @@ const UnlockedLockIcon = () => (
       height={11}
       rx={2}
       ry={2}
-      stroke="#10b981"
+      stroke={THEME.primaryBlue}
       strokeWidth={2}
     />
     <Path
       d="M7 11V7a5 5 0 0 1 9.9-1"
-      stroke="#10b981"
+      stroke={THEME.primaryBlue}
       strokeWidth={2}
       strokeLinecap="round"
+    />
+  </Svg>
+);
+
+const TrophyStarIcon = () => (
+  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M12 2l2.9 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l7.1-1.01L12 2z"
+      stroke={THEME.primaryBlue}
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
     />
   </Svg>
 );
@@ -88,7 +125,7 @@ const ArrowRightIcon = () => (
   <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
     <Path
       d="M5 12h14M12 5l7 7-7 7"
-      stroke="#090314"
+      stroke={THEME.textOnAccent}
       strokeWidth={2.5}
       strokeLinecap="round"
       strokeLinejoin="round"
@@ -98,78 +135,183 @@ const ArrowRightIcon = () => (
 
 const CloseIcon = () => (
   <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-    <Path d="M18 6L6 18M6 6L18 18" stroke="#94a3b8" strokeWidth={2} strokeLinecap="round" />
+    <Path
+      d="M18 6L6 18M6 6L18 18"
+      stroke={THEME.textSecondary}
+      strokeWidth={2}
+      strokeLinecap="round"
+    />
   </Svg>
 );
 
-const BackArrowIcon = () => (
-  <Svg width={22} height={22} viewBox="0 0 24 24" fill="none">
+const CloseModalIcon = () => (
+  <Svg width={20} height={20} viewBox="0 0 24 24" fill="none">
     <Path
-      d="M19 12H5M5 12L12 19M5 12L12 5"
+      d="M18 6L6 18M6 6L18 18"
       stroke="#ffffff"
-      strokeWidth={2}
+      strokeWidth={2.2}
       strokeLinecap="round"
       strokeLinejoin="round"
     />
   </Svg>
 );
 
-// --- Realistic Falling Confetti Particles ---
-const CONFETTI_DATA = [
-  { id: 0, xPct: 6, delay: 0, duration: 2200, size: 9, shape: "rect", color: "#fbbf24" },
-  { id: 1, xPct: 18, delay: 80, duration: 2500, size: 7, shape: "circle", color: "#38bdf8" },
-  { id: 2, xPct: 32, delay: 40, duration: 2300, size: 10, shape: "rect", color: "#10b981" },
-  { id: 3, xPct: 45, delay: 140, duration: 2600, size: 6, shape: "circle", color: "#f43f5e" },
-  { id: 4, xPct: 58, delay: 20, duration: 2200, size: 10, shape: "rect", color: "#a855f7" },
-  { id: 5, xPct: 72, delay: 100, duration: 2400, size: 8, shape: "circle", color: "#fbbf24" },
-  { id: 6, xPct: 86, delay: 60, duration: 2100, size: 9, shape: "rect", color: "#34d399" },
-  { id: 7, xPct: 12, delay: 180, duration: 2700, size: 7, shape: "circle", color: "#ec4899" },
-  { id: 8, xPct: 26, delay: 140, duration: 2300, size: 11, shape: "rect", color: "#38bdf8" },
-  { id: 9, xPct: 40, delay: 220, duration: 2500, size: 8, shape: "rect", color: "#fbbf24" },
-  { id: 10, xPct: 54, delay: 120, duration: 2200, size: 6, shape: "circle", color: "#10b981" },
-  { id: 11, xPct: 68, delay: 240, duration: 2800, size: 10, shape: "rect", color: "#f43f5e" },
-  { id: 12, xPct: 82, delay: 160, duration: 2400, size: 7, shape: "circle", color: "#a855f7" },
-  { id: 13, xPct: 22, delay: 280, duration: 2600, size: 9, shape: "rect", color: "#2dd4bf" },
-  { id: 14, xPct: 50, delay: 200, duration: 2300, size: 8, shape: "circle", color: "#f59e0b" },
-  { id: 15, xPct: 78, delay: 320, duration: 2500, size: 10, shape: "rect", color: "#38bdf8" },
+const BURST_PARTICLES = [
+  { id: 0, angle: -155, dist: 125, size: 9, shape: "rect", color: "#38BDF8" },
+  { id: 1, angle: -130, dist: 145, size: 7, shape: "circle", color: "#FBBF24" },
+  { id: 2, angle: -105, dist: 135, size: 10, shape: "rect", color: "#10B981" },
+  { id: 3, angle: -75, dist: 140, size: 8, shape: "circle", color: "#38BDF8" },
+  { id: 4, angle: -50, dist: 150, size: 9, shape: "rect", color: "#A855F7" },
+  { id: 5, angle: -25, dist: 125, size: 7, shape: "circle", color: "#FBBF24" },
+  { id: 6, angle: 15, dist: 115, size: 8, shape: "rect", color: "#34D399" },
+  { id: 7, angle: 165, dist: 115, size: 8, shape: "circle", color: "#F43F5E" },
+  { id: 8, angle: -142, dist: 95, size: 6, shape: "circle", color: "#0EA5E9" },
+  { id: 9, angle: -90, dist: 155, size: 9, shape: "rect", color: "#F59E0B" },
+  { id: 10, angle: -38, dist: 100, size: 6, shape: "circle", color: "#10B981" },
+  { id: 11, angle: -118, dist: 110, size: 8, shape: "rect", color: "#F43F5E" },
 ];
 
-const FallingConfettiPiece = ({ item, active }: { item: typeof CONFETTI_DATA[0]; active: boolean }) => {
-  const fallY = useSharedValue(-60);
-  const rotateVal = useSharedValue(0);
-  const swayX = useSharedValue(0);
+const SHOWER_PARTICLES = [
+  { id: 0, xPct: 5, delay: 40, duration: 2400, size: 9, shape: "rect", color: "#38BDF8" },
+  { id: 1, xPct: 14, delay: 140, duration: 2700, size: 7, shape: "circle", color: "#FBBF24" },
+  { id: 2, xPct: 24, delay: 70, duration: 2500, size: 10, shape: "rect", color: "#10B981" },
+  { id: 3, xPct: 35, delay: 200, duration: 2800, size: 6, shape: "circle", color: "#F43F5E" },
+  { id: 4, xPct: 46, delay: 30, duration: 2350, size: 10, shape: "rect", color: "#0EA5E9" },
+  { id: 5, xPct: 57, delay: 160, duration: 2650, size: 8, shape: "circle", color: "#FBBF24" },
+  { id: 6, xPct: 68, delay: 90, duration: 2450, size: 9, shape: "rect", color: "#34D399" },
+  { id: 7, xPct: 79, delay: 220, duration: 2900, size: 7, shape: "circle", color: "#A855F7" },
+  { id: 8, xPct: 90, delay: 110, duration: 2500, size: 10, shape: "rect", color: "#38BDF8" },
+  { id: 9, xPct: 10, delay: 320, duration: 2750, size: 8, shape: "rect", color: "#F59E0B" },
+  { id: 10, xPct: 29, delay: 260, duration: 2550, size: 6, shape: "circle", color: "#10B981" },
+  { id: 11, xPct: 51, delay: 340, duration: 2850, size: 9, shape: "rect", color: "#F43F5E" },
+  { id: 12, xPct: 73, delay: 280, duration: 2600, size: 7, shape: "circle", color: "#38BDF8" },
+  { id: 13, xPct: 85, delay: 380, duration: 2700, size: 9, shape: "rect", color: "#FBBF24" },
+  { id: 14, xPct: 41, delay: 420, duration: 2650, size: 7, shape: "circle", color: "#2DD4BF" },
+  { id: 15, xPct: 63, delay: 450, duration: 2750, size: 9, shape: "rect", color: "#0EA5E9" },
+];
+
+const BurstConfettiPiece = ({
+  item,
+  active,
+}: {
+  item: (typeof BURST_PARTICLES)[0];
+  active: boolean;
+}) => {
+  const progress = useSharedValue(0);
 
   useEffect(() => {
     if (active) {
-      fallY.value = -60;
+      progress.value = 0;
+      progress.value = withDelay(
+        80,
+        withTiming(1, {
+          duration: 1100,
+          easing: Easing.out(Easing.cubic),
+        })
+      );
+    }
+  }, [active, item]);
+
+  const rad = (item.angle * Math.PI) / 180;
+  const targetX = Math.cos(rad) * item.dist;
+  const targetY = Math.sin(rad) * item.dist;
+
+  const animStyle = useAnimatedStyle(() => {
+    const tx = interpolate(progress.value, [0, 1], [0, targetX]);
+    const ty = interpolate(progress.value, [0, 0.75, 1], [0, targetY, targetY + 28]);
+    const opacity = interpolate(progress.value, [0, 0.15, 0.75, 1], [0, 1, 1, 0]);
+    const scale = interpolate(progress.value, [0, 0.25, 1], [0.3, 1.15, 0.85]);
+    const rotate = interpolate(progress.value, [0, 1], [0, item.id % 2 === 0 ? 240 : -240]);
+
+    return {
+      opacity,
+      transform: [
+        { translateX: tx },
+        { translateY: ty },
+        { scale },
+        { rotate: `${rotate}deg` },
+      ],
+    };
+  });
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        {
+          position: "absolute",
+          width: item.size,
+          height: item.shape === "rect" ? item.size * 1.55 : item.size,
+          borderRadius: item.shape === "circle" ? item.size / 2 : 2.5,
+          backgroundColor: item.color,
+        },
+        animStyle,
+      ]}
+    />
+  );
+};
+
+const FallingConfettiPiece = ({
+  item,
+  active,
+}: {
+  item: (typeof SHOWER_PARTICLES)[0];
+  active: boolean;
+}) => {
+  const fallY = useSharedValue(-40);
+  const rotateVal = useSharedValue(0);
+  const swayX = useSharedValue(0);
+  const opacityVal = useSharedValue(0);
+
+  useEffect(() => {
+    if (active) {
+      fallY.value = -40;
       rotateVal.value = 0;
       swayX.value = 0;
+      opacityVal.value = 0;
+
+      opacityVal.value = withDelay(
+        item.delay,
+        withSequence(
+          withTiming(0.95, { duration: 220 }),
+          withDelay(item.duration - 650, withTiming(0, { duration: 430 }))
+        )
+      );
 
       fallY.value = withDelay(
         item.delay,
-        withTiming(SCREEN_HEIGHT * 0.72, {
+        withTiming(SCREEN_HEIGHT * 0.88, {
           duration: item.duration,
-          easing: Easing.bezier(0.25, 0.1, 0.25, 1),
+          easing: Easing.out(Easing.quad),
         })
       );
+
       rotateVal.value = withDelay(
         item.delay,
-        withTiming(360 + (item.id % 2 === 0 ? 360 : -360), {
+        withTiming(item.id % 2 === 0 ? 540 : -540, {
           duration: item.duration,
           easing: Easing.linear,
         })
       );
+
       swayX.value = withDelay(
         item.delay,
         withSequence(
-          withTiming(item.id % 2 === 0 ? 20 : -20, { duration: item.duration * 0.5 }),
-          withTiming(0, { duration: item.duration * 0.5 })
+          withTiming(item.id % 2 === 0 ? 22 : -22, {
+            duration: item.duration * 0.45,
+            easing: Easing.inOut(Easing.sin),
+          }),
+          withTiming(item.id % 2 === 0 ? -14 : 14, {
+            duration: item.duration * 0.55,
+            easing: Easing.inOut(Easing.sin),
+          })
         )
       );
     }
   }, [active, item]);
 
   const animStyle = useAnimatedStyle(() => ({
+    opacity: opacityVal.value,
     transform: [
       { translateY: fallY.value },
       { translateX: swayX.value },
@@ -185,11 +327,10 @@ const FallingConfettiPiece = ({ item, active }: { item: typeof CONFETTI_DATA[0];
           position: "absolute",
           left: `${item.xPct}%`,
           top: 0,
-          width: item.shape === "rect" ? item.size : item.size,
-          height: item.shape === "rect" ? item.size * 1.5 : item.size,
+          width: item.size,
+          height: item.shape === "rect" ? item.size * 1.55 : item.size,
           borderRadius: item.shape === "circle" ? item.size / 2 : 2,
           backgroundColor: item.color,
-          zIndex: 15,
         },
         animStyle,
       ]}
@@ -246,38 +387,135 @@ export default function LevelCompletionModal({
 }: LevelCompletionModalProps) {
   const insets = useSafeAreaInsets();
   const [isReviewOpen, setIsReviewOpen] = useState(false);
-  const reviewSheetY = useSharedValue(SCREEN_HEIGHT);
 
-  // 200ms subtle vibration when celebration modal opens
+  const reviewSheetY = useSharedValue(SCREEN_HEIGHT);
+  const badgeScale = useSharedValue(0.65);
+  const badgeOpacity = useSharedValue(0);
+  const haloPulse = useSharedValue(1);
+  const headerEntrance = useSharedValue(0);
+  const cardsEntrance = useSharedValue(0);
+  const actionsEntrance = useSharedValue(0);
+
   useEffect(() => {
     if (visible) {
       try {
-        Vibration.vibrate(200);
+        Vibration.vibrate(140);
       } catch (_) {}
+
+      badgeScale.value = 0.65;
+      badgeOpacity.value = 0;
+      haloPulse.value = 1;
+      headerEntrance.value = 0;
+      cardsEntrance.value = 0;
+      actionsEntrance.value = 0;
+
+      badgeOpacity.value = withTiming(1, {
+        duration: 280,
+        easing: Easing.out(Easing.cubic),
+      });
+      badgeScale.value = withTiming(1, {
+        duration: 360,
+        easing: Easing.out(Easing.cubic),
+      });
+
+      haloPulse.value = withDelay(
+        350,
+        withRepeat(
+          withSequence(
+            withTiming(1.07, {
+              duration: 1300,
+              easing: Easing.inOut(Easing.sin),
+            }),
+            withTiming(1, {
+              duration: 1300,
+              easing: Easing.inOut(Easing.sin),
+            })
+          ),
+          -1,
+          true
+        )
+      );
+
+      headerEntrance.value = withDelay(
+        120,
+        withTiming(1, { duration: 320, easing: Easing.out(Easing.cubic) })
+      );
+      cardsEntrance.value = withDelay(
+        210,
+        withTiming(1, { duration: 340, easing: Easing.out(Easing.cubic) })
+      );
+      actionsEntrance.value = withDelay(
+        300,
+        withTiming(1, { duration: 340, easing: Easing.out(Easing.cubic) })
+      );
     }
   }, [visible]);
 
-  const totalQuestions = Math.max(1, questions.length || 5);
+  const badgeAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: badgeOpacity.value,
+    transform: [{ scale: badgeScale.value }],
+  }));
 
-  // Compute correct answers count
+  const haloAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: haloPulse.value }],
+  }));
+
+  const headerAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: headerEntrance.value,
+    transform: [
+      { translateY: interpolate(headerEntrance.value, [0, 1], [14, 0]) },
+    ],
+  }));
+
+  const cardsAnimatedStyle = useAnimatedStyle(() => ({
+    width: "100%",
+    opacity: cardsEntrance.value,
+    transform: [
+      { translateY: interpolate(cardsEntrance.value, [0, 1], [16, 0]) },
+    ],
+  }));
+
+  const actionsAnimatedStyle = useAnimatedStyle(() => ({
+    width: "100%",
+    opacity: actionsEntrance.value,
+    transform: [
+      { translateY: interpolate(actionsEntrance.value, [0, 1], [16, 0]) },
+    ],
+  }));
+
+  const hasQuestions = Array.isArray(questions) && questions.length > 0;
+  const totalQuestions = hasQuestions ? questions.length : 1;
+
   let correctCount = 0;
-  questions.forEach((q, idx) => {
-    const qId = String(q?._id || idx);
-    const ans = userAnswers[qId];
-    if (ans?.isCorrect) {
-      correctCount++;
-    } else if (ans === undefined) {
-      correctCount++;
-    }
-  });
+  if (hasQuestions) {
+    questions.forEach((q, idx) => {
+      const qId = String(q?._id ?? idx);
+      const ans = userAnswers[qId];
+      if (ans?.isCorrect === true) {
+        correctCount++;
+      }
+    });
+  }
 
-  const accuracyRate = Math.round((correctCount / totalQuestions) * 100);
+  const accuracyRate = hasQuestions
+    ? Math.round((correctCount / totalQuestions) * 100)
+    : 100;
 
-  // Dynamic accuracy color: Red (<50%), Orange (50-79%), Green (80%+)
   const accuracyColor =
-    accuracyRate < 50 ? "#ef4444" : accuracyRate < 80 ? "#f59e0b" : "#10b981";
+    accuracyRate < 50
+      ? THEME.dangerRed
+      : accuracyRate < 80
+      ? THEME.warningAmber
+      : THEME.successGreen;
 
-  // Titles based on type and all-levels completion
+  const badgeLabel = isAllLevelsCompleted
+    ? contentType === "framework"
+      ? "FRAMEWORK MASTERED"
+      : "SERIES COMPLETED"
+    : contentType === "framework"
+    ? `LEVEL ${levelNumber} COMPLETE`
+    : `CHAPTER ${levelNumber} COMPLETE`;
+
   const headingText = isAllLevelsCompleted
     ? contentType === "framework"
       ? "Framework Completed!"
@@ -289,24 +527,25 @@ export default function LevelCompletionModal({
     : "Chapter Completed!";
 
   const subtitleText = isAllLevelsCompleted
-    ? `You've successfully completed all ${totalLevels} levels in this ${contentType === "framework" ? "framework" : "series"}.`
+    ? `You've successfully completed all ${totalLevels} levels in this ${
+        contentType === "framework" ? "framework" : "series"
+      }.`
     : contentType === "framework"
-    ? `You've successfully answered all ${totalQuestions} questions in this level.`
-    : `You've successfully answered all ${totalQuestions} questions in this chapter.`;
+    ? `You've answered all ${totalQuestions} questions in ${levelTitle || `Level ${levelNumber}`}.`
+    : `You've answered all ${totalQuestions} questions in ${levelTitle || `Chapter ${levelNumber}`}.`;
 
-  // Review Sheet Controls
   const openReviewSheet = () => {
     setIsReviewOpen(true);
     reviewSheetY.value = withTiming(0, {
-      duration: 250,
-      easing: Easing.out(Easing.quad),
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
     });
   };
 
   const closeReviewSheet = () => {
     reviewSheetY.value = withTiming(
       SCREEN_HEIGHT,
-      { duration: 200, easing: Easing.in(Easing.quad) },
+      { duration: 220, easing: Easing.in(Easing.cubic) },
       () => {
         runOnJS(setIsReviewOpen)(false);
       }
@@ -321,7 +560,10 @@ export default function LevelCompletionModal({
       if (event.translationY > 80 || event.velocityY > 600) {
         runOnJS(closeReviewSheet)();
       } else {
-        reviewSheetY.value = withTiming(0, { duration: 180 });
+        reviewSheetY.value = withTiming(0, {
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+        });
       }
     });
 
@@ -329,113 +571,161 @@ export default function LevelCompletionModal({
     transform: [{ translateY: reviewSheetY.value }],
   }));
 
+  useEffect(() => {
+    if (!visible) return;
+    const onBackPress = () => {
+      if (isReviewOpen) {
+        closeReviewSheet();
+        return true;
+      }
+      onClose();
+      return true;
+    };
+
+    const sub = BackHandler.addEventListener("hardwareBackPress", onBackPress);
+    return () => sub.remove();
+  }, [visible, isReviewOpen, onClose]);
+
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="fade" transparent={false} statusBarTranslucent>
+    <Modal
+      visible={visible}
+      animationType="fade"
+      transparent={false}
+      statusBarTranslucent
+      onRequestClose={() => {
+        if (isReviewOpen) {
+          closeReviewSheet();
+        } else {
+          onClose();
+        }
+      }}
+    >
       <GestureHandlerRootView style={styles.rootContainer}>
+        {/* Full-screen unclipped confetti shower */}
+        <View style={styles.fullScreenConfettiLayer} pointerEvents="none">
+          {SHOWER_PARTICLES.map((item) => (
+            <FallingConfettiPiece key={item.id} item={item} active={visible} />
+          ))}
+        </View>
+
         {/* Top Header */}
-        <View style={[styles.topBar, { paddingTop: Math.max(insets.top + 8, 20) }]}>
+        <View
+          style={[styles.topBar, { paddingTop: Math.max(insets.top + 8, 20) }]}
+        >
           <TouchableOpacity
             style={styles.backBtn}
             onPress={onClose}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            accessibilityLabel="Close"
           >
-            <BackArrowIcon />
+            <CloseModalIcon />
           </TouchableOpacity>
+
+          <View style={styles.topBarSpacer} />
         </View>
 
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingBottom: Math.max(insets.bottom + 24, 30) },
+            { paddingBottom: Math.max(insets.bottom + 24, 32) },
           ]}
         >
-          {/* Confetti & Glowing Alive Tick Icon */}
+          {/* Center Burst + Glowing Checkmark Badge */}
           <View style={styles.celebrationWrapper}>
-            {/* Realistic Falling Confetti Particles */}
-            {CONFETTI_DATA.map((item) => (
-              <FallingConfettiPiece key={item.id} item={item} active={visible} />
-            ))}
+            <View style={styles.burstAnchor} pointerEvents="none">
+              {BURST_PARTICLES.map((item) => (
+                <BurstConfettiPiece key={item.id} item={item} active={visible} />
+              ))}
+            </View>
 
-            {/* Glowing Center Alive Badge */}
-            <View style={styles.glowOuterCircle}>
-              <View style={styles.glowMiddleCircle}>
+            <Animated.View style={[styles.glowOuterCircle, haloAnimatedStyle]}>
+              <Animated.View style={[styles.glowMiddleCircle, badgeAnimatedStyle]}>
                 <View style={styles.glowInnerCircle}>
                   <BigCheckmarkIcon />
                 </View>
-              </View>
-            </View>
+              </Animated.View>
+            </Animated.View>
           </View>
 
           {/* Heading and Subtitle */}
-          <Text style={styles.headingTitle}>{headingText}</Text>
-          <Text style={styles.headingSubtitle}>{subtitleText}</Text>
+          <Animated.View style={[styles.titleBlock, headerAnimatedStyle]}>
+            <Text style={styles.headingTitle}>{headingText}</Text>
+            <Text style={styles.headingSubtitle}>{subtitleText}</Text>
+          </Animated.View>
 
-          {/* Two Stat Boxes (Image 2) */}
-          <View style={styles.statsTwoBoxRow}>
-            {/* Box 1: Questions Completed or Levels Completed */}
-            <View style={styles.statBox}>
-              <View style={styles.statBoxTop}>
-                <ClockCheckIcon />
-                <Text style={styles.statBoxBigNumber}>
+          {/* Stats & Unlocked Card */}
+          <Animated.View style={cardsAnimatedStyle}>
+            <View style={styles.statsTwoBoxRow}>
+              <View style={styles.statBox}>
+                <View style={styles.statBoxTop}>
+                  <ClockCheckIcon color={THEME.primaryBlue} />
+                  <Text style={styles.statBoxBigNumber}>
+                    {isAllLevelsCompleted
+                      ? `${totalLevels}/${totalLevels}`
+                      : `${totalQuestions}/${totalQuestions}`}
+                  </Text>
+                </View>
+                <Text style={styles.statBoxLabel}>
                   {isAllLevelsCompleted
-                    ? `${totalLevels}/${totalLevels}`
-                    : `${totalQuestions}/${totalQuestions}`}
+                    ? "Levels completed"
+                    : "Questions completed"}
                 </Text>
               </View>
-              <Text style={styles.statBoxLabel}>
-                {isAllLevelsCompleted ? "Levels completed" : "Questions completed"}
-              </Text>
+
+              <View style={styles.statBox}>
+                <View style={styles.statBoxTop}>
+                  <PercentCheckIcon color={accuracyColor} />
+                  <Text
+                    style={[styles.statBoxBigNumber, { color: accuracyColor }]}
+                  >
+                    {accuracyRate}%
+                  </Text>
+                </View>
+                <Text style={styles.statBoxLabel}>Accuracy rate</Text>
+              </View>
             </View>
 
-            {/* Box 2: Accuracy Rate with Dynamic Color */}
-            <View style={styles.statBox}>
-              <View style={styles.statBoxTop}>
-                <PercentCheckIcon color={accuracyColor} />
-                <Text style={[styles.statBoxBigNumber, { color: accuracyColor }]}>
-                  {accuracyRate}%
-                </Text>
-              </View>
-              <Text style={styles.statBoxLabel}>Accuracy rate</Text>
-            </View>
-          </View>
+            {hasNextLevel && !isAllLevelsCompleted ? (
+              <View style={styles.nextLevelUnlockedCard}>
+                <View style={styles.unlockedIconCircle}>
+                  <UnlockedLockIcon />
+                </View>
 
-          {/* Next Level Unlocked Card OR Framework Mastered Card */}
-          {hasNextLevel && !isAllLevelsCompleted ? (
-            <View style={styles.nextLevelUnlockedCard}>
-              <View style={styles.unlockedIconCircle}>
-                <UnlockedLockIcon />
+                <View style={styles.unlockedTextCol}>
+                  <Text style={styles.unlockedTag}>NEXT LEVEL UNLOCKED</Text>
+                  <Text style={styles.unlockedLevelTitle} numberOfLines={1}>
+                    {contentType === "framework" ? "Level" : "Chapter"}{" "}
+                    {nextLevelNumber} – {nextLevelTitle}
+                  </Text>
+                  <Text style={styles.unlockedSub}>
+                    Continue your learning journey.
+                  </Text>
+                </View>
               </View>
+            ) : isAllLevelsCompleted ? (
+              <View style={styles.nextLevelUnlockedCard}>
+                <View style={styles.unlockedIconCircle}>
+                  <TrophyStarIcon />
+                </View>
 
-              <View style={styles.unlockedTextCol}>
-                <Text style={styles.unlockedTag}>Next Level Unlocked</Text>
-                <Text style={styles.unlockedLevelTitle} numberOfLines={1}>
-                  Level {nextLevelNumber} – {nextLevelTitle}
-                </Text>
-                <Text style={styles.unlockedSub}>Continue your learning journey.</Text>
+                <View style={styles.unlockedTextCol}>
+                  <Text style={styles.unlockedTag}>ALL LEVELS MASTERED</Text>
+                  <Text style={styles.unlockedLevelTitle} numberOfLines={1}>
+                    {levelTitle || "Full Curriculum Completed"}
+                  </Text>
+                  <Text style={styles.unlockedSub}>
+                    You have successfully conquered every stage.
+                  </Text>
+                </View>
               </View>
-            </View>
-          ) : isAllLevelsCompleted ? (
-            <View style={styles.nextLevelUnlockedCard}>
-              <View style={[styles.unlockedIconCircle, { backgroundColor: "rgba(16, 185, 129, 0.2)" }]}>
-                <BigCheckmarkIcon />
-              </View>
-
-              <View style={styles.unlockedTextCol}>
-                <Text style={[styles.unlockedTag, { color: "#10b981" }]}>All Levels Mastered</Text>
-                <Text style={styles.unlockedLevelTitle} numberOfLines={1}>
-                  {levelTitle || "Full Curriculum Completed"}
-                </Text>
-                <Text style={styles.unlockedSub}>You have successfully conquered all levels.</Text>
-              </View>
-            </View>
-          ) : null}
+            ) : null}
+          </Animated.View>
 
           {/* Action Buttons */}
-          <View style={styles.actionButtonsCol}>
-            {/* Primary Button */}
+          <Animated.View style={[styles.actionButtonsCol, actionsAnimatedStyle]}>
             <TouchableOpacity
               style={styles.primaryActionBtn}
               activeOpacity={0.85}
@@ -450,33 +740,31 @@ export default function LevelCompletionModal({
                 {isAllLevelsCompleted
                   ? "Explore Recommended"
                   : hasNextLevel
-                  ? "Go to Next Level"
+                  ? contentType === "framework"
+                    ? "Go to Next Level"
+                    : "Go to Next Chapter"
                   : "Continue"}
               </Text>
               <ArrowRightIcon />
             </TouchableOpacity>
 
-            {/* Secondary: Review Your Answers / Review Levels */}
             <TouchableOpacity
               style={styles.reviewAnswersBtn}
-              activeOpacity={0.7}
+              activeOpacity={0.75}
               onPress={openReviewSheet}
             >
               <Text style={styles.reviewAnswersBtnText}>
                 {isAllLevelsCompleted ? "Review Levels" : "Review Your Answers"}
               </Text>
             </TouchableOpacity>
-          </View>
+          </Animated.View>
         </ScrollView>
 
-        {/* ============================================================ */}
-        {/* REVIEW ANSWERS / LEVELS BOTTOM SHEET (Smooth & Fully Scrollable) */}
-        {/* ============================================================ */}
+        {/* Review Answers / Levels Bottom Sheet */}
         {isReviewOpen && (
           <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
             <Pressable style={styles.sheetBackdrop} onPress={closeReviewSheet} />
             <Animated.View style={[styles.reviewSheetPanel, reviewSheetStyle]}>
-              {/* Top Drag Handle & Header wrapped in Pan Gesture */}
               <GestureDetector gesture={reviewGesture}>
                 <View style={styles.sheetTopArea}>
                   <View style={styles.sheetDragHandle} />
@@ -484,7 +772,9 @@ export default function LevelCompletionModal({
                   <View style={styles.reviewSheetHeader}>
                     <View style={styles.reviewHeaderLeft}>
                       <Text style={styles.reviewSheetTitle}>
-                        {isAllLevelsCompleted ? "Review Levels" : "Review Answers"}
+                        {isAllLevelsCompleted
+                          ? "Review Levels"
+                          : "Review Answers"}
                       </Text>
                       <View style={styles.scorePill}>
                         <Text style={styles.scorePillText}>
@@ -506,7 +796,6 @@ export default function LevelCompletionModal({
                 </View>
               </GestureDetector>
 
-              {/* Scrollable list of Question Review Cards or Level Breakdown Cards */}
               <ScrollView
                 showsVerticalScrollIndicator={true}
                 nestedScrollEnabled={true}
@@ -514,23 +803,31 @@ export default function LevelCompletionModal({
                 style={{ flex: 1 }}
                 contentContainerStyle={styles.questionsReviewScroll}
               >
-                {isAllLevelsCompleted && levelsSummary && levelsSummary.length > 0 ? (
+                {isAllLevelsCompleted &&
+                levelsSummary &&
+                levelsSummary.length > 0 ? (
                   levelsSummary.map((lvl) => {
                     const lvlAccColor =
                       lvl.accuracy < 50
-                        ? "#ef4444"
+                        ? THEME.dangerRed
                         : lvl.accuracy < 80
-                        ? "#f59e0b"
-                        : "#10b981";
+                        ? THEME.warningAmber
+                        : THEME.successGreen;
                     return (
-                      <View key={lvl.levelNumber} style={styles.levelSummaryCard}>
+                      <View
+                        key={lvl.levelNumber}
+                        style={styles.levelSummaryCard}
+                      >
                         <View style={styles.levelSummaryLeft}>
                           <View style={styles.levelNumberTag}>
                             <Text style={styles.levelNumberTagText}>
                               Level {lvl.levelNumber}
                             </Text>
                           </View>
-                          <Text style={styles.levelSummaryTitle} numberOfLines={1}>
+                          <Text
+                            style={styles.levelSummaryTitle}
+                            numberOfLines={1}
+                          >
                             {lvl.title}
                           </Text>
                         </View>
@@ -567,19 +864,22 @@ export default function LevelCompletionModal({
                   })
                 ) : (
                   questions.map((q, idx) => {
-                    const qId = String(q?._id || idx);
+                    const qId = String(q?._id ?? idx);
                     const ans = userAnswers[qId];
                     const selectedIdx = ans?.selectedIndex ?? 0;
                     const correctIdx = Number(q?.correct ?? 0);
-                    const isAnsCorrect = ans?.isCorrect ?? (selectedIdx === correctIdx);
+                    const isAnsCorrect =
+                      ans?.isCorrect ?? selectedIdx === correctIdx;
 
                     const optionsList: string[] = Array.isArray(q?.options)
                       ? q.options
                       : ["Option A", "Option B", "Option C", "Option D"];
 
-                    const selectedText = optionsList[selectedIdx] || "Selected option";
+                    const selectedText =
+                      optionsList[selectedIdx] || "Selected option";
                     const selectedLetter = OPTION_LETTERS[selectedIdx] || "A";
-                    const correctText = optionsList[correctIdx] || "Correct option";
+                    const correctText =
+                      optionsList[correctIdx] || "Correct option";
                     const correctLetter = OPTION_LETTERS[correctIdx] || "A";
 
                     return (
@@ -589,8 +889,8 @@ export default function LevelCompletionModal({
                           styles.reviewCard,
                           {
                             borderColor: isAnsCorrect
-                              ? "rgba(16, 185, 129, 0.45)"
-                              : "rgba(239, 68, 68, 0.45)",
+                              ? "rgba(16, 185, 129, 0.4)"
+                              : "rgba(239, 68, 68, 0.4)",
                           },
                         ]}
                       >
@@ -598,13 +898,21 @@ export default function LevelCompletionModal({
                           <View
                             style={[
                               styles.questionNumberPill,
-                              { backgroundColor: isAnsCorrect ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.15)" },
+                              {
+                                backgroundColor: isAnsCorrect
+                                  ? "rgba(16, 185, 129, 0.15)"
+                                  : "rgba(239, 68, 68, 0.15)",
+                              },
                             ]}
                           >
                             <Text
                               style={[
                                 styles.questionNumberText,
-                                { color: isAnsCorrect ? "#10b981" : "#ef4444" },
+                                {
+                                  color: isAnsCorrect
+                                    ? THEME.successGreen
+                                    : THEME.dangerRed,
+                                },
                               ]}
                             >
                               Question {idx + 1}
@@ -614,7 +922,11 @@ export default function LevelCompletionModal({
                           <Text
                             style={[
                               styles.resultStatusText,
-                              { color: isAnsCorrect ? "#10b981" : "#ef4444" },
+                              {
+                                color: isAnsCorrect
+                                  ? THEME.successGreen
+                                  : THEME.dangerRed,
+                              },
                             ]}
                           >
                             {isAnsCorrect ? "✓ Correct (+1)" : "✗ Incorrect"}
@@ -625,7 +937,6 @@ export default function LevelCompletionModal({
                           {q?.question || q?.title || `Question ${idx + 1}`}
                         </Text>
 
-                        {/* Selected Option Card */}
                         <View
                           style={[
                             styles.optionResultRow,
@@ -642,18 +953,25 @@ export default function LevelCompletionModal({
                           <Text
                             style={[
                               styles.optionLetterBadge,
-                              { color: isAnsCorrect ? "#10b981" : "#ef4444" },
+                              {
+                                color: isAnsCorrect
+                                  ? THEME.successGreen
+                                  : THEME.dangerRed,
+                              },
                             ]}
                           >
                             {selectedLetter}.
                           </Text>
-                          <Text style={styles.optionContentText}>{selectedText}</Text>
+                          <Text style={styles.optionContentText}>
+                            {selectedText}
+                          </Text>
                         </View>
 
-                        {/* If wrong, show correct answer */}
                         {!isAnsCorrect && (
                           <View style={styles.correctRevealRow}>
-                            <Text style={styles.correctRevealLabel}>Correct answer:</Text>
+                            <Text style={styles.correctRevealLabel}>
+                              Correct answer:
+                            </Text>
                             <Text style={styles.correctRevealText}>
                               {correctLetter}. {correctText}
                             </Text>
@@ -675,11 +993,19 @@ export default function LevelCompletionModal({
 const styles = StyleSheet.create({
   rootContainer: {
     flex: 1,
-    backgroundColor: "#090314",
+    backgroundColor: THEME.bgBase,
+  },
+  fullScreenConfettiLayer: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 50,
   },
   topBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 20,
     paddingBottom: 8,
+    zIndex: 60,
   },
   backBtn: {
     width: 40,
@@ -687,29 +1013,53 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.08)",
+  },
+  topStatusPill: {
+    backgroundColor: THEME.primaryBlueSoft,
+    borderWidth: 1,
+    borderColor: THEME.primaryBlueBorder,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  topStatusPillText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: THEME.primaryBlue,
+    letterSpacing: 0.8,
+  },
+  topBarSpacer: {
+    width: 40,
   },
   scrollContent: {
     paddingHorizontal: 22,
     alignItems: "center",
-    paddingTop: 10,
+    paddingTop: 12,
   },
-
-  // Celebration visual
   celebrationWrapper: {
     width: SCREEN_WIDTH - 44,
-    height: 180,
+    height: 168,
     alignItems: "center",
     justifyContent: "center",
     position: "relative",
-    marginVertical: 10,
-    overflow: "hidden",
+    marginVertical: 8,
+  },
+  burstAnchor: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 5,
   },
   glowOuterCircle: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(16, 185, 129, 0.12)",
+    width: 124,
+    height: 124,
+    borderRadius: 62,
+    backgroundColor: "rgba(56, 189, 248, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.2)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -717,7 +1067,7 @@ const styles = StyleSheet.create({
     width: 96,
     height: 96,
     borderRadius: 48,
-    backgroundColor: "rgba(16, 185, 129, 0.22)",
+    backgroundColor: "rgba(16, 185, 129, 0.2)",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -725,48 +1075,48 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: "#10b981",
+    backgroundColor: THEME.successGreen,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#10b981",
+    shadowColor: THEME.successGreen,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
+    shadowOpacity: 0.45,
     shadowRadius: 16,
     elevation: 8,
   },
-
-  // Titles
+  titleBlock: {
+    alignItems: "center",
+    width: "100%",
+  },
   headingTitle: {
     fontSize: 26,
     fontWeight: "800",
-    color: "#ffffff",
-    marginTop: 14,
+    color: THEME.textPrimary,
+    marginTop: 10,
     textAlign: "center",
   },
   headingSubtitle: {
     fontSize: 14,
-    color: "#94a3b8",
+    color: THEME.textSecondary,
     textAlign: "center",
     marginTop: 8,
     lineHeight: 20,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
   },
-
-  // Two Stat Boxes (Image 2)
   statsTwoBoxRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
     width: "100%",
-    marginTop: 26,
+    marginTop: 24,
   },
   statBox: {
     flex: 1,
-    backgroundColor: "#111625",
-    borderRadius: 14,
+    backgroundColor: THEME.cardBg,
+    borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: THEME.cardBorder,
   },
   statBoxTop: {
     flexDirection: "row",
@@ -777,31 +1127,29 @@ const styles = StyleSheet.create({
   statBoxBigNumber: {
     fontSize: 20,
     fontWeight: "800",
-    color: "#ffffff",
+    color: THEME.textPrimary,
   },
   statBoxLabel: {
     fontSize: 12,
-    color: "#94a3b8",
+    color: THEME.textSecondary,
     fontWeight: "500",
   },
-
-  // Next Level Unlocked Card (Image 2)
   nextLevelUnlockedCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0d1720",
-    borderRadius: 14,
+    backgroundColor: THEME.cardBg,
+    borderRadius: 16,
     padding: 16,
-    borderWidth: 1.5,
-    borderColor: "rgba(16, 185, 129, 0.35)",
+    borderWidth: 1,
+    borderColor: THEME.primaryBlueBorder,
     width: "100%",
-    marginTop: 20,
+    marginTop: 14,
   },
   unlockedIconCircle: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    backgroundColor: "rgba(16, 185, 129, 0.15)",
+    borderRadius: 14,
+    backgroundColor: THEME.primaryBlueSoft,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 14,
@@ -810,27 +1158,25 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   unlockedTag: {
-    fontSize: 11.5,
+    fontSize: 11,
     fontWeight: "700",
-    color: "#10b981",
-    letterSpacing: 0.5,
+    color: THEME.primaryBlue,
+    letterSpacing: 0.6,
   },
   unlockedLevelTitle: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#ffffff",
+    color: THEME.textPrimary,
     marginTop: 3,
   },
   unlockedSub: {
     fontSize: 12,
-    color: "#94a3b8",
+    color: THEME.textSecondary,
     marginTop: 2,
   },
-
-  // Action Buttons
   actionButtonsCol: {
     width: "100%",
-    marginTop: 26,
+    marginTop: 24,
     gap: 12,
   },
   primaryActionBtn: {
@@ -838,7 +1184,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    backgroundColor: "#10b981",
+    backgroundColor: THEME.primaryBlue,
     height: 52,
     borderRadius: 14,
     width: "100%",
@@ -846,7 +1192,7 @@ const styles = StyleSheet.create({
   primaryActionBtnText: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#090314",
+    color: THEME.textOnAccent,
   },
   reviewAnswersBtn: {
     alignItems: "center",
@@ -854,20 +1200,19 @@ const styles = StyleSheet.create({
     height: 48,
     borderRadius: 14,
     width: "100%",
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    backgroundColor: THEME.cardBg,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
+    borderColor: THEME.cardBorder,
   },
   reviewAnswersBtnText: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#ffffff",
+    color: THEME.textPrimary,
   },
-
-  // Review Answers Sheet
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.72)",
+    backgroundColor: "rgba(3, 6, 12, 0.78)",
+    zIndex: 150,
   },
   reviewSheetPanel: {
     position: "absolute",
@@ -875,11 +1220,11 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     height: SCREEN_HEIGHT * 0.82,
-    backgroundColor: "#0d0718",
+    backgroundColor: THEME.bgBase,
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: THEME.cardBorder,
     paddingTop: 12,
     paddingBottom: Platform.OS === "ios" ? 34 : 20,
     zIndex: 200,
@@ -891,7 +1236,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 4,
     borderRadius: 2,
-    backgroundColor: "rgba(255, 255, 255, 0.25)",
+    backgroundColor: "rgba(255, 255, 255, 0.22)",
     alignSelf: "center",
     marginBottom: 16,
   },
@@ -909,12 +1254,12 @@ const styles = StyleSheet.create({
   reviewSheetTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#ffffff",
+    color: THEME.textPrimary,
   },
   scorePill: {
-    marginTop: 4,
+    marginTop: 5,
     alignSelf: "flex-start",
-    backgroundColor: "rgba(16, 185, 129, 0.15)",
+    backgroundColor: THEME.primaryBlueSoft,
     paddingHorizontal: 10,
     paddingVertical: 3,
     borderRadius: 8,
@@ -922,13 +1267,15 @@ const styles = StyleSheet.create({
   scorePillText: {
     fontSize: 12,
     fontWeight: "700",
-    color: "#10b981",
+    color: THEME.primaryBlue,
   },
   closeSheetBtn: {
     width: 34,
     height: 34,
     borderRadius: 17,
-    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    backgroundColor: THEME.cardBg,
+    borderWidth: 1,
+    borderColor: THEME.cardBorder,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -938,7 +1285,7 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
   reviewCard: {
-    backgroundColor: "#111625",
+    backgroundColor: THEME.cardBg,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
@@ -965,7 +1312,7 @@ const styles = StyleSheet.create({
   questionPromptText: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#ffffff",
+    color: THEME.textPrimary,
     lineHeight: 20,
     marginBottom: 10,
   },
@@ -984,7 +1331,7 @@ const styles = StyleSheet.create({
   },
   optionContentText: {
     fontSize: 13,
-    color: "#ffffff",
+    color: THEME.textPrimary,
     flex: 1,
   },
   correctRevealRow: {
@@ -993,22 +1340,20 @@ const styles = StyleSheet.create({
   },
   correctRevealLabel: {
     fontSize: 11.5,
-    color: "#94a3b8",
+    color: THEME.textSecondary,
   },
   correctRevealText: {
     fontSize: 12.5,
     fontWeight: "600",
-    color: "#10b981",
+    color: THEME.successGreen,
     marginTop: 1,
   },
-
-  // Level Summary Cards
   levelSummaryCard: {
-    backgroundColor: "#111625",
+    backgroundColor: THEME.cardBg,
     borderRadius: 14,
     padding: 14,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.08)",
+    borderColor: THEME.cardBorder,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1019,7 +1364,7 @@ const styles = StyleSheet.create({
   },
   levelNumberTag: {
     alignSelf: "flex-start",
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: THEME.primaryBlueSoft,
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 5,
@@ -1028,14 +1373,14 @@ const styles = StyleSheet.create({
   levelNumberTagText: {
     fontSize: 10,
     fontWeight: "700",
-    color: "#94a3b8",
+    color: THEME.primaryBlue,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
   levelSummaryTitle: {
     fontSize: 14,
     fontWeight: "600",
-    color: "#ffffff",
+    color: THEME.textPrimary,
   },
   levelSummaryRight: {
     alignItems: "flex-end",
@@ -1043,7 +1388,7 @@ const styles = StyleSheet.create({
   levelMarksText: {
     fontSize: 12,
     fontWeight: "600",
-    color: "#94a3b8",
+    color: THEME.textSecondary,
     marginBottom: 4,
   },
   levelAccuracyPill: {
@@ -1055,4 +1400,4 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
-});
+}); 

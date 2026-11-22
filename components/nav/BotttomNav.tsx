@@ -419,7 +419,7 @@ export default function BottomNav() {
       <Tab.Screen name="Categories" component={Categories} options={{ tabBarLabel: "Categories", headerShown: false }} />
       <Tab.Screen name="Search" component={Search} options={{ tabBarLabel: "Search", headerShown: false }} />
       <Tab.Screen name="Downloads" component={Downloads} options={{ tabBarLabel: "Downloads" }} />
-      <Tab.Screen name="Profile" component={Profile} options={{ tabBarLabel: "Profile" }} />
+      <Tab.Screen name="Profile" component={Profile} options={{ tabBarLabel: "Profile", headerShown: false }} />
     </Tab.Navigator>
   );
 }

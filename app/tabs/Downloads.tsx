@@ -208,6 +208,7 @@ export default function Downloads() {
     const targetPage = Math.max(1, parseInt(String(readTill?.readtill || "1"), 10) || 1);
     const resolvedTotal = readTill?.total || (item as any)?.duration || item?.total || 0;
     const initialBookData = {
+      ...item,
       _id: item._id,
       title: item.title,
       cover: item.cover,
@@ -216,6 +217,9 @@ export default function Downloads() {
       media: item.localUri || item.media,
       total: parseInt(String(resolvedTotal), 10) || 1,
       duration: resolvedTotal,
+      likes: typeof item.likes === "number" ? item.likes : Array.isArray(item.likes) ? (item.likes as any).length : 0,
+      comments: typeof item.comments === "number" ? item.comments : Array.isArray(item.comments) ? (item.comments as any).length : 0,
+      questions: Array.isArray(item.questions) ? item.questions : [],
     };
 
     if (String(item.type || "").toLowerCase().includes("audio")) {

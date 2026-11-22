@@ -136,12 +136,13 @@ const RecentReads = ({ route, navigation }: Props) => {
         return (
           <Contentprogress
             key={readId}
-            id={read.content?._id}
+            id={read.content?._id || read.content?.id}
             cover={read.content?.cover}
             title={read.content?.title}
             readtill={read.readtill}
             total={read.total}
             type={read.content?.type}
+            media={read.content?.media}
             author={read.content?.author}
             learWidth={(width / 100) * 90}
           />

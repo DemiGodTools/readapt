@@ -42,10 +42,13 @@ import { useUser } from "../../hooks/useUser";
 import PopButton from "../../components/props/PopButton";
 import Contentprogress from "../../components/props/ContentProgress";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import Offline from "../../components/state/Offline";
+import { useStreak, consumePendingStreakCelebration } from "../../hooks/useStreak";
+import StreakCelebrationModal from "../../components/props/StreakCelebrationModal";
 
 if (
   Platform.OS === "android" &&
@@ -236,7 +239,12 @@ const HeroGradientTitle = ({ text }: { text: string }) => {
 };
 
 const HomeScreen = () => {
+  const insets = useSafeAreaInsets();
+  const topNavHeight = 70 + insets.top;
   const { accessToken } = useAuth();
+  const { streak, isCompletedToday, refreshStreak } = useStreak();
+  const [celebrationModalVisible, setCelebrationModalVisible] = useState(false);
+  const [celebrationStreak, setCelebrationStreak] = useState(1);
   const [feedData, setFeedData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
@@ -388,10 +396,19 @@ const HomeScreen = () => {
   const fetchFeed = useCallback(async () => {
     try {
       const headers: Record<string, string> = {};
-      if (accessToken && typeof accessToken === "string" && accessToken.trim()) {
-        headers.Authorization = `Bearer ${accessToken.trim()}`;
+      let token = accessToken;
+      if (!token) {
+        try {
+          const stored = await AsyncStorage.getItem("accessToken");
+          if (stored) {
+            token = JSON.parse(stored)?.token || stored;
+          }
+        } catch {}
       }
-      const res = await api.get("/feed", { headers });
+      if (token && typeof token === "string" && token.trim()) {
+        headers.Authorization = `Bearer ${token.trim()}`;
+      }
+      const res = await api.get("/feed", { headers, timeout: 18000 });
       const payload = res?.data?.data ?? res?.data;
       if (payload) {
         setFeedData(payload);
@@ -407,8 +424,36 @@ const HomeScreen = () => {
   useFocusEffect(
     useCallback(() => {
       loadRecentReads();
-    }, [loadRecentReads])
+      refreshStreak();
+      if (!feedData) {
+        fetchFeed();
+      }
+      let isMounted = true;
+      consumePendingStreakCelebration(true).then((res) => {
+        if (isMounted && res.shouldShow) {
+          const count = res.streak > 0 ? res.streak : (streak > 0 ? streak : 1);
+          setCelebrationStreak(count);
+          setCelebrationModalVisible(true);
+        }
+      });
+      return () => {
+        isMounted = false;
+      };
+    }, [loadRecentReads, refreshStreak, streak])
   );
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("READAPT_STREAK_UNLOCKED", (unlockedData: any) => {
+      if (unlockedData?.currentStreak !== undefined) {
+        const count = Number(unlockedData.currentStreak) > 0 ? Number(unlockedData.currentStreak) : 1;
+        setCelebrationStreak(count);
+        if (!unlockedData?.deferred) {
+          setCelebrationModalVisible(true);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener("RECENT_READS_UPDATED", () => {
@@ -431,7 +476,7 @@ const HomeScreen = () => {
 
   useEffect(() => {
     fetchFeed();
-  }, []);
+  }, [fetchFeed]);
 
   // Joined series card data:
   // - the id may arrive as a string or a populated object, so normalize it first
@@ -711,12 +756,17 @@ const HomeScreen = () => {
         showsVerticalScrollIndicator={false}
         onScroll={handleScroll}
         scrollEventThrottle={16}
-        contentContainerStyle={{ paddingBottom: 60 }}
+        contentContainerStyle={{
+          paddingTop: topNavHeight + 16,
+          paddingBottom: 60,
+        }}
       >
         <View style={styles.hero}>
-          <HeroGradientTitle
-            text={feedData?.thought?.title || "Good to see you again."}
-          />
+          <View style={styles.heroTopRow}>
+            <HeroGradientTitle
+              text={feedData?.thought?.title || "Good to see you again."}
+            />
+          </View>
           <Text style={styles.heroSubtitle}>
             {feedData?.thought?.desc || "Discover stories that matter. Continue where you left off."}
           </Text>
@@ -807,8 +857,8 @@ const HomeScreen = () => {
           <View style={styles.continueSectionContainer}>
             {continueReading.map((item) => (
               <Contentprogress
-                key={item.content._id}
-                id={item.content._id}
+                key={item.content._id || (item.content as any)?.id}
+                id={item.content._id || (item.content as any)?.id}
                 cover={item.content.cover}
                 title={item.content.title}
                 readtill={item.readtill}
@@ -970,6 +1020,16 @@ const HomeScreen = () => {
           <Text style={styles.endOfFeedText}>You're all caught up!</Text>
         </View>
       </ScrollView>
+
+      <StreakCelebrationModal
+        visible={celebrationModalVisible}
+        currentStreak={celebrationStreak}
+        onClose={() => setCelebrationModalVisible(false)}
+        onViewRewards={() => {
+          setCelebrationModalVisible(false);
+          navigation.navigate("DailyRewards" as any);
+        }}
+      />
     </View>
   );
 };
@@ -998,11 +1058,17 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: pallete.bgmain,
-    paddingTop: 100, 
   },
   hero: {
     paddingHorizontal: 24,
-    marginTop: 10,
+    marginTop: 0,
+    marginBottom: 20,
+  },
+  heroTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 12,
   },
   heroTitle: {
     fontFamily: "Bebas Neue",

@@ -50,12 +50,18 @@ export const AudioCacheManager = {
   async getCachedTrackUri(trackId: string, remoteUrl: string): Promise<{ uri: string; isComplete: boolean } | null> {
     try {
       const dl = await getSingleDownloaded(trackId);
-      if (dl?.localUri && (await FileSystem.getInfoAsync(dl.localUri)).exists) return { uri: dl.localUri, isComplete: true };
+      if (dl?.localUri) {
+        const dlInfo = await FileSystem.getInfoAsync(dl.localUri);
+        if (dlInfo.exists && (dlInfo.size ?? 0) > 4096) {
+          return { uri: dl.localUri, isComplete: true };
+        }
+      }
 
       await loadIndex();
       const item = cacheIndex.get(trackId);
       if (item) {
-        if ((await FileSystem.getInfoAsync(item.localPath)).exists) {
+        const itemInfo = await FileSystem.getInfoAsync(item.localPath);
+        if (itemInfo.exists && (itemInfo.size ?? 0) > 4096) {
           item.lastUsedAt = Date.now();
           void saveIndex();
           return { uri: item.localPath, isComplete: item.isComplete };
@@ -67,7 +73,7 @@ export const AudioCacheManager = {
 
       const filePath = `${CACHE_DIR}${sanitizeFileName(trackId, remoteUrl)}`;
       const fileInfo = await FileSystem.getInfoAsync(filePath);
-      if (fileInfo.exists) {
+      if (fileInfo.exists && (fileInfo.size ?? 0) > 4096) {
         cacheIndex.set(trackId, { trackId, url: remoteUrl, localPath: filePath, sizeBytes: fileInfo.size || 0, lastUsedAt: Date.now(), isComplete: true });
         void saveIndex();
         return { uri: filePath, isComplete: true };

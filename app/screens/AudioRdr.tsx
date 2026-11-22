@@ -78,10 +78,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useDownloads } from "../../hooks/useDownloads";
 import CommentsDrawer from "../../components/props/Comments";
 import Offline from "../../components/state/Offline";
+import { useReadingTracker } from "../../hooks/useReadingTracker";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import {
   checkIsDownloaded,
   getSingleDownloaded,
+  updateDownloadedChapterMetadata,
 } from "../../lib/downloadManager";
 import Carousel from "react-native-reanimated-carousel";
 import { ISeries, ISeriesContent } from "../../types/Series";
@@ -1280,11 +1282,13 @@ const AudioPlayerScreen = ({ route }: Props) => {
   
 
   const [book, setBook] = useState<IChapter | null>(() => {
-    if (isAlreadyActiveTrack && currentTrack) {
-      return currentTrack as IChapter;
-    }
-    if (initialData && (initialData._id === chapterId || !chapterId)) {
-      return initialData as IChapter;
+    if (chapterId) {
+      if (initialData && String(initialData._id) === String(chapterId)) {
+        return initialData as IChapter;
+      }
+      if (isAlreadyActiveTrack && currentTrack) {
+        return currentTrack as IChapter;
+      }
     }
     return null;
   });
@@ -1305,11 +1309,37 @@ const AudioPlayerScreen = ({ route }: Props) => {
   relatedBookRef.current = book;
 
   useEffect(() => {
-    if (chapterId && (!book || book._id !== chapterId)) {
-      if (initialData && (initialData._id === chapterId || !chapterId)) {
-        setBook(initialData as IChapter);
+    if (chapterId) {
+      if (!book || String(book._id) !== String(chapterId)) {
+        lastAutoStartedBookIdRef.current = null;
+        if (initialData && String(initialData._id) === String(chapterId)) {
+          setBook(initialData as IChapter);
+        } else if (currentTrack && getTrackId(currentTrack) === String(chapterId)) {
+          setBook(currentTrack as IChapter);
+        } else {
+          setBook(null); // Clear previous book data immediately to prevent stale audio playing
+        }
       }
-      lastAutoStartedBookIdRef.current = null;
+
+      getSingleDownloaded(chapterId)
+        .then((downloaded) => {
+          if (downloaded) {
+            setBook((prev) => {
+              const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
+              return {
+                ...(cleanPrev || {}),
+                ...(downloaded as any),
+                media: downloaded.localUri || downloaded.media,
+                likes: downloaded.likes ?? cleanPrev?.likes ?? 0,
+                comments: downloaded.comments ?? cleanPrev?.comments ?? 0,
+              };
+            });
+            if (Array.isArray(downloaded.questions) && downloaded.questions.length > 0) {
+              setQuestions((prev) => (prev && prev.length > 0 ? prev : downloaded.questions!));
+            }
+          }
+        })
+        .catch(() => {});
     }
   }, [chapterId, initialData]);
 
@@ -1339,22 +1369,37 @@ const AudioPlayerScreen = ({ route }: Props) => {
   const [questions, setQuestions] = useState<any[] | null>(null);
   const [currentQnaIndex, setCurrentQnaIndex] = useState(0);
   const [solvedIds, setSolvedIds] = useState<Set<string>>(new Set());
+  const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [userAnswersMap, setUserAnswersMap] = useState<Record<string, { selectedIndex: number; isCorrect: boolean }>>({});
 
   useEffect(() => {
+    setSolvedIds(new Set());
+    setUserAnswersMap({});
     if (!chapterId) return;
-    AsyncStorage.getItem(`@chapter_solved_qna_${chapterId}`)
-      .then((raw) => {
-        if (raw) {
-          const arr = JSON.parse(raw);
-          if (Array.isArray(arr) && arr.length > 0) {
-            setSolvedIds(new Set(arr));
-          }
+    AsyncStorage.multiGet([
+      `@chapter_solved_qna_${chapterId}`,
+      `@chapter_qna_answers_${chapterId}`,
+    ])
+      .then(([solvedRaw, answersRaw]) => {
+        if (solvedRaw?.[1]) {
+          try {
+            const arr = JSON.parse(solvedRaw[1]);
+            if (Array.isArray(arr) && arr.length > 0) {
+              setSolvedIds(new Set(arr.map(String)));
+            }
+          } catch {}
+        }
+        if (answersRaw?.[1]) {
+          try {
+            const mapObj = JSON.parse(answersRaw[1]);
+            if (mapObj && typeof mapObj === "object") {
+              setUserAnswersMap(mapObj);
+            }
+          } catch {}
         }
       })
       .catch(() => {});
   }, [chapterId]);
-  const [showCompletionModal, setShowCompletionModal] = useState(false);
-  const [userAnswersMap, setUserAnswersMap] = useState<Record<string, { selectedIndex: number; isCorrect: boolean }>>({});
   const [showComments, setShowComments] = useState(false);
   const [activeTranscriptionIndex, setActiveTranscriptionIndex] = useState(-1);
   const [isDetached, setIsDetached] = useState(false);
@@ -1424,6 +1469,13 @@ const AudioPlayerScreen = ({ route }: Props) => {
   const isCurrentBookTrack =
     Boolean(book) && getTrackId(currentTrack) === getTrackId(book);
   const isPlaying = isCurrentBookTrack ? Boolean(status?.playing) : false;
+
+  // Listening time tracking (streak is calculated in background & celebrated on exit/home)
+  useReadingTracker({
+    isActive: Boolean(book),
+    isAudio: true,
+    isPlayingAudio: isPlaying,
+  });
   const isLoaded = isCurrentBookTrack ? Boolean(status?.isLoaded) : false;
   const fallbackDuration =
     parseAnyDurationToSec((book as any)?.duration) ||
@@ -1432,7 +1484,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
     isCurrentBookTrack && (status?.duration || 0) > 0
       ? status.duration
       : fallbackDuration;
-  const canSeek = Boolean(book) && (isLoaded || durationSec > 0);
+  const canSeek = Boolean(book);
   const currentRate = status?.playbackRate || 1.0;
   const speedLabel = formatSpeedLabel(currentRate);
 
@@ -1691,27 +1743,74 @@ const AudioPlayerScreen = ({ route }: Props) => {
     }
   }, [user, chapterId]);
 
-  // Fetch Questions from API
+  // Fetch Questions with Instant Offline Hydration & Network Fallback
   const fetchQuestions = useCallback(async () => {
     if (!chapterId) return;
+
+    // 1. Instant RAM / Offline cache check
+    const initialQs =
+      (Array.isArray(initialData?.questions) && initialData.questions.length > 0
+        ? initialData.questions
+        : null) ||
+      (Array.isArray(book?.questions) && book.questions.length > 0
+        ? book.questions
+        : null);
+
+    if (initialQs) {
+      setQuestions(initialQs);
+      setIsQnaLoading(false);
+      return;
+    }
+
     setIsQnaLoading(true);
     try {
-      const res = await api.get(`/question/by-chapter/${chapterId}`);
-      if (res?.data?.data && Array.isArray(res.data.data) && res.data.data.length > 0) {
-        setQuestions(res.data.data);
-      } else if (res?.data?.questions && Array.isArray(res.data.questions) && res.data.questions.length > 0) {
-        setQuestions(res.data.questions);
-      } else if (Array.isArray(book?.questions) && book.questions.length > 0) {
-        setQuestions(book.questions);
+      const downloaded = await getSingleDownloaded(chapterId);
+      if (downloaded && Array.isArray(downloaded.questions) && downloaded.questions.length > 0) {
+        setQuestions(downloaded.questions);
+        setIsQnaLoading(false);
+        return;
       }
+
+      const cachedQuestionsRaw = await AsyncStorage.getItem(`@chapter_questions_${chapterId}`).catch(() => null);
+      if (cachedQuestionsRaw) {
+        try {
+          const parsed = JSON.parse(cachedQuestionsRaw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setQuestions(parsed);
+            setIsQnaLoading(false);
+            return;
+          }
+        } catch (_) {}
+      }
+
+      // 2. Network fetch if online
+      if (isConnected) {
+        const res = await api.get(`/question/by-chapter/${chapterId}`, { timeout: 6000 }).catch(() => null);
+        let freshQs: any[] | null = null;
+        if (res?.data?.data && Array.isArray(res.data.data)) {
+          freshQs = res.data.data;
+        } else if (res?.data?.questions && Array.isArray(res.data.questions)) {
+          freshQs = res.data.questions;
+        }
+
+        if (freshQs) {
+          setQuestions(freshQs);
+          AsyncStorage.setItem(`@chapter_questions_${chapterId}`, JSON.stringify(freshQs)).catch(() => {});
+          if (downloaded) {
+            updateDownloadedChapterMetadata(chapterId, { questions: freshQs }).catch(() => {});
+          }
+          return;
+        }
+      }
+
+      // If no questions found anywhere, set empty array so empty state shows instantly
+      setQuestions([]);
     } catch (_) {
-      if (Array.isArray(book?.questions) && book.questions.length > 0) {
-        setQuestions(book.questions);
-      }
+      setQuestions([]);
     } finally {
       setIsQnaLoading(false);
     }
-  }, [chapterId, book?.questions]);
+  }, [chapterId, isConnected]);
 
   useEffect(() => {
     fetchQuestions();
@@ -1765,14 +1864,31 @@ const AudioPlayerScreen = ({ route }: Props) => {
       setIsLoading(true);
     }
     try {
+      const downloaded = await getSingleDownloaded(chapterId);
+      if (downloaded) {
+        setBook((prev) => {
+          const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
+          return {
+            ...(cleanPrev || {}),
+            ...(downloaded as any),
+            media: downloaded.localUri || downloaded.media,
+            likes: downloaded.likes ?? cleanPrev?.likes ?? 0,
+            comments: downloaded.comments ?? cleanPrev?.comments ?? 0,
+          };
+        });
+        if (Array.isArray(downloaded.questions) && downloaded.questions.length > 0) {
+          setQuestions((prev) => (prev && prev.length > 0 ? prev : downloaded.questions!));
+        }
+      }
+
       let resolvedBook: IChapter | null = null;
       if (isConnected) {
         const headers: Record<string, string> = {};
         if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-        const chapter = await api.get(`/chapter/${chapterId}`, { headers });
-        if (chapter.data?.data) {
+        const chapter = await api.get(`/chapter/${chapterId}`, { headers, timeout: 8000 }).catch(() => null);
+        if (chapter?.data?.data) {
           resolvedBook = chapter.data.data;
-        } else if (chapter.data) {
+        } else if (chapter?.data) {
           resolvedBook = chapter.data;
         }
       } else {
@@ -1782,11 +1898,40 @@ const AudioPlayerScreen = ({ route }: Props) => {
             title: "You seem to be offline. Please connect to Internet",
           });
         }
-        const downloaded = await getSingleDownloaded(chapterId);
-        if (downloaded) resolvedBook = downloaded as any;
       }
+
+      if (!resolvedBook && downloaded) {
+        resolvedBook = downloaded as any;
+      }
+
       if (resolvedBook) {
-        setBook(resolvedBook);
+        // If downloaded locally, ALWAYS maintain localUri as media to prevent network buffering
+        if (downloaded?.localUri) {
+          resolvedBook.media = downloaded.localUri;
+          if ((!resolvedBook.questions || resolvedBook.questions.length === 0) && downloaded.questions) {
+            resolvedBook.questions = downloaded.questions;
+          }
+        }
+
+        setBook((prev) => {
+          const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
+          return {
+            ...(cleanPrev || {}),
+            ...resolvedBook,
+            media: downloaded?.localUri || resolvedBook!.media,
+            likes: resolvedBook!.likes !== undefined ? resolvedBook!.likes : (downloaded?.likes ?? cleanPrev?.likes ?? 0),
+            comments: resolvedBook!.comments !== undefined ? resolvedBook!.comments : (downloaded?.comments ?? cleanPrev?.comments ?? 0),
+          };
+        });
+
+        if (downloaded && (resolvedBook.likes !== undefined || resolvedBook.comments !== undefined)) {
+          updateDownloadedChapterMetadata(chapterId, {
+            likes: resolvedBook.likes,
+            comments: resolvedBook.comments,
+            ...(Array.isArray(resolvedBook.questions) && resolvedBook.questions.length > 0 ? { questions: resolvedBook.questions } : {}),
+          }).catch(() => {});
+        }
+
         if (isAlreadyActiveTrack || getTrackId(currentTrack) === getTrackId(resolvedBook)) {
           (updateTrackMetadata as any)?.(resolvedBook);
         }
@@ -1805,7 +1950,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
             cleanSId.length >= 10
           ) {
             api
-              .get(`/series/${cleanSId}`)
+              .get(`/series/${cleanSId}`, { timeout: 8000 })
               .then((sRes) => {
                 if (sRes?.data?.data) setSeriesData(sRes.data.data);
               })
@@ -1827,34 +1972,92 @@ const AudioPlayerScreen = ({ route }: Props) => {
     fetchChapter();
   }, [fetchChapter]);
 
+  const updateRecentReads = useCallback(
+    async (customPageVal?: number, immediate = false) => {
+      if (!book || !book._id) return;
+      const targetBookId = String(book._id);
+      const currentPageValue =
+        customPageVal !== undefined
+          ? customPageVal
+          : Math.max(0, Math.floor(currentTimeRef.current));
+
+      const realTotalDuration = Math.max(
+        0,
+        Math.floor(durationSec > 0 ? durationSec : fallbackDuration)
+      );
+      try {
+        const recentReads = await getRecentReads(user?._id || user?.userId);
+        const newRecentReads = (recentReads || []).filter(
+          (item) => String(item.content?._id || (item.content as any)?.id || item.content) !== targetBookId
+        );
+        newRecentReads.unshift({
+          content: {
+            ...book,
+            _id: targetBookId,
+            comments:
+              typeof book.comments === "number"
+                ? book.comments
+                : Array.isArray(book.comments)
+                ? (book.comments as any).length
+                : 0,
+            category:
+              (book.category as any)?.name ||
+              (book.category as any)?._id ||
+              book.category ||
+              "",
+          },
+          readtill: String(currentPageValue),
+          total: String(realTotalDuration),
+          readAt: new Date().toISOString(),
+        });
+        await saveRecentReads(user?._id || user?.userId, newRecentReads, { immediateSync: immediate });
+        lastSavedPlayRef.current = currentPageValue;
+      } catch (_) {}
+    },
+    [book, durationSec, fallbackDuration, user?._id, user?.userId]
+  );
+
+  const seekTimeParam = (route?.params as any)?.seekTime;
   const lastSavedPlayRef = useRef<number | null>(null);
   useEffect(() => {
     if (!book || !book._id) return;
-    if (lastAutoStartedBookIdRef.current === book._id) return;
-    lastAutoStartedBookIdRef.current = book._id;
+    const targetBookId = String(book._id);
+    if (lastAutoStartedBookIdRef.current === targetBookId) return;
+    lastAutoStartedBookIdRef.current = targetBookId;
     let isCancelled = false;
 
     const startOrResumeAudio = async () => {
       const targetBook: IChapter = {
         ...book,
-        media: book.media || DEMO_AUDIO_URL,
+        _id: targetBookId,
+        media: book.media || (book as any).content?.media || DEMO_AUDIO_URL,
       };
-      if (getTrackId(currentTrack) === getTrackId(targetBook)) return;
+
+      // If already playing this exact track on player, don't restart
+      if (currentTrack && getTrackId(currentTrack) === targetBookId) return;
 
       let resumeSec = 0;
-      try {
-        const recentReads = await getRecentReads(user?._id || user?.userId);
-        const existingRead = recentReads.find(
-          (r) => r.content?._id === book._id
-        );
-        if (existingRead) {
-          const parsed = parseInt(existingRead.readtill, 10);
-          if (!isNaN(parsed) && parsed > 0) {
-            resumeSec = parsed;
-            lastSavedPlayRef.current = parsed;
+      // 1. Check seekTime from params (e.g. from Continue Reading or Downloads)
+      const incomingSeek = typeof seekTimeParam === "number" ? seekTimeParam : parseFloat(String(seekTimeParam || "0"));
+      if (!isNaN(incomingSeek) && incomingSeek > 0) {
+        resumeSec = Math.floor(incomingSeek);
+        lastSavedPlayRef.current = resumeSec;
+      } else {
+        // 2. Check user's recent reads
+        try {
+          const recentReads = await getRecentReads(user?._id || user?.userId);
+          const existingRead = (recentReads || []).find(
+            (r) => String(r.content?._id || (r.content as any)?.id || r.content) === targetBookId
+          );
+          if (existingRead) {
+            const parsed = parseInt(existingRead.readtill, 10);
+            if (!isNaN(parsed) && parsed > 0) {
+              resumeSec = parsed;
+              lastSavedPlayRef.current = parsed;
+            }
           }
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
 
       if (isCancelled) return;
       void playTrack(targetBook, resumeSec);
@@ -1865,7 +2068,18 @@ const AudioPlayerScreen = ({ route }: Props) => {
     return () => {
       isCancelled = true;
     };
-  }, [book?._id, currentTrack, playTrack]);
+  }, [book?._id, currentTrack, playTrack, seekTimeParam, updateRecentReads]);
+
+  // Periodic progress tracker: auto-saves listening position every 15s so it's NEVER lost
+  useEffect(() => {
+    if (!isPlaying || !book || !book._id) return;
+    const interval = setInterval(() => {
+      if (currentTimeRef.current > 0) {
+        void updateRecentReads();
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [isPlaying, book?._id, updateRecentReads]);
 
   const seekToSec = useCallback(
     (sec: number) => {
@@ -1890,52 +2104,9 @@ const AudioPlayerScreen = ({ route }: Props) => {
     lastAutoStartedBookIdRef.current = null;
   };
 
-  const updateRecentReads = useCallback(
-    async (customPageVal?: number) => {
-      if (!book || !book._id) return;
-      const currentPageValue =
-        customPageVal !== undefined
-          ? customPageVal
-          : Math.max(0, Math.floor(currentTimeRef.current));
-
-      const realTotalDuration = Math.max(
-        0,
-        Math.floor(durationSec > 0 ? durationSec : fallbackDuration)
-      );
-      try {
-        const recentReads = await getRecentReads(user?._id || user?.userId);
-        const newRecentReads = recentReads.filter(
-          (item) => item.content?._id !== book._id
-        );
-        newRecentReads.unshift({
-          content: {
-            ...book,
-            comments:
-              typeof book.comments === "number"
-                ? book.comments
-                : Array.isArray(book.comments)
-                ? (book.comments as any).length
-                : 0,
-            category:
-              (book.category as any)?.name ||
-              (book.category as any)?._id ||
-              book.category ||
-              "",
-          },
-          readtill: String(currentPageValue),
-          total: String(realTotalDuration),
-          readAt: new Date().toISOString(),
-        });
-        await saveRecentReads(user?._id || user?.userId, newRecentReads);
-        lastSavedPlayRef.current = currentPageValue;
-      } catch (_) {}
-    },
-    [book, durationSec, fallbackDuration, user?._id, user?.userId]
-  );
-
   useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", () => {
-      void updateRecentReads();
+      void updateRecentReads(undefined, true);
     });
     return unsubscribe;
   }, [navigation, updateRecentReads]);
@@ -2189,7 +2360,13 @@ const AudioPlayerScreen = ({ route }: Props) => {
     try {
       setIsDownloading(true);
       setDownloadProgress(0);
-      const uri = await downloadChapter(book);
+      const bookToDownload: IChapter = {
+        ...book,
+        likes: typeof book.likes === "number" ? book.likes : likesCount,
+        comments: typeof book.comments === "number" ? book.comments : commentsCount,
+        questions: (questions && questions.length > 0) ? questions : (book.questions || []),
+      };
+      const uri = await downloadChapter(bookToDownload);
       if (uri) {
         setIsDownloading(false);
         setIsDownloadedRecently(true);
@@ -2346,6 +2523,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
                   thumbTintColor="#FFFFFF"
                   active={!showFullscreen}
                   toc={book?.toc}
+                  onScrubbingChange={(isScrubbing) => lockMainScroll(isScrubbing)}
                 />
               </View>
 
@@ -3087,19 +3265,27 @@ const AudioPlayerScreen = ({ route }: Props) => {
                               ? (book as any).qnaComments.length
                               : 0
                           }
+                          initialAnswer={userAnswersMap[String(item._id)]}
                           onCommentClick={() => {
                             setCommentedQueId(item._id);
                             setShowQnaComments(true);
                           }}
                           onAttempted={(isCorrect: boolean, selectedIndex?: number) => {
                             const qId = String(item._id);
-                            setUserAnswersMap((prev) => ({
-                              ...prev,
-                              [qId]: {
-                                selectedIndex: selectedIndex !== undefined ? selectedIndex : 0,
-                                isCorrect,
-                              },
-                            }));
+                            setUserAnswersMap((prev) => {
+                              const updatedMap = {
+                                ...prev,
+                                [qId]: {
+                                  selectedIndex: selectedIndex !== undefined ? selectedIndex : 0,
+                                  isCorrect,
+                                },
+                              };
+                              AsyncStorage.setItem(
+                                `@chapter_qna_answers_${chapterId}`,
+                                JSON.stringify(updatedMap)
+                              ).catch(() => {});
+                              return updatedMap;
+                            });
                             setSolvedIds((prev) => {
                               const next = new Set(prev);
                               next.add(qId);
@@ -3107,7 +3293,12 @@ const AudioPlayerScreen = ({ route }: Props) => {
                                 `@chapter_solved_qna_${chapterId}`,
                                 JSON.stringify(Array.from(next))
                               ).catch(() => {});
-                              if (questions && questions.length > 0 && next.size >= questions.length) {
+                              // Industrial grade: strict validation that ALL chapter questions are attempted
+                              const allCompleted =
+                                Array.isArray(questions) &&
+                                questions.length > 0 &&
+                                questions.every((q) => q?._id && next.has(String(q._id)));
+                              if (allCompleted) {
                                 markChapterQnaCompleted(chapterId);
                                 setTimeout(() => {
                                   setShowCompletionModal(true);
@@ -3142,13 +3333,21 @@ const AudioPlayerScreen = ({ route }: Props) => {
         <CommentsDrawer
           visible={showQnaComments}
           reload={fetchChapter}
-          onClose={() => setShowQnaComments(false)}
-          chapterId={chapterId}
+          onClose={() => {
+            setShowQnaComments(false);
+            setCommentedQueId("");
+          }}
+          chapterId={String((book as any)?._id || chapterId || (currentTrack ? getTrackId(currentTrack) : "") || "").trim()}
           initialComments={
             Array.isArray((book as any)?.qnaComments)
               ? ((book as any).qnaComments as any)
               : []
           }
+          onCommentsUpdated={(updatedComments) => {
+            setBook((prev: any) =>
+              prev ? { ...prev, qnaComments: updatedComments } : prev
+            );
+          }}
           isQuestion={true}
         />
       </Modal>
@@ -3195,10 +3394,16 @@ const AudioPlayerScreen = ({ route }: Props) => {
         visible={showComments}
         reload={fetchChapter}
         onClose={() => setShowComments(false)}
-        chapterId={chapterId}
+        chapterId={String((book as any)?._id || chapterId || (currentTrack ? getTrackId(currentTrack) : "") || "").trim()}
         initialComments={
           Array.isArray(book?.comments) ? (book?.comments as any) : []
         }
+        onCommentsUpdated={(updatedComments) => {
+          setBook((prev: any) =>
+            prev ? { ...prev, comments: updatedComments } : prev
+          );
+        }}
+        isQuestion={false}
       />
     </GestureHandlerRootView>
   );
