@@ -127,6 +127,7 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
           <View style={styles.numberSlot} pointerEvents="none">
             <Text
               style={[
+                styles.streakNumber,
                 styles.streakNumberActive,
                 { fontSize: dimensions.fontSize },
               ]}
@@ -168,12 +169,14 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     textAlign: "center",
     includeFontPadding: false,
+    letterSpacing: -0.5,
+    paddingRight: 2,
     ...Platform.select({
       ios: {
         fontFamily: "System",
       },
       android: {
-        fontFamily: "sans-serif-medium",
+        fontFamily: "sans-serif",
       },
     }),
   },

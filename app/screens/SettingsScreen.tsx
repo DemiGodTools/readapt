@@ -12,38 +12,163 @@ import {
   Vibration,
   Platform,
   Linking,
-  Dimensions,
+  KeyboardAvoidingView,
+  Keyboard,
   Animated,
   Easing,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Path, Circle, Line, Polyline } from "react-native-svg";
+import { LinearGradient } from "expo-linear-gradient";
+import Svg, { Path, Circle, Rect, Line, Polyline } from "react-native-svg";
 import { useNavigation } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
-import pallete from "../../lib/Colors";
 import CachedImage from "../../components/props/CachedImage";
 import { useUser } from "../../hooks/useUser";
 import { useToast } from "../../hooks/useToast";
 import { api, getAccountDeletionUrl } from "../../lib/api";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import UpgradeSheet from "../../components/props/UpgradeSheet";
+import ProfileEditSheet from "../../components/props/ProfileEditSheet";
+import { ProfessionIcon } from "../../components/props/ProfessionIcon";
+import { createAvatarVariants, uploadAvatarVariants, validateImageAsset } from "../../lib/imageUpload";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import useAuth from "../../hooks/useAuth";
 
-const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
-const ACCENT = "#38bdf8";
-const BG_MAIN = "#050505";
-const BG_CARD = "#12192b";
-const TEXT_PRIMARY = "#ffffff";
-const TEXT_SECONDARY = "#94a3b8";
-const BORDER = "#1e293b";
-const ERROR_COLOR = "#ef4444";
-const SUCCESS_COLOR = "#22c55e";
+/* --------------------------------------------------------------------------
+ * READAPT Signature Teal & Deep Dark Palette
+ * ----------------------------------------------------------------------- */
+const THEME = {
+  bgMain: "#070B0D",
+  bgSurface: "#11171A",
+  bgCard: "#131B1F",
+  bgModal: "#0D1316",
+  border: "rgba(255, 255, 255, 0.08)",
+  borderTeal: "rgba(0, 210, 180, 0.28)",
+  tealLight: "#5EEAD4",
+  tealPrimary: "#00D2B4",
+  tealMid: "#2DD4BF",
+  tealDeep: "#01796F",
+  tealSoftBg: "rgba(0, 210, 180, 0.11)",
+  textPrimary: "#FFFFFF",
+  textSecondary: "#94A3B8",
+  textMuted: "#64748B",
+  textOnTeal: "#041614",
+  errorColor: "#EF4444",
+  errorSoftBg: "rgba(239, 68, 68, 0.11)",
+  amberAccent: "#FBBF24",
+  amberSoftBg: "rgba(251, 191, 36, 0.12)",
+  roseAccent: "#FB7185",
+  roseSoftBg: "rgba(251, 113, 133, 0.12)",
+};
 
 type Visibility = "Public" | "Private";
+const NAME_MAX_LENGTH = 40;
+const RING_CIRCUMFERENCE = 289; // 2 * PI * 46
 
+/* --------------------------------------------------------------------------
+ * Material Professional Vector Icons
+ * ----------------------------------------------------------------------- */
+const MaterialIcons = {
+  BackChevron: ({ size = 24, color = "#FFFFFF" }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+      <Polyline points="15 18 9 12 15 6" />
+    </Svg>
+  ),
+  EditPencil: ({ size = 15, color = THEME.textOnTeal }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.3} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+      <Path d="m15 5 4 4" />
+    </Svg>
+  ),
+  PublicGlobe: ({ size = 22, color = THEME.tealPrimary }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Circle cx="12" cy="12" r="10" />
+      <Line x1="2" y1="12" x2="22" y2="12" />
+      <Path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </Svg>
+  ),
+  PrivateLock: ({ size = 22, color = THEME.tealPrimary }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <Path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </Svg>
+  ),
+  HistoryBook: ({ size = 20, color = THEME.tealPrimary }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+      <Path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+    </Svg>
+  ),
+  FavoriteHeart: ({ size = 20, color = THEME.roseAccent }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+    </Svg>
+  ),
+  InfoCircle: ({ size = 20, color = THEME.tealPrimary }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Circle cx="12" cy="12" r="10" />
+      <Line x1="12" y1="16" x2="12" y2="12" />
+      <Line x1="12" y1="8" x2="12.01" y2="8" />
+    </Svg>
+  ),
+  HelpSupport: ({ size = 20, color = THEME.amberAccent }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Circle cx="12" cy="12" r="10" />
+      <Path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <Line x1="12" y1="17" x2="12.01" y2="17" />
+    </Svg>
+  ),
+  LogoutExit: ({ size = 20, color = THEME.amberAccent }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <Polyline points="16 17 21 12 16 7" />
+      <Line x1="21" y1="12" x2="9" y2="12" />
+    </Svg>
+  ),
+  DeleteTrash: ({ size = 20, color = THEME.errorColor }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <Polyline points="3 6 5 6 21 6" />
+      <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <Line x1="10" y1="11" x2="10" y2="17" />
+      <Line x1="14" y1="11" x2="14" y2="17" />
+    </Svg>
+  ),
+  Camera: ({ size = 15, color = THEME.textOnTeal }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.3} strokeLinecap="round" strokeLinejoin="round">
+      <Path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <Circle cx="12" cy="13" r="4" />
+    </Svg>
+  ),
+  ChevronRight: ({ size = 18, color = THEME.textMuted }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+      <Polyline points="9 18 15 12 9 6" />
+    </Svg>
+  ),
+  CloseX: ({ size = 20, color = THEME.textSecondary }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.3} strokeLinecap="round" strokeLinejoin="round">
+      <Line x1="18" y1="6" x2="6" y2="18" />
+      <Line x1="6" y1="6" x2="18" y2="18" />
+    </Svg>
+  ),
+  Check: ({ size = 18, color = THEME.tealPrimary }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.6} strokeLinecap="round" strokeLinejoin="round">
+      <Polyline points="20 6 9 17 4 12" />
+    </Svg>
+  ),
+  Mail: ({ size = 18, color = THEME.textOnTeal }) => (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.3} strokeLinecap="round" strokeLinejoin="round">
+      <Rect x="2" y="4" width="20" height="16" rx="2" />
+      <Path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </Svg>
+  ),
+};
+
+/* --------------------------------------------------------------------------
+ * Main Settings Screen Component
+ * ----------------------------------------------------------------------- */
 const SettingsScreen = () => {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
@@ -54,14 +179,7 @@ const SettingsScreen = () => {
 
   // --- Edit Profile State ---
   const [showEditModal, setShowEditModal] = useState(false);
-  const [editName, setEditName] = useState(user?.name || "");
-  const [editUsername, setEditUsername] = useState(user?.userId || "");
-  const [editPhoto, setEditPhoto] = useState<string | null>(user?.image || null);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
-  const [isCheckingUsername, setIsCheckingUsername] = useState(false);
-  const [isUsernameAvailable, setIsUsernameAvailable] = useState<boolean | null>(true);
-  const [usernameFeedback, setUsernameFeedback] = useState<string>("");
-  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   // --- Visibility State ---
   const [visibility, setVisibility] = useState<Visibility>(
@@ -76,33 +194,11 @@ const SettingsScreen = () => {
   // --- Help Center State ---
   const [showHelpSheet, setShowHelpSheet] = useState(false);
 
-  // Debounce & photo spinner animation
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const spinAnim = useRef(new Animated.Value(0)).current;
-
   useEffect(() => {
     if (user?.visibility) {
       setVisibility(user.visibility as Visibility);
     }
   }, [user?.visibility]);
-
-  useEffect(() => {
-    if (showEditModal) {
-      setEditName(user?.name || "");
-      setEditUsername(user?.userId || "");
-      setEditPhoto(user?.image || null);
-      setIsUsernameAvailable(true);
-      setUsernameFeedback("");
-    }
-  }, [showEditModal, user]);
-
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      if (abortControllerRef.current) abortControllerRef.current.abort();
-    };
-  }, []);
 
   // --- Photo Upload Handling ---
   const handlePickPhoto = async () => {
@@ -110,7 +206,10 @@ const SettingsScreen = () => {
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert("Permission Required", "Photo library access is required to update your photo.");
+        Alert.alert(
+          "Permission Required",
+          "Photo library access is required to update your photo."
+        );
         return;
       }
 
@@ -118,203 +217,37 @@ const SettingsScreen = () => {
         mediaTypes: ["images" as any],
         allowsEditing: true,
         aspect: [1, 1],
-        quality: 0.6,
-        base64: true,
+        quality: 1,
+        exif: false,
+        selectionLimit: 1,
       });
 
       if (result.canceled || !result.assets?.[0]) return;
 
       const asset = result.assets[0];
-      setEditPhoto(asset.uri);
+      await validateImageAsset(asset);
 
-      // Start upload spinner animation
       setIsUploadingPhoto(true);
-      spinAnim.setValue(0);
-      const loopAnim = Animated.loop(
-        Animated.timing(spinAnim, {
-          toValue: 1,
-          duration: 1000,
-          easing: Easing.linear,
-          useNativeDriver: true,
-        })
-      );
-      loopAnim.start();
 
-      let imageDataUri = asset.base64
-        ? `data:${asset.mimeType || "image/jpeg"};base64,${asset.base64}`
-        : "";
+      const { variants, previewUri, base64Fallback } = await createAvatarVariants(asset);
+      if (updateUser) updateUser({ image: previewUri } as any);
 
-      if (!imageDataUri && asset.uri) {
-        try {
-          const FileSystem = require("expo-file-system/legacy");
-          const base64Image = await FileSystem.readAsStringAsync(asset.uri, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          imageDataUri = `data:${asset.mimeType || "image/jpeg"};base64,${base64Image}`;
-        } catch {}
-      }
-
-      if (imageDataUri) {
-        const res = await api.post("/update/profile-direct", { image: imageDataUri });
-        if (res.data?.success && (res.data?.url || res.data?.user?.image)) {
-          const finalUrl = res.data.url || res.data.user.image;
-          setEditPhoto(finalUrl);
-          if (updateUser) updateUser({ image: finalUrl } as any);
-          if (reload) reload().catch(() => {});
-          showToast({ title: "Photo updated!" });
-        }
-      }
-      Vibration.vibrate(30);
-      loopAnim.stop();
-      spinAnim.setValue(0);
-      setIsUploadingPhoto(false);
-    } catch (err: any) {
-      console.warn("Settings photo upload failed:", err?.message);
-      setIsUploadingPhoto(false);
-      spinAnim.setValue(0);
-    }
-  };
-
-  const spin = spinAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "360deg"],
-  });
-
-  // --- Fast Debounced Username Availability Check ---
-  const checkUsername = useCallback(
-    (val: string) => {
-      const trimmed = val.trim().toLowerCase();
-
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      if (abortControllerRef.current) abortControllerRef.current.abort();
-
-      if (!trimmed) {
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(null);
-        setUsernameFeedback("");
-        return;
-      }
-
-      if (trimmed.length < 3) {
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(false);
-        setUsernameFeedback("Must be at least 3 characters");
-        return;
-      }
-
-      if (trimmed.length > 20) {
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(false);
-        setUsernameFeedback("Must not exceed 20 characters");
-        return;
-      }
-
-      const validPattern = /^[a-zA-Z0-9_]+$/;
-      if (!validPattern.test(trimmed)) {
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(false);
-        setUsernameFeedback("Only letters, numbers, and underscores");
-        return;
-      }
-
-      if (user?.userId && trimmed === user.userId.toLowerCase()) {
-        setIsCheckingUsername(false);
-        setIsUsernameAvailable(true);
-        setUsernameFeedback("Current username");
-        return;
-      }
-
-      setIsCheckingUsername(true);
-      setIsUsernameAvailable(null);
-      setUsernameFeedback("Checking availability...");
-
-      debounceTimerRef.current = setTimeout(async () => {
-        const controller = new AbortController();
-        abortControllerRef.current = controller;
-
-        try {
-          const res = await api.get(`/check-username?username=${encodeURIComponent(trimmed)}`, {
-            signal: controller.signal,
-          });
-
-          if (res.data?.available) {
-            setIsUsernameAvailable(true);
-            setUsernameFeedback(res.data?.message || "Username is available!");
-          } else {
-            setIsUsernameAvailable(false);
-            setUsernameFeedback(res.data?.message || "Username is already taken");
-          }
-        } catch (err: any) {
-          if (err?.name === "CanceledError" || err?.message === "canceled") return;
-          setIsUsernameAvailable(null);
-          setUsernameFeedback("Could not verify username");
-        } finally {
-          setIsCheckingUsername(false);
-        }
-      }, 300);
-    },
-    [user?.userId]
-  );
-
-  const handleUsernameChange = (text: string) => {
-    setEditUsername(text);
-    checkUsername(text);
-  };
-
-  // --- Save Profile Changes (Photo, Name, Username) ---
-  const handleSaveProfileChanges = async () => {
-    if (!isConnected) {
-      showToast({ title: "Please connect to the internet." });
-      return;
-    }
-    const cleanName = editName.trim();
-    const cleanUsername = editUsername.trim().toLowerCase();
-
-    if (cleanName.length < 2) {
-      showToast({ title: "Name must be at least 2 characters" });
-      return;
-    }
-    if (cleanUsername.length < 3 || isUsernameAvailable === false) {
-      showToast({ title: "Please choose a valid available username" });
-      return;
-    }
-
-    setIsSavingProfile(true);
-    try {
-      // 1. Update username if changed
-      if (cleanUsername !== (user?.userId || "").toLowerCase()) {
-        await api.post("/update/username", { newUsername: cleanUsername });
-      }
-
-      // 2. Update name & profile in DB
-      const res = await api.post("/update/profile-setup", {
-        name: cleanName,
-        username: cleanUsername,
-        profession: user?.profession || "Other",
-        bio: user?.bio || "",
-        interests: user?.interests || [],
-        visibility: user?.visibility || "Public",
-        image: editPhoto || user?.image,
+      const uploaded = await uploadAvatarVariants(variants, {
+        base64Fallback,
+        timeoutMs: 30000,
       });
 
-      if (res.data?.success) {
-        if (updateUser) {
-          updateUser(res.data.user || {
-            name: cleanName,
-            userId: cleanUsername,
-            image: editPhoto || user?.image,
-          });
-        }
-        if (reload) reload().catch(() => {});
-        showToast({ title: "Profile updated successfully!" });
-        setShowEditModal(false);
-      } else {
-        showToast({ title: res.data?.message || "Could not update profile" });
+      if (uploaded.user && updateUser) {
+        updateUser(uploaded.user);
+      } else if (uploaded.urls && updateUser) {
+        updateUser(uploaded.urls as any);
       }
+      showToast({ title: "Profile photo updated" });
+      if (reload) reload().catch(() => {});
     } catch (err: any) {
-      Alert.alert("Update Failed", err?.response?.data?.message || err?.message || "An error occurred.");
+      showToast({ title: err?.message || "Failed to upload photo" });
     } finally {
-      setIsSavingProfile(false);
+      setIsUploadingPhoto(false);
     }
   };
 
@@ -323,13 +256,15 @@ const SettingsScreen = () => {
     if (newVis === visibility || isUpdatingVisibility) return;
     setIsUpdatingVisibility(true);
     setVisibility(newVis);
-    Vibration.vibrate(25);
+    try {
+      Vibration.vibrate(20);
+    } catch {}
 
     try {
       if (updateUser) updateUser({ visibility: newVis } as any);
       const res = await api.post("/update/visibility", { visibility: newVis });
       if (res.data?.success) {
-        showToast({ title: `Profile visibility set to ${newVis}` });
+        showToast({ title: `Profile set to ${newVis}` });
       }
       if (reload) reload().catch(() => {});
     } catch (err: any) {
@@ -382,120 +317,209 @@ const SettingsScreen = () => {
 
   const SettingRow = ({
     icon,
+    iconBg = THEME.tealSoftBg,
     label,
     value,
     onPress,
     isDanger = false,
+    isLast = false,
   }: {
     icon: React.ReactNode;
+    iconBg?: string;
     label: string;
     value?: string;
     onPress?: () => void;
     isDanger?: boolean;
+    isLast?: boolean;
   }) => (
     <TouchableOpacity
-      activeOpacity={0.7}
+      activeOpacity={0.75}
       onPress={onPress}
-      style={styles.settingRow}
+      style={[styles.settingRow, isLast && styles.settingRowLast]}
     >
       <View style={styles.settingRowLeft}>
-        <View style={[styles.iconWrap, isDanger && styles.iconWrapDanger]}>
+        <View
+          style={[
+            styles.iconWrap,
+            { backgroundColor: isDanger ? THEME.errorSoftBg : iconBg },
+          ]}
+        >
           {icon}
         </View>
-        <Text style={[styles.settingLabel, isDanger && { color: ERROR_COLOR }]}>
+        <Text
+          style={[
+            styles.settingLabel,
+            isDanger && { color: THEME.errorColor },
+          ]}
+        >
           {label}
         </Text>
       </View>
       <View style={styles.settingRowRight}>
         {value ? <Text style={styles.settingValue}>{value}</Text> : null}
-        <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={TEXT_SECONDARY} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <Polyline points="9 18 15 12 9 6" />
-        </Svg>
+        <MaterialIcons.ChevronRight
+          size={18}
+          color={isDanger ? "rgba(239, 68, 68, 0.7)" : THEME.textMuted}
+        />
       </View>
     </TouchableOpacity>
   );
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      {/* Ambient Top Teal Glow */}
+      <LinearGradient
+        colors={["rgba(0, 210, 180, 0.14)", "rgba(7, 11, 13, 0)"]}
+        locations={[0, 0.4]}
+        style={styles.ambientTopGlow}
+        pointerEvents="none"
+      />
+
       {/* Header Bar */}
       <View style={styles.header}>
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           style={styles.backButton}
-          activeOpacity={0.7}
+          activeOpacity={0.75}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Svg width={24} height={24} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <Polyline points="15 18 9 12 15 6" />
-          </Svg>
+          <MaterialIcons.BackChevron size={24} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Settings</Text>
-        <View style={{ width: 40 }} />
+        <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        
-        {/* Profile Card Summary & Edit Button */}
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: Math.max(insets.bottom + 28, 40) },
+        ]}
+      >
+        {/* Profile Card Summary & Edit Pill CTA */}
         <View style={styles.profileSummaryCard}>
           <CachedImage
             uri={user?.image}
             label={user?.name}
             style={styles.summaryAvatar}
-            letterSize={26}
+            letterSize={24}
             transition={0}
           />
           <View style={styles.summaryInfo}>
-            <Text style={styles.summaryName}>{user?.name || "Readapt User"}</Text>
-            <Text style={styles.summaryHandle}>@{user?.userId || "user"}</Text>
+            <Text style={styles.summaryName} numberOfLines={1}>
+              {user?.name || "Readapt Reader"}
+            </Text>
+            <Text style={styles.summaryHandle} numberOfLines={1}>
+              @{user?.userId || "reader"}
+            </Text>
+            {user?.profession ? (
+              <View style={styles.professionPill}>
+                <ProfessionIcon
+                  type={user.profession}
+                  color={THEME.tealPrimary}
+                  size={12}
+                />
+                <Text style={styles.professionPillText} numberOfLines={1}>
+                  {user.profession}
+                </Text>
+              </View>
+            ) : null}
           </View>
           <TouchableOpacity
             style={styles.editProfileBtn}
-            activeOpacity={0.8}
+            activeOpacity={0.85}
             onPress={() => setShowEditModal(true)}
           >
-            <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#0f172a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <Path d="M12 20h9" />
-              <Path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-            </Svg>
-            <Text style={styles.editProfileBtnText}>Edit</Text>
+            <LinearGradient
+              colors={[THEME.tealLight, THEME.tealPrimary, THEME.tealDeep]}
+              start={{ x: 0.08, y: 0 }}
+              end={{ x: 0.92, y: 1 }}
+              style={styles.editProfileBtnGradient}
+            >
+              <MaterialIcons.EditPencil size={14} color={THEME.textOnTeal} />
+              <Text style={styles.editProfileBtnText}>Edit</Text>
+            </LinearGradient>
           </TouchableOpacity>
         </View>
 
         {/* Profile Visibility Options */}
         <View style={styles.section}>
           <Text style={styles.sectionHeader}>PROFILE VISIBILITY</Text>
-          
+
           <TouchableOpacity
-            style={[styles.visibilityCard, visibility === "Public" && styles.visibilityCardActive]}
-            activeOpacity={0.7}
+            style={[
+              styles.visibilityCard,
+              visibility === "Public" && styles.visibilityCardActive,
+            ]}
+            activeOpacity={0.78}
             onPress={() => handleSelectVisibility("Public")}
           >
-            <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={visibility === "Public" ? ACCENT : TEXT_SECONDARY} strokeWidth="2">
-              <Path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <Circle cx="12" cy="12" r="3" />
-            </Svg>
+            <View
+              style={[
+                styles.visIconBadge,
+                visibility === "Public" && styles.visIconBadgeActive,
+              ]}
+            >
+              <MaterialIcons.PublicGlobe
+                size={21}
+                color={
+                  visibility === "Public"
+                    ? THEME.tealPrimary
+                    : THEME.textSecondary
+                }
+              />
+            </View>
             <View style={styles.visTextWrap}>
               <Text style={styles.visTitle}>Public Profile</Text>
-              <Text style={styles.visDesc}>Visible to community. Anyone can view your profile & stats.</Text>
+              <Text style={styles.visDesc}>
+                Visible to the community. Others can view your profile and stats.
+              </Text>
             </View>
-            <View style={[styles.radioBtn, visibility === "Public" && styles.radioBtnActive]}>
+            <View
+              style={[
+                styles.radioBtn,
+                visibility === "Public" && styles.radioBtnActive,
+              ]}
+            >
               {visibility === "Public" && <View style={styles.radioInner} />}
             </View>
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.visibilityCard, visibility === "Private" && styles.visibilityCardActive]}
-            activeOpacity={0.7}
+            style={[
+              styles.visibilityCard,
+              visibility === "Private" && styles.visibilityCardActive,
+            ]}
+            activeOpacity={0.78}
             onPress={() => handleSelectVisibility("Private")}
           >
-            <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={visibility === "Private" ? ACCENT : TEXT_SECONDARY} strokeWidth="2">
-              <Path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-              <Line x1="1" y1="1" x2="23" y2="23" />
-            </Svg>
+            <View
+              style={[
+                styles.visIconBadge,
+                visibility === "Private" && styles.visIconBadgeActive,
+              ]}
+            >
+              <MaterialIcons.PrivateLock
+                size={21}
+                color={
+                  visibility === "Private"
+                    ? THEME.tealPrimary
+                    : THEME.textSecondary
+                }
+              />
+            </View>
             <View style={styles.visTextWrap}>
               <Text style={styles.visTitle}>Private Profile</Text>
-              <Text style={styles.visDesc}>Only you can view your personal profile and learning records.</Text>
+              <Text style={styles.visDesc}>
+                Only you can view your personal profile and reading records.
+              </Text>
             </View>
-            <View style={[styles.radioBtn, visibility === "Private" && styles.radioBtnActive]}>
+            <View
+              style={[
+                styles.radioBtn,
+                visibility === "Private" && styles.radioBtnActive,
+              ]}
+            >
               {visibility === "Private" && <View style={styles.radioInner} />}
             </View>
           </TouchableOpacity>
@@ -503,49 +527,56 @@ const SettingsScreen = () => {
 
         {/* Content & History Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeader}>CONTENT & HISTORY</Text>
+          <Text style={styles.sectionHeader}>CONTENT &amp; HISTORY</Text>
           <View style={styles.cardGroup}>
             <SettingRow
-              icon={<Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2"><Path d="M4 19C4 19 5.5 18 9 18C12.5 18 12 21 12 21C12 21 11.5 18 15 18C18.5 18 20 19 20 19V6C20 6 18.5 5 15 5C11.5 5 12 8 12 8C12 8 12.5 5 9 5C5.5 5 4 6 4 6V19Z" /></Svg>}
+              icon={<MaterialIcons.HistoryBook size={19} color={THEME.tealPrimary} />}
+              iconBg={THEME.tealSoftBg}
               label="Recent Reads"
               onPress={() => navigation.navigate("RecentReads")}
             />
             <SettingRow
-              icon={<Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#f43f5e" strokeWidth="2"><Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" /></Svg>}
+              icon={<MaterialIcons.FavoriteHeart size={19} color={THEME.roseAccent} />}
+              iconBg={THEME.roseSoftBg}
               label="Liked Content"
+              isLast
               onPress={() => navigation.navigate("LikedContent")}
             />
           </View>
         </View>
 
-        {/* App & Support Section */}
+        {/* Support & About Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeader}>SUPPORT & ABOUT</Text>
+          <Text style={styles.sectionHeader}>SUPPORT &amp; ABOUT</Text>
           <View style={styles.cardGroup}>
             <SettingRow
-              icon={<Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth="2"><Circle cx="12" cy="12" r="10" /><Path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><Line x1="12" y1="17" x2="12.01" y2="17" /></Svg>}
+              icon={<MaterialIcons.InfoCircle size={19} color={THEME.tealPrimary} />}
+              iconBg={THEME.tealSoftBg}
               label="About this App"
               onPress={() => navigation.navigate("About")}
             />
             <SettingRow
-              icon={<Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2"><Circle cx="12" cy="12" r="10" /><Path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><Line x1="12" y1="17" x2="12.01" y2="17" /></Svg>}
+              icon={<MaterialIcons.HelpSupport size={19} color={THEME.amberAccent} />}
+              iconBg={THEME.amberSoftBg}
               label="Help Center"
+              isLast
               onPress={() => setShowHelpSheet(true)}
             />
           </View>
         </View>
 
-        {/* Danger Zone */}
+        {/* Account Section */}
         <View style={styles.section}>
-          <Text style={[styles.sectionHeader, { color: ERROR_COLOR }]}>ACCOUNT</Text>
+          <Text style={styles.sectionHeader}>ACCOUNT</Text>
           <View style={styles.cardGroup}>
             <SettingRow
-              icon={<Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2"><Path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><Polyline points="16 17 21 12 16 7" /><Line x1="21" y1="12" x2="9" y2="12" /></Svg>}
+              icon={<MaterialIcons.LogoutExit size={19} color={THEME.amberAccent} />}
+              iconBg={THEME.amberSoftBg}
               label="Log Out"
               onPress={() => {
                 Alert.alert(
                   "Log Out",
-                  "Are you sure you want to log out of Readapt?",
+                  "Are you sure you want to log out of READAPT?",
                   [
                     { text: "Cancel", style: "cancel" },
                     {
@@ -561,9 +592,10 @@ const SettingsScreen = () => {
               }}
             />
             <SettingRow
-              icon={<Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={ERROR_COLOR} strokeWidth="2"><Path d="M3 6h18" /><Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><Line x1="10" y1="11" x2="10" y2="17" /><Line x1="14" y1="11" x2="14" y2="17" /></Svg>}
+              icon={<MaterialIcons.DeleteTrash size={19} color={THEME.errorColor} />}
               label="Delete Account"
               isDanger
+              isLast
               onPress={() => setShowDeleteSheet(true)}
             />
           </View>
@@ -572,140 +604,101 @@ const SettingsScreen = () => {
         <Text style={styles.appVersion}>READAPT · Version 1.0.2</Text>
       </ScrollView>
 
-      {/* Edit Profile Modal */}
-      <Modal visible={showEditModal} transparent animationType="slide" onRequestClose={() => setShowEditModal(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalSheet, { paddingBottom: insets.bottom + 20 }]}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalHeaderTitle}>Edit Profile</Text>
-              <TouchableOpacity onPress={() => setShowEditModal(false)} style={styles.modalCloseBtn}>
-                <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke={TEXT_SECONDARY} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <Line x1="18" y1="6" x2="6" y2="18" />
-                  <Line x1="6" y1="6" x2="18" y2="18" />
-                </Svg>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              {/* Photo Picker */}
-              <View style={styles.photoPickerContainer}>
-                <TouchableOpacity activeOpacity={0.8} onPress={handlePickPhoto} style={styles.photoPickerWrapper}>
-                  <CachedImage uri={editPhoto} label={user?.name} style={styles.editAvatarImage} letterSize={34} transition={0} />
-                  <View style={styles.photoOverlayBadge}>
-                    <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <Path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                      <Circle cx="12" cy="13" r="4" />
-                    </Svg>
-                  </View>
-                  {isUploadingPhoto && (
-                    <Animated.View style={[styles.spinnerRing, { transform: [{ rotate: spin }] }]}>
-                      <Svg width={96} height={96} viewBox="0 0 96 96">
-                        <Circle cx="48" cy="48" r="46" stroke={ACCENT} strokeWidth="3" strokeDasharray="60 180" strokeLinecap="round" fill="none" />
-                      </Svg>
-                    </Animated.View>
-                  )}
-                </TouchableOpacity>
-                <Text style={styles.changePhotoText}>Tap photo to change</Text>
-              </View>
-
-              {/* Name Input */}
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Display Name</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={editName}
-                  onChangeText={setEditName}
-                  placeholder="Enter your name"
-                  placeholderTextColor={TEXT_SECONDARY}
-                  maxLength={50}
-                />
-              </View>
-
-              {/* Username Input with Debounced Check */}
-              <View style={styles.fieldGroup}>
-                <Text style={styles.fieldLabel}>Username</Text>
-                <View style={[styles.inputRow, isUsernameAvailable === false && styles.inputError, isUsernameAvailable === true && styles.inputSuccess]}>
-                  <Text style={styles.fixedAt}>@</Text>
-                  <TextInput
-                    style={styles.inputFlex}
-                    value={editUsername}
-                    onChangeText={handleUsernameChange}
-                    placeholder="username"
-                    placeholderTextColor={TEXT_SECONDARY}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    maxLength={20}
-                  />
-                  <View style={styles.availIconWrap}>
-                    {isCheckingUsername && <ActivityIndicator size="small" color={ACCENT} />}
-                    {!isCheckingUsername && isUsernameAvailable === true && (
-                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={SUCCESS_COLOR} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <Polyline points="20 6 9 17 4 12" />
-                      </Svg>
-                    )}
-                    {!isCheckingUsername && isUsernameAvailable === false && (
-                      <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={ERROR_COLOR} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                        <Line x1="18" y1="6" x2="6" y2="18" />
-                        <Line x1="6" y1="6" x2="18" y2="18" />
-                      </Svg>
-                    )}
-                  </View>
-                </View>
-                {usernameFeedback ? (
-                  <Text style={[styles.feedbackText, isUsernameAvailable === true && { color: SUCCESS_COLOR }, isUsernameAvailable === false && { color: ERROR_COLOR }]}>
-                    {usernameFeedback}
-                  </Text>
-                ) : null}
-              </View>
-
-              {/* Save Button */}
-              <TouchableOpacity
-                style={[styles.saveProfileBtn, (isSavingProfile || isUsernameAvailable === false) && styles.saveProfileBtnDisabled]}
-                activeOpacity={0.8}
-                disabled={isSavingProfile || isUsernameAvailable === false}
-                onPress={handleSaveProfileChanges}
-              >
-                {isSavingProfile ? (
-                  <ActivityIndicator color="#0f172a" size="small" />
-                ) : (
-                  <Text style={styles.saveProfileBtnText}>Save Changes</Text>
-                )}
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      {/* Edit Profile Full-Screen Sheet */}
+      <ProfileEditSheet
+        visible={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        onChangePhoto={handlePickPhoto}
+        isUploadingPhoto={isUploadingPhoto}
+      />
 
       {/* Help Center Sheet */}
-      <UpgradeSheet visible={showHelpSheet} onClose={() => setShowHelpSheet(false)} title="Help & Support">
+      <UpgradeSheet
+        visible={showHelpSheet}
+        onClose={() => setShowHelpSheet(false)}
+        title="Help & Support"
+      >
         <View style={styles.sheetBody}>
           <Text style={styles.sheetText}>
             Need assistance with your account, reading streaks, or audio playback?
-            {"\n\n"}• <Text style={{ color: ACCENT, fontWeight: "700" }}>Email Support:</Text> support@readapt.app
-            {"\n"}• <Text style={{ color: ACCENT, fontWeight: "700" }}>Response Time:</Text> Within 24 hours
-            {"\n"}• <Text style={{ color: ACCENT, fontWeight: "700" }}>Account Issues:</Text> Include your username in your request.
+            {"\n\n"}•{" "}
+            <Text style={{ color: THEME.tealPrimary, fontWeight: "700" }}>
+              Email Support:
+            </Text>{" "}
+            support@readapt.app
+            {"\n"}•{" "}
+            <Text style={{ color: THEME.tealPrimary, fontWeight: "700" }}>
+              Response Time:
+            </Text>{" "}
+            Within 24 hours
+            {"\n"}•{" "}
+            <Text style={{ color: THEME.tealPrimary, fontWeight: "700" }}>
+              Account Issues:
+            </Text>{" "}
+            Include your username in your request.
           </Text>
-          <TouchableOpacity style={styles.helpActionBtn} activeOpacity={0.8} onPress={() => { Linking.openURL("mailto:support@readapt.app").catch(() => {}); }}>
-            <Text style={styles.helpActionBtnText}>Contact Support</Text>
+          <TouchableOpacity
+            style={styles.helpActionBtn}
+            activeOpacity={0.86}
+            onPress={() => {
+              Linking.openURL("mailto:support@readapt.app").catch(() => {});
+            }}
+          >
+            <LinearGradient
+              colors={[THEME.tealLight, THEME.tealPrimary, THEME.tealDeep]}
+              start={{ x: 0.08, y: 0 }}
+              end={{ x: 0.92, y: 1 }}
+              style={styles.saveBtnGradient}
+            >
+              <MaterialIcons.Mail size={17} color={THEME.textOnTeal} />
+              <Text style={styles.helpActionBtnText}>Contact Support</Text>
+            </LinearGradient>
           </TouchableOpacity>
         </View>
       </UpgradeSheet>
 
       {/* Delete Account Confirmation Sheet */}
-      <UpgradeSheet visible={showDeleteSheet} onClose={() => !deletingAccount && setShowDeleteSheet(false)} title="Delete Your Account?">
+      <UpgradeSheet
+        visible={showDeleteSheet}
+        onClose={() => !deletingAccount && setShowDeleteSheet(false)}
+        title="Delete Your Account?"
+      >
         <View style={styles.sheetBody}>
           <Text style={styles.sheetText}>
-            Your account will enter a <Text style={{ color: "#f59e0b", fontWeight: "700" }}>48-hour grace period</Text>.
-            {"\n\n"}• Streaks, progress, bookmarks, and downloads will be <Text style={{ color: ERROR_COLOR, fontWeight: "700" }}>permanently deleted</Text>.
-            {"\n"}• Chapter comments will remain <Text style={{ color: "#00D2B4", fontWeight: "700" }}>anonymized</Text>.
-            {"\n"}• You can cancel anytime within 48 hours simply by logging back in.
+            Your account will enter a{" "}
+            <Text style={{ color: THEME.amberAccent, fontWeight: "700" }}>
+              48-hour grace period
+            </Text>
+            .{"\n\n"}• Streaks, progress, bookmarks, and downloads will be{" "}
+            <Text style={{ color: THEME.errorColor, fontWeight: "700" }}>
+              permanently deleted
+            </Text>
+            .{"\n"}• Chapter comments will remain{" "}
+            <Text style={{ color: THEME.tealPrimary, fontWeight: "700" }}>
+              anonymized
+            </Text>
+            .{"\n"}• You can cancel anytime within 48 hours simply by logging back in.
           </Text>
           <View style={styles.sheetActions}>
-            <TouchableOpacity style={[styles.sheetBtn, styles.sheetDismissBtn]} activeOpacity={0.8} disabled={deletingAccount} onPress={() => setShowDeleteSheet(false)}>
-              <Text style={styles.sheetBtnText}>Keep Account</Text>
+            <TouchableOpacity
+              style={[styles.sheetBtn, styles.sheetDismissBtn]}
+              activeOpacity={0.8}
+              disabled={deletingAccount}
+              onPress={() => setShowDeleteSheet(false)}
+            >
+              <Text style={styles.sheetDismissText}>Keep Account</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.sheetBtn, styles.sheetConfirmBtn]} activeOpacity={0.8} disabled={deletingAccount} onPress={handleScheduleDeletion}>
-              {deletingAccount ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.sheetBtnText}>Schedule Deletion</Text>}
+            <TouchableOpacity
+              style={[styles.sheetBtn, styles.sheetConfirmBtn]}
+              activeOpacity={0.85}
+              disabled={deletingAccount}
+              onPress={handleScheduleDeletion}
+            >
+              {deletingAccount ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.sheetConfirmText}>Schedule Deletion</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -714,19 +707,27 @@ const SettingsScreen = () => {
   );
 };
 
+/* --------------------------------------------------------------------------
+ * Styles (Consistent with READAPT Design System)
+ * ----------------------------------------------------------------------- */
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: BG_MAIN,
+    backgroundColor: THEME.bgMain,
+  },
+  ambientTopGlow: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 280,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
+    paddingHorizontal: 22,
     paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
   },
   backButton: {
     width: 40,
@@ -737,79 +738,112 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255, 255, 255, 0.06)",
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: TEXT_PRIMARY,
+    fontSize: 18.5,
+    fontWeight: "800",
+    color: THEME.textPrimary,
+    letterSpacing: -0.2,
+  },
+  headerSpacer: {
+    width: 40,
   },
   scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 40,
+    paddingHorizontal: 22,
+    paddingTop: 10,
   },
-  // -- Profile Summary Card --
+
+  /* Profile Summary Card */
   profileSummaryCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: BG_CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 16,
+    backgroundColor: THEME.bgCard,
+    borderWidth: 1.2,
+    borderColor: THEME.borderTeal,
+    borderRadius: 20,
     padding: 16,
     marginBottom: 24,
   },
   summaryAvatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
     borderWidth: 2,
-    borderColor: ACCENT,
+    borderColor: THEME.tealPrimary,
   },
   summaryInfo: {
     flex: 1,
     marginLeft: 14,
+    marginRight: 10,
   },
   summaryName: {
-    color: TEXT_PRIMARY,
+    color: THEME.textPrimary,
     fontSize: 17,
-    fontWeight: "700",
+    fontWeight: "800",
     marginBottom: 2,
   },
   summaryHandle: {
-    color: TEXT_SECONDARY,
+    color: THEME.tealPrimary,
     fontSize: 13,
-    fontWeight: "500",
+    fontWeight: "600",
   },
-  editProfileBtn: {
+  professionPill: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: ACCENT,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    alignSelf: "flex-start",
+    backgroundColor: "rgba(0, 210, 180, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(0, 210, 180, 0.28)",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 6,
+    gap: 5,
+  },
+  professionPillText: {
+    color: THEME.tealPrimary,
+    fontSize: 11.5,
+    fontWeight: "700",
+  },
+  editProfileBtn: {
+    height: 38,
+    borderRadius: 19,
+    overflow: "hidden",
+    shadowColor: THEME.tealPrimary,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  editProfileBtnGradient: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 15,
     gap: 6,
   },
   editProfileBtnText: {
-    color: "#0f172a",
-    fontSize: 13,
-    fontWeight: "700",
+    color: THEME.textOnTeal,
+    fontSize: 13.5,
+    fontWeight: "800",
   },
-  // -- Sections --
+
+  /* Sections & Card Groups */
   section: {
-    marginBottom: 24,
+    marginBottom: 22,
   },
   sectionHeader: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: TEXT_SECONDARY,
-    letterSpacing: 0.8,
+    fontSize: 11.5,
+    fontWeight: "800",
+    color: THEME.textSecondary,
+    letterSpacing: 0.9,
     marginBottom: 10,
     marginLeft: 4,
   },
   cardGroup: {
-    backgroundColor: BG_CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 14,
+    backgroundColor: THEME.bgCard,
+    borderWidth: 1.2,
+    borderColor: THEME.border,
+    borderRadius: 20,
     overflow: "hidden",
   },
   settingRow: {
@@ -819,7 +853,10 @@ const styles = StyleSheet.create({
     paddingVertical: 15,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.06)",
+    borderBottomColor: "rgba(255, 255, 255, 0.05)",
+  },
+  settingRowLast: {
+    borderBottomWidth: 0,
   },
   settingRowLeft: {
     flexDirection: "row",
@@ -827,20 +864,16 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   iconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "rgba(56, 189, 248, 0.1)",
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-  },
-  iconWrapDanger: {
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
   },
   settingLabel: {
     fontSize: 15,
     fontWeight: "600",
-    color: TEXT_PRIMARY,
+    color: THEME.textPrimary,
   },
   settingRowRight: {
     flexDirection: "row",
@@ -849,219 +882,296 @@ const styles = StyleSheet.create({
   },
   settingValue: {
     fontSize: 13,
-    color: TEXT_SECONDARY,
+    color: THEME.textSecondary,
     fontWeight: "500",
   },
-  // -- Visibility Cards --
+
+  /* Visibility Cards */
   visibilityCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: BG_CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 14,
+    backgroundColor: THEME.bgCard,
+    borderWidth: 1.2,
+    borderColor: THEME.border,
+    borderRadius: 18,
     padding: 16,
-    marginBottom: 10,
+    marginBottom: 11,
   },
   visibilityCardActive: {
-    borderColor: ACCENT,
-    backgroundColor: "rgba(56, 189, 248, 0.1)",
+    borderColor: THEME.tealPrimary,
+    backgroundColor: "rgba(0, 210, 180, 0.09)",
+  },
+  visIconBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.05)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  visIconBadgeActive: {
+    backgroundColor: THEME.tealSoftBg,
   },
   visTextWrap: {
     flex: 1,
     paddingHorizontal: 14,
   },
   visTitle: {
-    color: TEXT_PRIMARY,
-    fontSize: 15,
+    color: THEME.textPrimary,
+    fontSize: 15.5,
     fontWeight: "700",
-    marginBottom: 2,
+    marginBottom: 3,
   },
   visDesc: {
-    color: TEXT_SECONDARY,
-    fontSize: 12,
-    lineHeight: 16,
+    color: THEME.textSecondary,
+    fontSize: 12.5,
+    lineHeight: 17.5,
   },
   radioBtn: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
-    borderColor: BORDER,
+    borderColor: THEME.border,
     alignItems: "center",
     justifyContent: "center",
   },
   radioBtnActive: {
-    borderColor: ACCENT,
+    borderColor: THEME.tealPrimary,
   },
   radioInner: {
     width: 10,
     height: 10,
     borderRadius: 5,
-    backgroundColor: ACCENT,
+    backgroundColor: THEME.tealPrimary,
   },
   appVersion: {
-    fontSize: 11,
-    color: "#555",
+    fontSize: 12,
+    color: THEME.textMuted,
     textAlign: "center",
-    marginTop: 10,
+    marginTop: 6,
     fontWeight: "500",
   },
-  // -- Edit Profile Modal --
+
+  /* Edit Profile Bottom Modal */
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    backgroundColor: "rgba(0, 0, 0, 0.72)",
     justifyContent: "flex-end",
   },
   modalSheet: {
-    backgroundColor: "#0d1322",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255, 255, 255, 0.1)",
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    maxHeight: "88%",
+    backgroundColor: THEME.bgModal,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: 1.2,
+    borderTopColor: THEME.borderTeal,
+    paddingHorizontal: 22,
+    paddingTop: 10,
+    maxHeight: "90%",
+  },
+  modalHandleWrap: {
+    alignItems: "center",
+    paddingVertical: 6,
+  },
+  modalHandle: {
+    width: 42,
+    height: 4.5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 255, 255, 0.22)",
   },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    marginTop: 4,
     marginBottom: 20,
-    paddingBottom: 12,
+    paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.08)",
+    borderBottomColor: "rgba(255, 255, 255, 0.07)",
   },
   modalHeaderTitle: {
-    color: TEXT_PRIMARY,
-    fontSize: 18,
-    fontWeight: "700",
+    color: THEME.textPrimary,
+    fontSize: 18.5,
+    fontWeight: "800",
   },
   modalCloseBtn: {
-    padding: 4,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   photoPickerContainer: {
     alignItems: "center",
-    marginBottom: 20,
+    marginBottom: 22,
   },
   photoPickerWrapper: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    alignItems: "center",
+    justifyContent: "center",
     position: "relative",
   },
   editAvatarImage: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
-    borderWidth: 3,
-    borderColor: ACCENT,
+    width: 86,
+    height: 86,
+    borderRadius: 43,
+  },
+  staticPhotoRing: {
+    position: "absolute",
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    borderWidth: 2.5,
+    borderColor: THEME.tealPrimary,
   },
   photoOverlayBadge: {
     position: "absolute",
     bottom: 2,
     right: 2,
-    backgroundColor: ACCENT,
+    backgroundColor: THEME.tealPrimary,
     width: 28,
     height: 28,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#000",
+    borderWidth: 2.5,
+    borderColor: THEME.bgModal,
   },
   spinnerRing: {
     position: "absolute",
-    top: -4,
-    left: -4,
-    width: 96,
-    height: 96,
+    width: 100,
+    height: 100,
+    alignItems: "center",
+    justifyContent: "center",
   },
   changePhotoText: {
-    color: TEXT_SECONDARY,
-    fontSize: 12,
-    fontWeight: "500",
+    color: THEME.textSecondary,
+    fontSize: 12.5,
+    fontWeight: "600",
     marginTop: 8,
   },
   fieldGroup: {
     marginBottom: 18,
   },
   fieldLabel: {
-    color: TEXT_SECONDARY,
-    fontSize: 12,
-    fontWeight: "600",
+    color: THEME.textSecondary,
+    fontSize: 11.5,
+    fontWeight: "800",
     marginBottom: 8,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+    marginLeft: 4,
+    letterSpacing: 0.7,
   },
-  textInput: {
-    backgroundColor: BG_CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    color: TEXT_PRIMARY,
+  nameInputCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: THEME.bgCard,
+    borderWidth: 1.2,
+    borderColor: THEME.border,
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    height: 56,
+  },
+  nameTextInput: {
+    flex: 1,
+    color: THEME.textPrimary,
     fontSize: 16,
     fontWeight: "500",
+    paddingVertical: 14,
+  },
+  inlineCharCounter: {
+    color: THEME.textMuted,
+    fontSize: 12,
+    fontWeight: "600",
+    marginLeft: 10,
   },
   inputRow: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: BG_CARD,
-    borderWidth: 1,
-    borderColor: BORDER,
-    borderRadius: 12,
-    paddingHorizontal: 16,
+    backgroundColor: THEME.bgCard,
+    borderWidth: 1.2,
+    borderColor: THEME.border,
+    borderRadius: 18,
+    paddingHorizontal: 18,
+    height: 56,
   },
   inputError: {
-    borderColor: ERROR_COLOR,
-    backgroundColor: "rgba(239, 68, 68, 0.05)",
+    borderColor: THEME.errorColor,
+    backgroundColor: "rgba(239, 68, 68, 0.06)",
   },
   inputSuccess: {
-    borderColor: SUCCESS_COLOR,
-    backgroundColor: "rgba(34, 197, 94, 0.05)",
+    borderColor: THEME.tealPrimary,
+    backgroundColor: "rgba(0, 210, 180, 0.06)",
   },
   fixedAt: {
-    color: TEXT_SECONDARY,
-    fontSize: 16,
-    fontWeight: "600",
+    color: THEME.tealPrimary,
+    fontSize: 16.5,
+    fontWeight: "700",
     marginRight: 6,
   },
   inputFlex: {
     flex: 1,
-    color: TEXT_PRIMARY,
+    color: THEME.textPrimary,
     fontSize: 16,
     fontWeight: "500",
     paddingVertical: 14,
   },
   availIconWrap: {
     marginLeft: 8,
-    width: 20,
+    width: 22,
     alignItems: "center",
   },
   feedbackText: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: "600",
-    marginTop: 6,
-    paddingHorizontal: 4,
+    marginTop: 7,
+    paddingHorizontal: 6,
+    color: THEME.textSecondary,
   },
   saveProfileBtn: {
-    backgroundColor: ACCENT,
-    paddingVertical: 16,
-    borderRadius: 14,
+    height: 54,
+    borderRadius: 27,
+    overflow: "hidden",
+    marginTop: 8,
+    marginBottom: 12,
+    shadowColor: THEME.tealPrimary,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  saveBtnGradient: {
+    flex: 1,
+    flexDirection: "row",
     alignItems: "center",
-    marginTop: 10,
-    marginBottom: 20,
+    justifyContent: "center",
+    gap: 8,
+  },
+  disabledBtnInner: {
+    flex: 1,
+    backgroundColor: "#141D21",
+    alignItems: "center",
+    justifyContent: "center",
   },
   saveProfileBtnDisabled: {
-    backgroundColor: "#1e293b",
+    shadowOpacity: 0,
+    elevation: 0,
   },
   saveProfileBtnText: {
-    color: "#0f172a",
-    fontSize: 16,
+    color: THEME.textOnTeal,
+    fontSize: 16.5,
+    fontWeight: "800",
+    letterSpacing: 0.25,
+  },
+  saveProfileBtnTextDisabled: {
+    color: THEME.textMuted,
+    fontSize: 16.5,
     fontWeight: "700",
   },
+
+  /* UpgradeSheet Inner Bodies */
   sheetBody: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -1069,19 +1179,18 @@ const styles = StyleSheet.create({
   sheetText: {
     fontSize: 14,
     lineHeight: 22,
-    color: "#d1d5db",
+    color: "#D1D5DB",
   },
   helpActionBtn: {
-    backgroundColor: ACCENT,
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: "center",
-    marginTop: 20,
+    height: 52,
+    borderRadius: 26,
+    overflow: "hidden",
+    marginTop: 22,
   },
   helpActionBtnText: {
-    color: "#0f172a",
-    fontSize: 15,
-    fontWeight: "700",
+    color: THEME.textOnTeal,
+    fontSize: 15.5,
+    fontWeight: "800",
   },
   sheetActions: {
     flexDirection: "row",
@@ -1090,22 +1199,29 @@ const styles = StyleSheet.create({
   },
   sheetBtn: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
+    height: 50,
+    borderRadius: 25,
     alignItems: "center",
+    justifyContent: "center",
   },
   sheetDismissBtn: {
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: "rgba(255, 255, 255, 0.07)",
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   sheetConfirmBtn: {
-    backgroundColor: ERROR_COLOR,
+    backgroundColor: THEME.errorColor,
   },
-  sheetBtnText: {
-    color: "#fff",
-    fontSize: 14,
-    fontWeight: "600",
+  sheetDismissText: {
+    color: THEME.textPrimary,
+    fontSize: 14.5,
+    fontWeight: "700",
+  },
+  sheetConfirmText: {
+    color: "#FFFFFF",
+    fontSize: 14.5,
+    fontWeight: "700",
   },
 });
 
 export default SettingsScreen;
-

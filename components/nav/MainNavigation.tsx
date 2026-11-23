@@ -29,6 +29,9 @@ import { useToast } from "../../hooks/useToast";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { configureApiInterceptor } from "../../lib/api";
 import { ISubCategory } from "../../types/Category";
+import { checkAppVersion, VersionInfo } from "../../lib/versionCheck";
+import ForceUpdateModal from "../props/ForceUpdateModal";
+import { registerForPushNotificationsAsync, setupNotificationListeners } from "../../lib/notifications";
 
 export type RootStackParamList = {
   Tabs: undefined;
@@ -97,6 +100,23 @@ export default function MainNavigation() {
 
   const { showToast } = useToast();
   const { isConnected } = useNetworkStatus();
+  const [forceUpdateActive, setForceUpdateActive] = useState(false);
+  const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
+
+  useEffect(() => {
+    registerForPushNotificationsAsync();
+    const cleanup = setupNotificationListeners();
+    return () => cleanup();
+  }, []);
+
+  useEffect(() => {
+    checkAppVersion().then(({ shouldForceUpdate, versionInfo }) => {
+      if (shouldForceUpdate) {
+        setVersionInfo(versionInfo);
+        setForceUpdateActive(true);
+      }
+    });
+  }, []);
 
   useEffect(() => {
     configureApiInterceptor(Boolean(isConnected), (msg) => {
@@ -249,6 +269,9 @@ export default function MainNavigation() {
           
         </Stack.Navigator>
       </NavigationContainer>
+
+      {/* Force Update Gate Modal */}
+      <ForceUpdateModal visible={forceUpdateActive} versionInfo={versionInfo} />
     </SafeAreaProvider>
   );
 }

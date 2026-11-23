@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  TouchableOpacity,
   ActivityIndicator,
   Keyboard,
   Vibration,
@@ -40,6 +41,7 @@ import { useUser } from "../../hooks/useUser";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import CachedImage from "./CachedImage";
 import { avatarUri } from "../../lib/imageUpload";
+import UserProfileSheet from "./UserProfileSheet";
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get("window");
 const DRAWER_HEIGHT = SCREEN_HEIGHT * 0.85;
@@ -174,6 +176,16 @@ const CommentsDrawer = ({
 
   // Active delete confirmation bottom sheet state
   const [confirmComment, setConfirmComment] = useState<Comment | null>(null);
+
+  // User profile bottom sheet preview state
+  const [selectedProfileUser, setSelectedProfileUser] = useState<any | null>(null);
+  const [showProfileSheet, setShowProfileSheet] = useState(false);
+
+  const handleOpenUserProfile = useCallback((userObj: any) => {
+    if (!userObj) return;
+    setSelectedProfileUser(userObj);
+    setShowProfileSheet(true);
+  }, []);
 
   const touchCoordsRef = useRef<{ pageX: number; pageY: number }>({
     pageX: SCREEN_WIDTH / 2,
@@ -513,8 +525,9 @@ const CommentsDrawer = ({
       const isMine = isMyComment(item);
       const name =
         item.by?.name || (item as any).userName || (isMine ? (user?.name || "You") : "Anonymous");
-      const handle =
+      const rawHandle =
         item.by?.userId || (item as any).userHandle || (isMine ? (user?.userId || "user") : "user");
+      const cleanHandle = String(rawHandle || "user").replace(/^@+/, "").trim();
       // Smallest stored avatar: a comment row is ~36px, so pulling the 128px
       // variant keeps the drawer light on slow connections.
       let image = "";
@@ -532,10 +545,45 @@ const CommentsDrawer = ({
           "";
       }
 
+      const byObj = typeof item.by === "object" ? (item.by as any) : null;
+      const authorId = byObj?._id
+        ? String(byObj._id)
+        : typeof item.by === "string"
+        ? item.by
+        : isMine
+        ? String(user?._id || "")
+        : undefined;
+      const authorBio = byObj?.bio || (isMine ? (user?.bio || "") : "");
+      const authorProfession =
+        byObj?.profession ||
+        (item as any)?.userProfession ||
+        (isMine ? (user as any)?.profession : "");
+      const authorVisibility =
+        byObj?.visibility || (isMine ? (user?.visibility || "Public") : "Public");
+      const authorStreak = Math.max(
+        0,
+        Number(
+          byObj?.streakData?.currentStreak ??
+            byObj?.streak ??
+            (isMine ? (user?.streakData?.currentStreak ?? user?.streak ?? 0) : 0)
+        )
+      );
+      const authorIsCompletedToday = Boolean(
+        byObj?.streakData?.isCompletedToday ??
+          (isMine ? user?.streakData?.isCompletedToday : false)
+      );
+
       return {
+        _id: authorId,
         name,
-        handle: handle.startsWith("@") ? handle : `@${handle}`,
+        handle: cleanHandle,
         image,
+        profession: authorProfession,
+        bio: authorBio,
+        visibility: authorVisibility,
+        isPrivate: authorVisibility === "Private",
+        streak: authorStreak,
+        isCompletedToday: authorIsCompletedToday,
       };
     },
     [isMyComment, user, cachedUserAvatar]
@@ -856,19 +904,30 @@ const CommentsDrawer = ({
           pressed && isMine && !isThisPosting && styles.commentItemPressed,
         ]}>
         <View style={styles.commentItem}>
-          <CachedImage
-            uri={author.image}
-            label={author.name}
-            style={styles.userAvatar}
-            letterSize={14}
-            transition={0}
-          />
+          <TouchableOpacity
+            activeOpacity={0.75}
+            onPress={() => handleOpenUserProfile(author)}
+          >
+            <CachedImage
+              uri={author.image}
+              label={author.name}
+              style={styles.userAvatar}
+              letterSize={14}
+              transition={0}
+            />
+          </TouchableOpacity>
           <View style={styles.commentContent}>
             <View style={styles.commentMeta}>
-              <Text style={[styles.userName, isThisPosting && styles.textSubtleGray]}>
-                {author.name}
-              </Text>
-              <Text style={styles.userHandle}>{author.handle}</Text>
+              <TouchableOpacity
+                activeOpacity={0.75}
+                onPress={() => handleOpenUserProfile(author)}
+                style={{ flexDirection: "row", alignItems: "center", gap: 5 }}
+              >
+                <Text style={[styles.userName, isThisPosting && styles.textSubtleGray]}>
+                  {author.name}
+                </Text>
+                <Text style={styles.userHandle}>@{author.handle}</Text>
+              </TouchableOpacity>
               <Text style={styles.commentDate}>
                 {isThisPosting ? "Posting..." : formatDate(item.createdAt)}
               </Text>
@@ -1083,6 +1142,13 @@ const CommentsDrawer = ({
           </GestureDetector>
         </View>
       )}
+      {/* User Public Profile Preview Bottom Sheet */}
+      <UserProfileSheet
+        visible={showProfileSheet}
+        onClose={() => setShowProfileSheet(false)}
+        userIdentifier={selectedProfileUser?._id || selectedProfileUser?.userId || selectedProfileUser?.handle}
+        initialUser={selectedProfileUser}
+      />
     </GestureHandlerRootView>
   );
 };

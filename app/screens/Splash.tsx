@@ -83,7 +83,7 @@ const SplashScreen = ({ route, navigation }: Props) => {
         </Animated.View>
 
         <Image
-          source={require("../../assets/textIcon.png")}
+          source={require("../../assets/text.png")}
           style={styles.logoImage}
           resizeMode="contain"
         />

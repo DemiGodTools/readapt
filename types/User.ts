@@ -51,6 +51,12 @@ export interface IUser {
   referredBy?: string | null;
   hasRedeemedReferral?: boolean;
   totalReferralsCount?: number;
+  /** True for founding users who joined before the subscription launch */
+  isEarlyReader?: boolean;
+  /** True once user has celebrated/claimed the early badge in v2 */
+  hasClaimedEarlyBadge?: boolean;
+  /** Remote toggle indicating whether early badge celebrations are live */
+  isEarlyBadgeLive?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

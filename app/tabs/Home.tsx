@@ -48,7 +48,7 @@ import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import Offline from "../../components/state/Offline";
 import { useStreak, consumePendingStreakCelebration } from "../../hooks/useStreak";
-import StreakCelebrationModal from "../../components/props/StreakCelebrationModal";
+import StreakCelebrationModal, { preloadStreakCelebrationAssets } from "../../components/props/StreakCelebrationModal";
 
 if (
   Platform.OS === "android" &&
@@ -443,6 +443,7 @@ const HomeScreen = () => {
   );
 
   useEffect(() => {
+    preloadStreakCelebrationAssets();
     const sub = DeviceEventEmitter.addListener("READAPT_STREAK_UNLOCKED", (unlockedData: any) => {
       if (unlockedData?.currentStreak !== undefined) {
         const count = Number(unlockedData.currentStreak) > 0 ? Number(unlockedData.currentStreak) : 1;

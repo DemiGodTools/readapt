@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "1001972321456",
+    "project_id": "readapt-4c8ce",
+    "storage_bucket": "readapt-4c8ce.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1001972321456:android:94c1de6afa0438796e3f75",
+        "android_client_info": {
+          "package_name": "com.readapt.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1001972321456-g4vaean9s9k5401fnhqaum1erft9q2vh.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB3MNBQJdive5-3fpALT6RC8suzH3Ah79w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1001972321456-g4vaean9s9k5401fnhqaum1erft9q2vh.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

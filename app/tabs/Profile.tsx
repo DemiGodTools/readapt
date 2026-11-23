@@ -43,6 +43,8 @@ import CachedImage from "../../components/props/CachedImage";
 import ProfileSkeleton from "../../components/props/ProfileSkeleton";
 import ProfileEditSheet from "../../components/props/ProfileEditSheet";
 import UpgradeSheet from "../../components/props/UpgradeSheet";
+import EarlyBadgeUnlockModal from "../../components/props/EarlyBadgeUnlockModal";
+import ForceUpdateModal from "../../components/props/ForceUpdateModal";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useToast } from "../../hooks/useToast";
 import { getLevelTitle } from "../../lib/levels";
@@ -517,6 +519,9 @@ const ProfileScreen = () => {
   const [showLogoutSheet, setShowLogoutSheet] = useState(false);
   const [showReferInfo, setShowReferInfo] = useState(false);
   const [showEarlyBadgeInfo, setShowEarlyBadgeInfo] = useState(false);
+  const [showEarlyUnlockModal, setShowEarlyUnlockModal] = useState(false);
+  const [claimingEarlyBadge, setClaimingEarlyBadge] = useState(false);
+  const [showForceUpdatePreview, setShowForceUpdatePreview] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [completeChapters, setCompleteChapters] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -527,6 +532,36 @@ const ProfileScreen = () => {
       if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
     };
   }, []);
+
+  // Early badge unlock celebration trigger (unlocks in v2 / when badge is live)
+  useEffect(() => {
+    if (
+      user?.isEarlyReader &&
+      !user?.hasClaimedEarlyBadge &&
+      (user?.isEarlyBadgeLive || APP_VERSION !== "1.0.0")
+    ) {
+      setShowEarlyUnlockModal(true);
+    }
+  }, [user?.isEarlyReader, user?.hasClaimedEarlyBadge, user?.isEarlyBadgeLive]);
+
+  const handleClaimEarlyBadge = async () => {
+    setClaimingEarlyBadge(true);
+    try {
+      await api.post("/badge/claim-early");
+      if (updateUser) {
+        updateUser({ hasClaimedEarlyBadge: true } as any);
+      }
+      setShowEarlyUnlockModal(false);
+      showToast({ title: "Early Reader Badge Unlocked!" });
+    } catch {
+      if (updateUser) {
+        updateUser({ hasClaimedEarlyBadge: true } as any);
+      }
+      setShowEarlyUnlockModal(false);
+    } finally {
+      setClaimingEarlyBadge(false);
+    }
+  };
 
   const previewScale = useRef(new Animated.Value(0.35)).current;
   const previewOpacity = useRef(new Animated.Value(0)).current;
@@ -882,7 +917,9 @@ const ProfileScreen = () => {
               </View>
             </Pressable>
 
-            <EarlyBadgeWithGlow onPress={() => setShowEarlyBadgeInfo(true)} />
+            {user?.isEarlyReader && user?.hasClaimedEarlyBadge ? (
+              <EarlyBadgeWithGlow onPress={() => setShowEarlyBadgeInfo(true)} />
+            ) : null}
           </View>
 
           <View style={styles.identityText}>
@@ -1079,17 +1116,17 @@ const ProfileScreen = () => {
           <Text style={styles.logoutText}>Log Out</Text>
         </Pressable>
 
-        {/* Dev / Test: Open Profile Creation UI */}
+        {/* Dev / Test: Preview Force Update Screen */}
         <TouchableOpacity
-          style={styles.devTestBtn}
+          style={styles.devPreviewBtn}
           activeOpacity={0.8}
-          onPress={() => navigation.navigate("ProfileCreation" as any)}
+          onPress={() => setShowForceUpdatePreview(true)}
         >
           <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-            <Path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-            <Path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+            <Path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+            <Path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
           </Svg>
-          <Text style={styles.devTestBtnText}>Test Profile Creation UI</Text>
+          <Text style={styles.devPreviewBtnText}>Preview Force Update Screen</Text>
         </TouchableOpacity>
 
         <Text style={styles.footer}>© 2026 Readapt • Version {APP_VERSION}</Text>
@@ -1382,6 +1419,20 @@ const ProfileScreen = () => {
           </View>
         </ScrollView>
       </UpgradeSheet>
+
+      {/* Early badge unlock celebration modal */}
+      <EarlyBadgeUnlockModal
+        visible={showEarlyUnlockModal}
+        onClaim={handleClaimEarlyBadge}
+        loading={claimingEarlyBadge}
+      />
+
+      {/* Force Update Preview Modal (Dev / Testing) */}
+      <ForceUpdateModal
+        visible={showForceUpdatePreview}
+        isPreview={true}
+        onClose={() => setShowForceUpdatePreview(false)}
+      />
 
       {/* Logout confirm */}
       <UpgradeSheet visible={showLogoutSheet} onClose={() => setShowLogoutSheet(false)} title="Are you sure you want to log out?">
@@ -1727,7 +1778,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(239,68,68,0.55)",
   },
   logoutText: { color: "#f87171", fontSize: 15.5, fontWeight: "700" },
-  devTestBtn: {
+  devPreviewBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -1740,7 +1791,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(0, 210, 180, 0.3)",
   },
-  devTestBtnText: {
+  devPreviewBtnText: {
     color: ACCENT,
     fontSize: 13.5,
     fontWeight: "600",

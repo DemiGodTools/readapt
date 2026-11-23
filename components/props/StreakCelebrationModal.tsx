@@ -5,19 +5,14 @@ import {
   StyleSheet,
   TouchableOpacity,
   Modal,
-  Image,
+  Image as RNImage,
   Platform,
   Vibration,
 } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import Svg, {
   Path,
   Rect,
-  Circle,
-  Defs,
-  LinearGradient as SvgLinearGradient,
-  RadialGradient,
-  Stop,
-  G,
 } from "react-native-svg";
 import { LinearGradient } from "expo-linear-gradient";
 import Animated, {
@@ -41,7 +36,6 @@ import {
 
 // --- Animated SVG Components ---
 const AnimatedPath = Animated.createAnimatedComponent(Path);
-const AnimatedG = Animated.createAnimatedComponent(G);
 
 // --- Header / Utility Icons ---
 const CloseIcon = () => (
@@ -193,200 +187,39 @@ const AnimatedGiftBadge = () => {
   );
 };
 
-// --- Cosmic Bonfire Flame (Clean vector paths with warm glow, no background pulse) ---
+// --- Animated WebP Flame Asset & Zero-Latency Preloader ---
+const ANIFLAME_ASSET = require("../../assets/aniflame.webp");
+
+/**
+ * Preloads the animated WebP flame asset into memory and native image pipeline (Glide/Fresco on Android, SDWebImage on iOS).
+ * Call this on parent screen mount (e.g. Home.tsx) so the modal opens with 0ms texture readiness, zero flicker, and zero blank delay.
+ */
+export const preloadStreakCelebrationAssets = () => {
+  try {
+    const resolved = RNImage.resolveAssetSource(ANIFLAME_ASSET);
+    if (resolved?.uri) {
+      ExpoImage.prefetch(resolved.uri, "memory-disk");
+      RNImage.prefetch(resolved.uri);
+    }
+  } catch (_) {}
+};
+
+// Immediate prefetch at file import time
+preloadStreakCelebrationAssets();
+
+// --- Animated WebP Flame Graphic Component ---
 const AnimatedFlameGraphic = () => {
-  const flameSway = useSharedValue(0);
-  const flamePulse = useSharedValue(1);
-  const corePulse = useSharedValue(1);
-  const ringTilt = useSharedValue(0);
-  const starSparkle = useSharedValue(0.5);
-
-  useEffect(() => {
-    // 1. Organic swaying motion
-    flameSway.value = withRepeat(
-      withSequence(
-        withTiming(1.6, { duration: 1100, easing: Easing.inOut(Easing.quad) }),
-        withTiming(-1.6, { duration: 1200, easing: Easing.inOut(Easing.quad) })
-      ),
-      -1,
-      true
-    );
-
-    // 2. Flame body breathing
-    flamePulse.value = withRepeat(
-      withSequence(
-        withTiming(1.03, { duration: 800, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0.97, { duration: 850, easing: Easing.inOut(Easing.quad) })
-      ),
-      -1,
-      true
-    );
-
-    // 3. Hot incandescent core rapid flicker
-    corePulse.value = withRepeat(
-      withSequence(
-        withTiming(1.06, { duration: 380, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0.94, { duration: 350, easing: Easing.inOut(Easing.quad) })
-      ),
-      -1,
-      true
-    );
-
-    // 4. Subtle ring floating motion
-    ringTilt.value = withRepeat(
-      withSequence(
-        withTiming(1.5, { duration: 1500, easing: Easing.inOut(Easing.sin) }),
-        withTiming(-1.5, { duration: 1600, easing: Easing.inOut(Easing.sin) })
-      ),
-      -1,
-      true
-    );
-
-    // 5. Stars twinkling
-    starSparkle.value = withRepeat(
-      withSequence(
-        withTiming(0.9, { duration: 900, easing: Easing.inOut(Easing.quad) }),
-        withTiming(0.4, { duration: 900, easing: Easing.inOut(Easing.quad) })
-      ),
-      -1,
-      true
-    );
-  }, []);
-
-  const animatedOuterFlameProps = useAnimatedProps(() => ({
-    transform: [
-      { scaleY: flamePulse.value },
-      { skewX: `${flameSway.value}deg` },
-    ] as any,
-  }));
-
-  const animatedCoreProps = useAnimatedProps(() => ({
-    transform: [{ scale: corePulse.value }] as any,
-  }));
-
-  const animatedRingProps = useAnimatedProps(() => ({
-    transform: [
-      { rotate: `${ringTilt.value}deg` },
-      { translateY: ringTilt.value * 1.2 },
-    ] as any,
-  }));
-
-  const animatedStarProps = useAnimatedProps(() => ({
-    opacity: starSparkle.value,
-  }));
-
   return (
     <View style={styles.flameContainer}>
-      <Svg width={180} height={170} viewBox="0 0 180 170">
-        <Defs>
-          {/* Static Ambient Glow */}
-          <RadialGradient id="flameRadialGlow" cx="50%" cy="52%" r="48%">
-            <Stop offset="0%" stopColor="#ff7a00" stopOpacity={0.6} />
-            <Stop offset="45%" stopColor="#ff4500" stopOpacity={0.2} />
-            <Stop offset="100%" stopColor="#ff4500" stopOpacity={0} />
-          </RadialGradient>
-
-          {/* Outer Fiery Flame Gradient */}
-          <SvgLinearGradient id="flameOuterGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-            <Stop offset="0%" stopColor="#ff5000" />
-            <Stop offset="45%" stopColor="#ff6200" />
-            <Stop offset="100%" stopColor="#e63300" />
-          </SvgLinearGradient>
-
-          {/* Mid Warm Amber Gradient */}
-          <SvgLinearGradient id="flameMidGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-            <Stop offset="0%" stopColor="#fff176" />
-            <Stop offset="35%" stopColor="#ffb300" />
-            <Stop offset="100%" stopColor="#ff6f00" />
-          </SvgLinearGradient>
-
-          {/* Incandescent Core Gradient */}
-          <SvgLinearGradient id="flameCoreGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-            <Stop offset="0%" stopColor="#ffffff" />
-            <Stop offset="65%" stopColor="#fff8e1" />
-            <Stop offset="100%" stopColor="#ffe082" />
-          </SvgLinearGradient>
-
-          {/* Golden Orbiting Planetary Ring Gradient */}
-          <SvgLinearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <Stop offset="0%" stopColor="#fdb750" stopOpacity={0.4} />
-            <Stop offset="50%" stopColor="#ffe6a7" stopOpacity={0.95} />
-            <Stop offset="100%" stopColor="#ff9f1c" stopOpacity={0.5} />
-          </SvgLinearGradient>
-        </Defs>
-
-        {/* 1. Static Ambient Warm Glow Behind Flame */}
-        <Circle cx={90} cy={88} r={72} fill="url(#flameRadialGlow)" />
-
-        {/* 2. Twinkling 4-Point Golden Stars */}
-        <AnimatedG animatedProps={animatedStarProps}>
-          <Path
-            d="M 40 38 Q 40 46 48 46 Q 40 46 40 54 Q 40 46 32 46 Q 40 46 40 38 Z"
-            fill="#ffd166"
-          />
-          <Path
-            d="M 136 28 Q 136 34 142 34 Q 136 34 136 40 Q 136 34 130 34 Q 136 34 136 28 Z"
-            fill="#ffd166"
-          />
-          <Path
-            d="M 152 74 Q 152 78 156 78 Q 152 78 152 82 Q 152 78 148 78 Q 152 78 152 74 Z"
-            fill="#ffc371"
-          />
-          <Circle cx={44} cy={78} r={1.8} fill="#ffe1b8" />
-          <Circle cx={130} cy={60} r={1.5} fill="#ffe1b8" />
-        </AnimatedG>
-
-        {/* 3. Back Half of Planetary Ring (Passes BEHIND Flame) */}
-        <AnimatedG animatedProps={animatedRingProps} origin="90, 95">
-          <Path
-            d="M 32 95 C 32 74, 148 74, 148 95"
-            stroke="url(#ringGrad)"
-            strokeWidth={3}
-            strokeLinecap="round"
-            fill="none"
-            opacity={0.55}
-          />
-        </AnimatedG>
-
-        {/* 4. Animated Flame Graphic Bodies */}
-        <AnimatedG animatedProps={animatedOuterFlameProps} origin="90, 120">
-          <Path
-            d="M 90 22 C 86 36, 74 46, 72 64 C 70 56, 64 52, 60 56 C 54 62, 56 78, 62 88 C 50 82, 46 94, 52 106 C 58 118, 72 126, 90 126 C 108 126, 122 118, 128 106 C 134 94, 130 82, 118 88 C 124 78, 126 62, 120 56 C 116 52, 110 56, 108 64 C 106 46, 94 36, 90 22 Z"
-            fill="url(#flameOuterGrad)"
-          />
-          <Path
-            d="M 90 48 C 84 58, 76 68, 76 82 C 76 96, 82 108, 90 108 C 98 108, 104 96, 104 82 C 104 68, 96 58, 90 48 Z"
-            fill="url(#flameMidGrad)"
-          />
-        </AnimatedG>
-
-        {/* Incandescent Core Heart */}
-        <AnimatedG animatedProps={animatedCoreProps} origin="90, 90">
-          <Path
-            d="M 90 66 C 86 74, 82 82, 82 92 C 82 100, 86 104, 90 104 C 94 104, 98 100, 98 92 C 98 82, 94 74, 90 66 Z"
-            fill="url(#flameCoreGrad)"
-          />
-        </AnimatedG>
-
-        {/* 5. Front Half of Planetary Ring (Loops IN FRONT of Flame) */}
-        <AnimatedG animatedProps={animatedRingProps} origin="90, 95">
-          <Path
-            d="M 32 95 C 32 114, 148 114, 148 95"
-            stroke="url(#ringGrad)"
-            strokeWidth={4.2}
-            strokeLinecap="round"
-            fill="none"
-          />
-          <Path
-            d="M 36 96 C 36 112, 144 112, 144 96"
-            stroke="#fff8db"
-            strokeWidth={1.4}
-            strokeLinecap="round"
-            fill="none"
-            opacity={0.85}
-          />
-        </AnimatedG>
-      </Svg>
+      <ExpoImage
+        source={ANIFLAME_ASSET}
+        style={styles.aniflameImage}
+        contentFit="contain"
+        autoplay={true}
+        cachePolicy="memory-disk"
+        priority="high"
+        transition={0}
+      />
     </View>
   );
 };
@@ -559,7 +392,22 @@ export const StreakCelebrationModal: React.FC<StreakCelebrationModalProps> = ({
     strokeDashoffset: verticalProgress.value,
   }));
 
-  if (!isMounted) return null;
+  if (!isMounted) {
+    return (
+      <View
+        pointerEvents="none"
+        style={styles.hiddenPreload}
+      >
+        <ExpoImage
+          source={ANIFLAME_ASSET}
+          style={styles.hiddenPreloadImage}
+          priority="high"
+          cachePolicy="memory-disk"
+          transition={0}
+        />
+      </View>
+    );
+  }
   const streakVal = currentStreak > 0 ? currentStreak : 1;
   const isFirstDayStreak = streakVal === 1;
 
@@ -598,7 +446,7 @@ export const StreakCelebrationModal: React.FC<StreakCelebrationModalProps> = ({
       <Animated.View style={[styles.overlay, animatedBackdropStyle]}>
         <Animated.View style={[styles.card, animatedCardStyle]}>
           {/* Subtle Background Wave Texture */}
-          <Image
+          <RNImage
             source={require("../../assets/golden-wave-bg.png")}
             style={styles.backgroundImage}
             resizeMode="cover"
@@ -764,13 +612,28 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
 
-  // --- Cosmic Flame Container ---
+  // --- Animated WebP Flame Container ---
   flameContainer: {
-    width: 180,
-    height: 154,
+    width: 170,
+    height: 160,
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: -4,
+    marginBottom: 4,
+  },
+  aniflameImage: {
+    width: 154,
+    height: 154,
+  },
+  hiddenPreload: {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    opacity: 0,
+    overflow: "hidden",
+  },
+  hiddenPreloadImage: {
+    width: 1,
+    height: 1,
   },
 
   // --- Streak Badge Wrapper & Corner Gift Badge ---
