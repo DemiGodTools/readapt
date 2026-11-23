@@ -2,8 +2,10 @@ import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 
-export const LOCAL_API_BASE = "http://10.192.224.142:3000/api";
 export const PROD_API_BASE = "https://redapt-admin.vercel.app/api";
+export const LOCAL_API_BASE =
+  process.env.EXPO_PUBLIC_LOCAL_API_ROOT ||
+  (__DEV__ ? "http://10.192.224.142:3000/api" : PROD_API_BASE);
 
 /**
  * API root used by the app.

@@ -32,6 +32,7 @@ import { ISubCategory } from "../../types/Category";
 import { checkAppVersion, VersionInfo } from "../../lib/versionCheck";
 import ForceUpdateModal from "../props/ForceUpdateModal";
 import { registerForPushNotificationsAsync, setupNotificationListeners } from "../../lib/notifications";
+import { ErrorBoundary } from "../props/ErrorBoundary";
 
 export type RootStackParamList = {
   Tabs: undefined;
@@ -125,7 +126,8 @@ export default function MainNavigation() {
   }, [isConnected, showToast]);
 
   return (
-    <SafeAreaProvider>
+    <ErrorBoundary>
+      <SafeAreaProvider>
       <NavigationContainer ref={navigationRef} theme={navTheme}>
         <Stack.Navigator
           initialRouteName={initialPage}
@@ -273,5 +275,6 @@ export default function MainNavigation() {
       {/* Force Update Gate Modal */}
       <ForceUpdateModal visible={forceUpdateActive} versionInfo={versionInfo} />
     </SafeAreaProvider>
+  </ErrorBoundary>
   );
 }
