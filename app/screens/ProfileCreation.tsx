@@ -27,6 +27,7 @@ import * as ImagePicker from "expo-image-picker";
 import { useUser } from "../../hooks/useUser";
 import { useToast } from "../../hooks/useToast";
 import { api } from "../../lib/api";
+import { createAvatarVariants, uploadAvatarVariants } from "../../lib/imageUpload";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -187,6 +188,28 @@ const ProfileCreation = () => {
     loopAnim.start();
 
     try {
+      // 1. Try high-performance cloud avatar pipeline (resizes & uploads to /avatar)
+      try {
+        const { variants, base64Fallback } = await createAvatarVariants(asset);
+        const result = await uploadAvatarVariants(variants, { base64Fallback });
+        const remoteUrl =
+          result?.urls?.image ||
+          result?.urls?.imageMd ||
+          result?.urls?.imageSm ||
+          result?.user?.image;
+
+        if (remoteUrl) {
+          setProfilePhoto(remoteUrl);
+          if (updateUser) updateUser({ image: remoteUrl } as any);
+          setUploadSuccess(true);
+          Vibration.vibrate(40);
+          return;
+        }
+      } catch (pipelineErr) {
+        console.warn("Avatar variant pipeline fallback:", pipelineErr);
+      }
+
+      // 2. Fallback: Base64 direct upload
       let imageDataUri = asset.base64
         ? `data:${asset.mimeType || "image/jpeg"};base64,${asset.base64}`
         : "";
@@ -329,6 +352,11 @@ const ProfileCreation = () => {
     if (isSubmitting) return;
     setIsSubmitting(true);
     try {
+      const safePhoto =
+        profilePhoto && !profilePhoto.startsWith("file://") && !profilePhoto.startsWith("content://")
+          ? profilePhoto
+          : null;
+
       const payload = {
         name: name.trim(),
         username: username.trim().toLowerCase(),
@@ -336,8 +364,8 @@ const ProfileCreation = () => {
         bio: bio.trim(),
         interests,
         visibility,
-        image: profilePhoto,
-        profilePhoto,
+        image: safePhoto,
+        profilePhoto: safePhoto,
       };
 
       const res = await api.post("/update/profile-setup", payload);
