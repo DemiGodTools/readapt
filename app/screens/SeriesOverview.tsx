@@ -423,6 +423,31 @@ export default function SeriesOverview() {
   }, [calculateQnaProgress]);
 
   useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("like-updated", ({ chapterId, liked, count }: any) => {
+      if (!chapterId) return;
+      const targetId = String(chapterId);
+      setSeriesData((prev: any) => {
+        if (!prev || !Array.isArray(prev.chapters)) return prev;
+        const nextChapters = prev.chapters.map((ch: any) => {
+          const content = ch?.content || ch;
+          const id = content?._id ? String(content._id) : "";
+          if (id === targetId) {
+            const updatedContent = {
+              ...content,
+              likes: count,
+              isLiked: liked,
+            };
+            return ch?.content ? { ...ch, content: updatedContent } : updatedContent;
+          }
+          return ch;
+        });
+        return { ...prev, chapters: nextChapters };
+      });
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
     let cancel = false;
     const resolveRecommendation = async () => {
       if (!seriesData) return;

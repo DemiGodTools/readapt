@@ -13,6 +13,7 @@ import { useToast } from "../../hooks/useToast";
 import { IUser } from "../../types/User";
 import { canUserAccessChapter } from "../../lib/entitlements";
 import CachedImage from "./CachedImage";
+import { LikeManager } from "../../lib/likeManager";
 
 const { width } = Dimensions.get("window");
 
@@ -112,10 +113,18 @@ const ContentCard = memo(
           ? finalBookData?.series?._id
           : finalBookData?.series;
 
+      const cardChapterId = String(targetId);
+      const currentLikeEntry = LikeManager.get(cardChapterId);
+      const enrichedBook = {
+        ...finalBookData,
+        likes: currentLikeEntry !== undefined ? currentLikeEntry.count : effectiveLikesCount,
+        isLiked: currentLikeEntry !== undefined ? currentLikeEntry.liked : effectiveLiked,
+      };
+
       if (mediaType === "pdf") {
         navigation.navigate("ReadBook", {
           bookId: String(targetId),
-          initialBookData: finalBookData,
+          initialBookData: enrichedBook,
           isFramework: isFrameworkMode,
           seriesType: isFrameworkMode ? "framework" : (seriesType || undefined),
           seriesId: sId,
@@ -123,7 +132,7 @@ const ContentCard = memo(
       } else {
         navigation.navigate("AudioRdr", {
           bookId: String(targetId),
-          initialBookData: finalBookData,
+          initialBookData: enrichedBook,
           isFramework: isFrameworkMode,
           seriesType: isFrameworkMode ? "framework" : (seriesType || undefined),
           seriesId: sId,
@@ -136,14 +145,16 @@ const ContentCard = memo(
     const dynamicNumber = index !== undefined ? index + 1 : 1;
     const badgeLabel = isFrameworkMode ? `Level ${dynamicNumber}` : null;
 
+    const cardChapterId = finalBookData?._id ? String(finalBookData._id) : "";
+    const cachedLike = cardChapterId ? LikeManager.get(cardChapterId) : undefined;
+
     const isLikedInUser = useMemo(() => {
-      if (!user?.likes || !Array.isArray(user.likes) || !finalBookData?._id) return false;
-      const targetId = String(finalBookData._id);
+      if (!user?.likes || !Array.isArray(user.likes) || !cardChapterId) return false;
       return user.likes.some((l: any) => {
         const id = typeof l === "string" ? l : String(l?._id || l?.$oid || "");
-        return id === targetId;
+        return id === cardChapterId;
       });
-    }, [user?.likes, finalBookData?._id]);
+    }, [user?.likes, cardChapterId]);
 
     const isItemLiked =
       isLikedProp !== undefined
@@ -153,11 +164,16 @@ const ContentCard = memo(
     const [likeOverride, setLikeOverride] = useState<{
       liked: boolean;
       count: number;
-    } | null>(null);
+    } | null>(() => {
+      if (cachedLike) {
+        return { liked: cachedLike.liked, count: cachedLike.count };
+      }
+      return null;
+    });
 
     useEffect(() => {
       const subscription = DeviceEventEmitter.addListener("like-updated", (event: any) => {
-        if (String(event?.chapterId) !== String(finalBookData?._id)) return;
+        if (!cardChapterId || String(event?.chapterId) !== cardChapterId) return;
         if (typeof event?.count !== "number") return;
         setLikeOverride({
           liked: Boolean(event.liked),
@@ -165,11 +181,7 @@ const ContentCard = memo(
         });
       });
       return () => subscription.remove();
-    }, [finalBookData?._id]);
-
-    useEffect(() => {
-      setLikeOverride(null);
-    }, [finalBookData?.likes, finalBookData?.isLiked]);
+    }, [cardChapterId]);
 
     const likesCount = Array.isArray(finalBookData.likes)
       ? finalBookData.likes.length
@@ -183,8 +195,10 @@ const ContentCard = memo(
       ? finalBookData.comments
       : 0;
 
-    const effectiveLiked = likeOverride?.liked ?? isItemLiked;
-    const effectiveLikesCount = likeOverride?.count ?? likesCount;
+    const effectiveLiked =
+      likeOverride?.liked ?? (cachedLike !== undefined ? cachedLike.liked : isItemLiked);
+    const effectiveLikesCount =
+      likeOverride?.count ?? (cachedLike !== undefined ? cachedLike.count : likesCount);
 
     return (
       <PopButton

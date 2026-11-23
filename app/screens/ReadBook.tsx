@@ -94,6 +94,7 @@ import { getRecentReads, saveRecentReads } from "../../lib/userStorage";
 import PopButton from "../../components/props/PopButton";
 import { useToast } from "../../hooks/useToast";
 import { useUser } from "../../hooks/useUser";
+import { LikeManager } from "../../lib/likeManager";
 import CommentsDrawer from "../../components/props/Comments";
 import { SubscriptionPlan } from "../../enums";
 import { useDownloads } from "../../hooks/useDownloads";
@@ -359,6 +360,7 @@ type BookPopulated = {
   category: any;
   series?: any;
   likes: number;
+  isLiked?: boolean;
   author: string;
   total: number;
   isDownloadable: boolean;
@@ -895,7 +897,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   const { accessToken } = useAuth();
   const { showToast } = useToast();
-  const { user, reload } = useUser();
+  const { user, reload, updateUser } = useUser();
   const { downloadChapter, downloadStatuses } = useDownloads();
   const { removeAllTracks } = useGlobalAudio();
 
@@ -953,10 +955,19 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   }, [user?._id, user?.userId]);
 
   const [book, setBook] = useState<BookPopulated | null>(() => {
+    let base: BookPopulated | null = null;
     if (activeChapterId && ramBookMetaMap.has(activeChapterId)) {
-      return ramBookMetaMap.get(activeChapterId);
+      base = ramBookMetaMap.get(activeChapterId) || null;
+    } else {
+      base = initialBookParam;
     }
-    return initialBookParam;
+    if (base && activeChapterId) {
+      const entry = LikeManager.get(activeChapterId);
+      if (entry) {
+        return { ...base, likes: entry.count, isLiked: entry.liked };
+      }
+    }
+    return base;
   });
 
   // DRM Screen Capture Protection
@@ -1038,7 +1049,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     }
   }, [navigation, clearAllSecurityTimers]);
 
-  // Reading time tracking (streak is calculated in background & celebrated on exit/home)
   const { onUserActivity, onPageChange } = useReadingTracker({
     isActive: !isAccessBlocked,
     isAudio: false,
@@ -1066,7 +1076,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   const [seriesData, setSeriesData] = useState<ISeries | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isLiked, setIsLiked] = useState(false);
+  const [isLiked, setIsLiked] = useState(() =>
+    LikeManager.isLiked(activeChapterId, Boolean(initialBookParam?.isLiked))
+  );
   const heartScale = useRef(new Animated.Value(1)).current;
   const particleAnim = useRef(new Animated.Value(0)).current;
   const [showComments, setShowComments] = useState(false);
@@ -1998,15 +2010,31 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               questions: freshQuestions,
               total: verifiedCount > 0 ? verifiedCount : freshData.total,
             };
-            ramBookMetaMap.set(targetId, mergedBook);
+            const cachedLikeEntry = LikeManager.get(targetId);
+            const resolvedLikes =
+              cachedLikeEntry !== undefined
+                ? cachedLikeEntry.count
+                : (freshData.likes ?? 0);
+            const resolvedIsLiked =
+              cachedLikeEntry !== undefined
+                ? cachedLikeEntry.liked
+                : Boolean((freshData as any).isLiked);
+
+            ramBookMetaMap.set(targetId, {
+              ...mergedBook,
+              likes: resolvedLikes,
+              isLiked: resolvedIsLiked,
+            });
             AsyncStorage.setItem(cachedChKey, JSON.stringify(mergedBook)).catch(
               () => {}
             );
             if (!isCancelledRef?.current) {
               setBook((prev) => ({
                 ...mergedBook,
-                likes: freshData.likes ?? prev?.likes ?? 0,
+                likes: resolvedLikes,
+                isLiked: resolvedIsLiked,
               }));
+              setIsLiked(resolvedIsLiked);
               setQuestions(freshQuestions);
               setIsQnaLoading(false);
             }
@@ -2257,6 +2285,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     const checkLikedStatus = async () => {
       if (!activeChapterId) return;
 
+      const cachedEntry = LikeManager.get(activeChapterId);
+      if (cachedEntry !== undefined) {
+        if (active) setIsLiked(cachedEntry.liked);
+        return;
+      }
+
       if (user?.likes && Array.isArray(user.likes)) {
         const isFound = user.likes.some((item: any) => {
           const id = typeof item === "string" ? item : item?._id;
@@ -2264,6 +2298,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         });
         if (active) {
           setIsLiked(Boolean(isFound));
+          LikeManager.set(activeChapterId, Boolean(isFound), Number(book?.likes) || 0, false);
           await AsyncStorage.setItem(
             `liked_${activeChapterId}`,
             String(Boolean(isFound))
@@ -2588,7 +2623,18 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     const optimisticLikes = Math.max(0, prevLikes + (nextLiked ? 1 : -1));
 
     setIsLiked(nextLiked);
-    setBook((prev) => (prev ? { ...prev, likes: optimisticLikes } : prev));
+    setBook((prev) => (prev ? { ...prev, likes: optimisticLikes, isLiked: nextLiked } : prev));
+    LikeManager.set(activeChapterId, nextLiked, optimisticLikes);
+
+    if (user) {
+      const currentLikes = Array.isArray(user.likes) ? [...user.likes] : [];
+      const filtered = currentLikes.filter((l: any) => {
+        const id = typeof l === "string" ? l : String(l?._id || l?.$oid || "");
+        return id !== activeChapterId;
+      });
+      const nextLikes = nextLiked ? [...filtered, activeChapterId] : filtered;
+      updateUser({ likes: nextLikes as any });
+    }
 
     heartScale.setValue(0.7);
     particleAnim.setValue(0);
@@ -2611,14 +2657,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     });
 
     try {
-      DeviceEventEmitter.emit("like-updated", {
-        chapterId: activeChapterId,
-        liked: nextLiked,
-        count: optimisticLikes,
-      });
-    } catch {}
-
-    try {
       const res = await api.post("/chapter/like", { chapterId: activeChapterId });
       if (res?.data?.success) {
         const confirmedLiked = Boolean(res.data.liked);
@@ -2626,7 +2664,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           typeof res.data.likes === "number" ? res.data.likes : optimisticLikes;
 
         setIsLiked(confirmedLiked);
-        setBook((prev) => (prev ? { ...prev, likes: confirmedLikes } : prev));
+        setBook((prev) => (prev ? { ...prev, likes: confirmedLikes, isLiked: confirmedLiked } : prev));
+        LikeManager.set(activeChapterId, confirmedLiked, confirmedLikes);
 
         await AsyncStorage.setItem(
           `liked_${activeChapterId}`,
@@ -2638,35 +2677,24 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           if (cached) {
             const parsed = JSON.parse(cached);
             parsed.likes = confirmedLikes;
+            parsed.isLiked = confirmedLiked;
             await AsyncStorage.setItem(
               `cached_ch_${activeChapterId}`,
               JSON.stringify(parsed)
             );
           }
         } catch {}
-
-        DeviceEventEmitter.emit("like-updated", {
-          chapterId: activeChapterId,
-          liked: confirmedLiked,
-          count: confirmedLikes,
-        });
-
-        reload().catch(() => {});
       }
     } catch (err: any) {
       console.error("Like request failed:", err?.message || err);
       setIsLiked(prevLiked);
-      setBook((prev) => (prev ? { ...prev, likes: prevLikes } : prev));
+      setBook((prev) => (prev ? { ...prev, likes: prevLikes, isLiked: prevLiked } : prev));
+      LikeManager.set(activeChapterId, prevLiked, prevLikes);
       await AsyncStorage.setItem(
         `liked_${activeChapterId}`,
         String(prevLiked)
       ).catch(() => {});
-      DeviceEventEmitter.emit("like-updated", {
-        chapterId: activeChapterId,
-        liked: prevLiked,
-        count: prevLikes,
-      });
-      showToast({ title: "Unable to update like. Please try again." });
+      showToast({ title: "Could not update like. Please try again." });
     }
   };
 

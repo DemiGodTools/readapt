@@ -463,6 +463,56 @@ const HomeScreen = () => {
   }, [loadRecentReads]);
 
   useEffect(() => {
+    const sub = DeviceEventEmitter.addListener("like-updated", ({ chapterId, liked, count }: any) => {
+      if (!chapterId) return;
+      const targetId = String(chapterId);
+
+      setFeedData((prev: any) => {
+        if (!prev) return prev;
+
+        const updateItem = (item: any) => {
+          if (!item) return item;
+          const id = item._id ? String(item._id) : "";
+          if (id === targetId) {
+            return {
+              ...item,
+              likes: count,
+              isLiked: liked,
+            };
+          }
+          return item;
+        };
+
+        const nextCategories = prev.categories?.map((cat: any) => ({
+          ...cat,
+          chapters: Array.isArray(cat?.chapters) ? cat.chapters.map(updateItem) : cat.chapters,
+        }));
+
+        const nextContinue = Array.isArray(prev.continueReading)
+          ? prev.continueReading.map(updateItem)
+          : prev.continueReading;
+
+        const nextTrending = Array.isArray(prev.trending)
+          ? prev.trending.map(updateItem)
+          : prev.trending;
+
+        const nextStandalones = Array.isArray(prev.standalones)
+          ? prev.standalones.map(updateItem)
+          : prev.standalones;
+
+        return {
+          ...prev,
+          ...(nextCategories ? { categories: nextCategories } : {}),
+          ...(nextContinue ? { continueReading: nextContinue } : {}),
+          ...(nextTrending ? { trending: nextTrending } : {}),
+          ...(nextStandalones ? { standalones: nextStandalones } : {}),
+        };
+      });
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
     AsyncStorage.getItem("cached_feed_data")
       .then((raw) => {
         if (raw) {

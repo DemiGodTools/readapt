@@ -74,6 +74,7 @@ import RelatedContentSkelly from "../../components/props/RelatedContentSkelly";
 import { getRecentReads, saveRecentReads } from "../../lib/userStorage";
 import { useToast } from "../../hooks/useToast";
 import { useUser } from "../../hooks/useUser";
+import { LikeManager } from "../../lib/likeManager";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useDownloads } from "../../hooks/useDownloads";
 import CommentsDrawer from "../../components/props/Comments";
@@ -1350,7 +1351,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
     }
   }).current;
 
-  const { user, reload } = useUser();
+  const { user, reload, updateUser } = useUser();
   const markChapterQnaCompleted = useCallback(async (cId?: string) => {
     if (!cId) return;
     try {
@@ -1730,16 +1731,25 @@ const AudioPlayerScreen = ({ route }: Props) => {
     }
   }, [showLyrics, transcriptions, scrollToLineCenter]);
 
-  const [isLiked, setIsLiked] = useState(false);
+  const [isLiked, setIsLiked] = useState(() =>
+    LikeManager.isLiked(chapterId, Boolean(initialData?.isLiked))
+  );
   const heartScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    if (!chapterId) return;
+    const cachedEntry = LikeManager.get(chapterId);
+    if (cachedEntry !== undefined) {
+      setIsLiked(cachedEntry.liked);
+      return;
+    }
     if (user && user.likes && chapterId) {
       const isAlreadyLiked = user.likes.some((item: any) => {
         const id = typeof item === "string" ? item : item?._id;
-        return id === chapterId;
+        return String(id) === String(chapterId);
       });
       setIsLiked(Boolean(isAlreadyLiked));
+      LikeManager.set(chapterId, Boolean(isAlreadyLiked), Number(book?.likes) || 0, false);
     }
   }, [user, chapterId]);
 
@@ -1913,16 +1923,30 @@ const AudioPlayerScreen = ({ route }: Props) => {
           }
         }
 
+        const cachedLikeEntry = chapterId ? LikeManager.get(chapterId) : undefined;
+        const finalLikes =
+          cachedLikeEntry !== undefined
+            ? cachedLikeEntry.count
+            : (resolvedBook!.likes !== undefined
+            ? resolvedBook!.likes
+            : (downloaded?.likes ?? 0));
+        const finalIsLiked =
+          cachedLikeEntry !== undefined
+            ? cachedLikeEntry.liked
+            : Boolean((resolvedBook as any)!.isLiked);
+
         setBook((prev) => {
           const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
           return {
             ...(cleanPrev || {}),
             ...resolvedBook,
             media: downloaded?.localUri || resolvedBook!.media,
-            likes: resolvedBook!.likes !== undefined ? resolvedBook!.likes : (downloaded?.likes ?? cleanPrev?.likes ?? 0),
+            likes: finalLikes,
+            isLiked: finalIsLiked,
             comments: resolvedBook!.comments !== undefined ? resolvedBook!.comments : (downloaded?.comments ?? cleanPrev?.comments ?? 0),
           };
         });
+        setIsLiked(finalIsLiked);
 
         if (downloaded && (resolvedBook.likes !== undefined || resolvedBook.comments !== undefined)) {
           updateDownloadedChapterMetadata(chapterId, {
@@ -2279,13 +2303,30 @@ const AudioPlayerScreen = ({ route }: Props) => {
       showToast({ title: "Please connect to the Internet." });
       return;
     }
+    if (!accessToken) {
+      showToast({ title: "Please log in to like this book." });
+      return;
+    }
     const currentLikes = typeof book?.likes === "number" ? book.likes : 0;
-    const nextState = !isLiked;
+    const prevLiked = isLiked;
+    const nextState = !prevLiked;
     const resolvedLikes = nextState
       ? currentLikes + 1
       : Math.max(0, currentLikes - 1);
+
     setIsLiked(nextState);
-    setBook((prev) => (prev ? { ...prev, likes: resolvedLikes } : prev));
+    setBook((prev) => (prev ? { ...prev, likes: resolvedLikes, isLiked: nextState } : prev));
+    LikeManager.set(chapterId, nextState, resolvedLikes);
+
+    if (user && chapterId) {
+      const currentLikesList = Array.isArray(user.likes) ? [...user.likes] : [];
+      const filtered = currentLikesList.filter((l: any) => {
+        const id = typeof l === "string" ? l : String(l?._id || l?.$oid || "");
+        return id !== String(chapterId);
+      });
+      const nextLikes = nextState ? [...filtered, chapterId] : filtered;
+      updateUser({ likes: nextLikes as any });
+    }
 
     Animated.sequence([
       Animated.spring(heartScale, {
@@ -2301,14 +2342,6 @@ const AudioPlayerScreen = ({ route }: Props) => {
     ]).start();
 
     try {
-      DeviceEventEmitter?.emit("like-updated", {
-        chapterId,
-        liked: nextState,
-        count: resolvedLikes,
-      });
-    } catch (_) {}
-
-    try {
       const res = await api.post(
         "/chapter/like",
         { chapterId },
@@ -2319,11 +2352,14 @@ const AudioPlayerScreen = ({ route }: Props) => {
         const serverLikes =
           typeof res.data.likes === "number" ? res.data.likes : resolvedLikes;
         setIsLiked(serverLiked);
-        setBook((prev) => (prev ? { ...prev, likes: serverLikes } : prev));
-        reload().catch(() => {});
+        setBook((prev) => (prev ? { ...prev, likes: serverLikes, isLiked: serverLiked } : prev));
+        LikeManager.set(chapterId, serverLiked, serverLikes);
       }
     } catch (_) {
-      setIsLiked(!nextState);
+      setIsLiked(prevLiked);
+      setBook((prev) => (prev ? { ...prev, likes: currentLikes, isLiked: prevLiked } : prev));
+      LikeManager.set(chapterId, prevLiked, currentLikes);
+      showToast({ title: "Could not update like. Please try again." });
     }
   };
 

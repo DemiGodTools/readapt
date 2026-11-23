@@ -17,6 +17,7 @@ export type IChapter = {
   category: string;
   series?: string;
   likes: number;
+  isLiked?: boolean;
   author: string;
   total: number;
   isDownloadable: boolean;

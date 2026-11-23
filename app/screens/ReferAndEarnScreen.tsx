@@ -44,7 +44,6 @@ import { api } from "../../lib/api";
 import { useUser } from "../../hooks/useUser";
 import { useToast } from "../../hooks/useToast";
 import { copyText } from "../../lib/safeNative";
-import CachedImage from "../../components/props/CachedImage";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -199,11 +198,26 @@ const CloseXIcon = ({ size = 18, color = "#9CA3AF" }) => (
   </Svg>
 );
 
+const SingleUserIcon = ({ size = 18, color = THEME.tealPrimary }) => (
+  <Svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke={color}
+    strokeWidth={2.2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <Path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <Circle cx="12" cy="7" r="4" />
+  </Svg>
+);
+
 interface ReferredFriend {
   id: string;
   name: string;
   userId: string;
-  image?: string | null;
   joinedAt: string;
 }
 
@@ -379,20 +393,9 @@ const ReferredFriendsSheet = ({
               }
               renderItem={({ item }) => (
                 <View style={sheetStyles.friendRow}>
-                  {item.image ? (
-                    <CachedImage
-                      uri={item.image}
-                      style={sheetStyles.avatarImg}
-                      contentFit="cover"
-                      priority="high"
-                    />
-                  ) : (
-                    <View style={sheetStyles.avatarFallback}>
-                      <Text style={sheetStyles.avatarInitial}>
-                        {(item.name || item.userId || "R")[0].toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
+                  <View style={sheetStyles.userIconBadge}>
+                    <SingleUserIcon size={18} color={THEME.tealPrimary} />
+                  </View>
 
                   <View style={sheetStyles.friendInfo}>
                     <Text style={sheetStyles.friendName} numberOfLines={1}>
@@ -464,6 +467,9 @@ export default function ReferAndEarnScreen() {
   }, [user?.referralCode, user?.totalReferralsCount]);
 
   const fetchReferralStats = useCallback(async () => {
+    if (referrals.length === 0) {
+      setLoading(true);
+    }
     try {
       const res = await api.get(`/referral/stats?_t=${Date.now()}`);
       if (res.data?.success) {
@@ -483,7 +489,7 @@ export default function ReferAndEarnScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [updateUser]);
+  }, [updateUser, referrals.length]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1119,27 +1125,16 @@ const sheetStyles = StyleSheet.create({
     borderRadius: 16,
     padding: 13,
   },
-  avatarImg: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    marginRight: 12,
-  },
-  avatarFallback: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  userIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     backgroundColor: THEME.tealSoftBg,
     borderColor: THEME.tealSoftBorder,
     borderWidth: 1,
     justifyContent: "center",
     alignItems: "center",
     marginRight: 12,
-  },
-  avatarInitial: {
-    color: THEME.tealPrimary,
-    fontSize: 16,
-    fontWeight: "800",
   },
   friendInfo: {
     flex: 1,
