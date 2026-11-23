@@ -39,11 +39,12 @@ import Animated, {
   interpolate,
   Extrapolation,
 } from "react-native-reanimated";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { api } from "../../lib/api";
 import { useUser } from "../../hooks/useUser";
 import { useToast } from "../../hooks/useToast";
 import { copyText } from "../../lib/safeNative";
+import CachedImage from "../../components/props/CachedImage";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -229,6 +230,8 @@ interface ReferredFriendsSheetProps {
   friends: ReferredFriend[];
   loading: boolean;
   totalCount: number;
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }
 
 const ReferredFriendsSheet = ({
@@ -237,6 +240,8 @@ const ReferredFriendsSheet = ({
   friends,
   loading,
   totalCount,
+  onRefresh,
+  refreshing,
 }: ReferredFriendsSheetProps) => {
   const [sheetOpen, setSheetOpen] = useState(false);
   const translateY = useSharedValue(SCREEN_HEIGHT);
@@ -362,12 +367,24 @@ const ReferredFriendsSheet = ({
               initialNumToRender={15}
               maxToRenderPerBatch={20}
               windowSize={5}
+              refreshControl={
+                onRefresh ? (
+                  <RefreshControl
+                    refreshing={Boolean(refreshing)}
+                    onRefresh={onRefresh}
+                    tintColor={THEME.tealPrimary}
+                    colors={[THEME.tealPrimary]}
+                  />
+                ) : undefined
+              }
               renderItem={({ item }) => (
                 <View style={sheetStyles.friendRow}>
                   {item.image ? (
-                    <Image
-                      source={{ uri: item.image }}
+                    <CachedImage
+                      uri={item.image}
                       style={sheetStyles.avatarImg}
+                      contentFit="cover"
+                      priority="high"
                     />
                   ) : (
                     <View style={sheetStyles.avatarFallback}>
@@ -448,7 +465,7 @@ export default function ReferAndEarnScreen() {
 
   const fetchReferralStats = useCallback(async () => {
     try {
-      const res = await api.get("/referral/stats");
+      const res = await api.get(`/referral/stats?_t=${Date.now()}`);
       if (res.data?.success) {
         if (res.data.referralCode) {
           const freshCode = res.data.referralCode.toUpperCase().trim();
@@ -467,6 +484,12 @@ export default function ReferAndEarnScreen() {
       setRefreshing(false);
     }
   }, [updateUser]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchReferralStats();
+    }, [fetchReferralStats])
+  );
 
   useEffect(() => {
     fetchReferralStats();
@@ -655,7 +678,10 @@ export default function ReferAndEarnScreen() {
         <TouchableOpacity
           style={styles.referralsCard}
           activeOpacity={0.75}
-          onPress={() => setShowFriendsSheet(true)}
+          onPress={() => {
+            fetchReferralStats();
+            setShowFriendsSheet(true);
+          }}
         >
           <View style={styles.referralsIconBadge}>
             <DualUsersIcon size={32} color={THEME.tealPrimary} />
@@ -699,6 +725,8 @@ export default function ReferAndEarnScreen() {
         friends={referrals}
         loading={loading}
         totalCount={totalCount}
+        onRefresh={onRefresh}
+        refreshing={refreshing}
       />
     </View>
   );

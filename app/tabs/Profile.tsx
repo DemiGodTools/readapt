@@ -1079,6 +1079,19 @@ const ProfileScreen = () => {
           <Text style={styles.logoutText}>Log Out</Text>
         </Pressable>
 
+        {/* Dev / Test: Open Profile Creation UI */}
+        <TouchableOpacity
+          style={styles.devTestBtn}
+          activeOpacity={0.8}
+          onPress={() => navigation.navigate("ProfileCreation" as any)}
+        >
+          <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+            <Path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+          </Svg>
+          <Text style={styles.devTestBtnText}>Test Profile Creation UI</Text>
+        </TouchableOpacity>
+
         <Text style={styles.footer}>© 2026 Readapt • Version {APP_VERSION}</Text>
       </ScrollView>
 
@@ -1714,6 +1727,24 @@ const styles = StyleSheet.create({
     borderColor: "rgba(239,68,68,0.55)",
   },
   logoutText: { color: "#f87171", fontSize: 15.5, fontWeight: "700" },
+  devTestBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginHorizontal: 20,
+    marginTop: 14,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: "rgba(0, 210, 180, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(0, 210, 180, 0.3)",
+  },
+  devTestBtnText: {
+    color: ACCENT,
+    fontSize: 13.5,
+    fontWeight: "600",
+  },
   footer: { color: "rgba(148,163,184,0.55)", fontSize: 11, textAlign: "center", marginTop: 18, fontWeight: "500" },
 
   cardPressed: { opacity: 0.92, transform: [{ scale: 0.995 }] },
