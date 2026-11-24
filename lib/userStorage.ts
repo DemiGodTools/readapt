@@ -24,6 +24,32 @@ const MIN_CLOUD_SYNC_INTERVAL_MS = 15000; // Throttle MongoDB writes to at most 
  * Resolves the canonical user ID for persistent storage isolation.
  */
 let cachedResolvedUserId: string | null = null;
+
+export const resetUserStorageCache = () => {
+  cachedResolvedUserId = null;
+  ramRecentReadsCache.clear();
+};
+
+/**
+ * Instantly hydrates recent reads into memory and disk from the backend user object
+ */
+export const hydrateRecentReadsFromUser = async (userId: string, userRecentReads: any[]) => {
+  if (!userId || !Array.isArray(userRecentReads) || userRecentReads.length === 0) return;
+  const key = getRecentReadsKey(userId);
+  const formatted: IRecentRead[] = userRecentReads
+    .filter((r) => Boolean(r?.chapter || r?.content))
+    .map((r) => ({
+      content: r.chapter || r.content,
+      readtill: String(r.readtill || "1"),
+      total: String(r.total || "1"),
+      readAt: r.readAt ? new Date(r.readAt).toISOString() : new Date().toISOString(),
+    }));
+  if (formatted.length > 0) {
+    ramRecentReadsCache.set(key, formatted);
+    await AsyncStorage.setItem(key, JSON.stringify(formatted)).catch(() => {});
+  }
+};
+
 export const resolveCanonicalUserId = async (providedUserId?: string): Promise<string> => {
   if (providedUserId && providedUserId !== "guest" && providedUserId !== "undefined") {
     cachedResolvedUserId = providedUserId;

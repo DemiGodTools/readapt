@@ -112,9 +112,6 @@ const DETAILS_SHEET_HEIGHT = Math.min(SCREEN_HEIGHT * 0.58, 480);
 const TOC_WIDTH = Math.min(SCREEN_WIDTH * 0.84, 340);
 const SPEED_SHEET_HEIGHT = 400;
 
-const DEMO_AUDIO_URL =
-  "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
-
 type Props = {
   route: { params: { bookId: string } };
   navigation: any;
@@ -2051,10 +2048,16 @@ const AudioPlayerScreen = ({ route }: Props) => {
     let isCancelled = false;
 
     const startOrResumeAudio = async () => {
+      const resolvedMedia = book.media || (book as any).content?.media;
+      if (!resolvedMedia) {
+        showToast({ title: "Audio is not available for this chapter." });
+        return;
+      }
+
       const targetBook: IChapter = {
         ...book,
         _id: targetBookId,
-        media: book.media || (book as any).content?.media || DEMO_AUDIO_URL,
+        media: resolvedMedia,
       };
 
       // If already playing this exact track on player, don't restart
@@ -2291,9 +2294,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
       setBook(nextData);
       const targetTrack = {
         ...nextData,
-        media: nextData?.media || DEMO_AUDIO_URL,
+        _id: nextId,
+        media: nextData?.media || "",
       };
-      void playTrack(targetTrack, 0);
+      if (targetTrack.media) void playTrack(targetTrack, 0);
     }
   }, [nextChapterItem, navigation, seriesData?._id, route?.params, updateRecentReads, playTrack]);
 
@@ -2771,9 +2775,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
                     setBook(nextBook);
                     const targetTrack = {
                       ...nextBook,
-                      media: nextBook.media || DEMO_AUDIO_URL,
+                      _id: nextId,
+                      media: nextBook.media || "",
                     };
-                    void playTrack(targetTrack, 0);
+                    if (targetTrack.media) void playTrack(targetTrack, 0);
                   }
                 }}
                 viewer="audio"
@@ -2817,9 +2822,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
                       setBook(relBook);
                       const targetTrack = {
                         ...relBook,
-                        media: relBook.media || DEMO_AUDIO_URL,
+                        _id: nextId,
+                        media: relBook.media || "",
                       };
-                      void playTrack(targetTrack, 0);
+                      if (targetTrack.media) void playTrack(targetTrack, 0);
                     } else {
                       (navigation as any).navigate("ReadBook", {
                         bookId: String(relBook._id),

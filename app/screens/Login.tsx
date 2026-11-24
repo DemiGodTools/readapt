@@ -25,7 +25,8 @@ import Svg, { G, Path } from "react-native-svg";
 import { useToast } from "../../hooks/useToast";
 import { ParamListBase, RouteProp } from "@react-navigation/native";
 import pallete from "../../lib/Colors";
-import { api, getAccountDeletionUrl } from "../../lib/api";
+import { api, getAccountDeletionUrl, setApiAccessToken, setApiUserEmail } from "../../lib/api";
+import { hydrateRecentReadsFromUser } from "../../lib/userStorage";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { useUser } from "../../hooks/useUser";
 
@@ -314,6 +315,12 @@ const Login = ({ navigation }: Props) => {
         ...payload,
       });
 
+      // Synchronously set memory tokens so subsequent requests carry auth headers instantly
+      setApiAccessToken(data.token);
+      if (data?.user?.email) {
+        setApiUserEmail(data.user.email);
+      }
+
       const tokenData = JSON.stringify({
         token: data.token,
         expiry: data.expiry,
@@ -335,6 +342,11 @@ const Login = ({ navigation }: Props) => {
           })
         );
         setCachedUser(data.user);
+
+        // Instantly hydrate recent reads / progress so HomeScreen & ProfileScreen never display empty progress
+        if (Array.isArray(data.user.recentReads) && data.user.recentReads.length > 0) {
+          hydrateRecentReadsFromUser(data.user._id || data.user.userId, data.user.recentReads).catch(() => {});
+        }
       }
 
       await AsyncStorage.removeItem("pending_deletion_info").catch(() => {});

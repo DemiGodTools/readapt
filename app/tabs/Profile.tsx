@@ -44,15 +44,15 @@ import ProfileSkeleton from "../../components/props/ProfileSkeleton";
 import ProfileEditSheet from "../../components/props/ProfileEditSheet";
 import UpgradeSheet from "../../components/props/UpgradeSheet";
 import EarlyBadgeUnlockModal from "../../components/props/EarlyBadgeUnlockModal";
-import ForceUpdateModal from "../../components/props/ForceUpdateModal";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { useToast } from "../../hooks/useToast";
 import { getLevelTitle } from "../../lib/levels";
 import { useStreak } from "../../hooks/useStreak";
 import { useNetworkStatus } from "../../hooks/useNetwork";
-import { getRecentReadsKey } from "../../lib/userStorage";
+import { getRecentReadsKey, getRecentReads } from "../../lib/userStorage";
 import { useQuery } from "../../lib/queryCache";
 import { copyText } from "../../lib/safeNative";
+import { getReferralShareMessage } from "../../lib/referral";
 import {
   avatarUri,
   createAvatarVariants,
@@ -370,7 +370,7 @@ const EarlyBadgeWithGlow = ({ onPress }: { onPress: () => void }) => {
   );
 };
 
-const AnimatedCopyButton = ({
+const AnimatedCircleCopyButton = ({
   copied,
   onPress,
 }: {
@@ -390,59 +390,65 @@ const AnimatedCopyButton = ({
 
   const backgroundColor = anim.interpolate({
     inputRange: [0, 1],
-    outputRange: [ACCENT, "#16a34a"],
+    outputRange: ["rgba(45, 212, 191, 0.12)", "#16a34a"],
+  });
+
+  const borderColor = anim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["rgba(45, 212, 191, 0.32)", "#16a34a"],
   });
 
   const copyScale = anim.interpolate({
     inputRange: [0, 0.4, 1],
-    outputRange: [1, 0.5, 0],
+    outputRange: [1, 0.4, 0],
   });
 
   const copiedScale = anim.interpolate({
     inputRange: [0, 0.5, 1],
-    outputRange: [0, 0.6, 1],
+    outputRange: [0, 0.5, 1],
   });
 
   return (
-    <Pressable onPress={onPress} hitSlop={6} style={styles.copyBtnPressable}>
-      <Animated.View style={[styles.copyBtn, { backgroundColor }]}>
-        <View style={styles.copyBtnContent}>
-          {/* Default Copy state */}
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.copyBtnInner,
-              {
-                opacity: anim.interpolate({ inputRange: [0, 0.35, 1], outputRange: [1, 0, 0] }),
-                transform: [{ scale: copyScale }],
-              },
-            ]}
-          >
-            <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
-              <Rect x="9" y="9" width="12" height="12" rx="2.5" />
-              <Path d="M5 15V5a2 2 0 0 1 2-2h10" />
-            </Svg>
-            <Text style={styles.copyText}>Copy</Text>
-          </Animated.View>
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      style={styles.circleActionPressable}
+      accessibilityLabel={copied ? "Referral code copied" : "Copy referral code"}
+    >
+      <Animated.View style={[styles.circleActionBtn, { backgroundColor, borderColor }]}>
+        {/* Copy Icon */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.circleIconWrap,
+            {
+              opacity: anim.interpolate({ inputRange: [0, 0.35, 1], outputRange: [1, 0, 0] }),
+              transform: [{ scale: copyScale }],
+            },
+          ]}
+        >
+          <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+            <Rect x="9" y="9" width="12" height="12" rx="2.5" />
+            <Path d="M5 15V5a2 2 0 0 1 2-2h10" />
+          </Svg>
+        </Animated.View>
 
-          {/* Copied! state */}
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.copyBtnInner,
-              styles.copyBtnInnerAbsolute,
-              {
-                opacity: anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0, 1] }),
-                transform: [{ scale: copiedScale }],
-              },
-            ]}
-          >
-            <Svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round">
-              <Polyline points="20 6 9 17 4 12" />
-            </Svg>
-            <Text style={styles.copyTextSuccess}>Copied!</Text>
-          </Animated.View>
-        </View>
+        {/* Checkmark Icon */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.circleIconWrap,
+            styles.circleIconWrapAbsolute,
+            {
+              opacity: anim.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0, 0, 1] }),
+              transform: [{ scale: copiedScale }],
+            },
+          ]}
+        >
+          <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth={2.8} strokeLinecap="round" strokeLinejoin="round">
+            <Polyline points="20 6 9 17 4 12" />
+          </Svg>
+        </Animated.View>
       </Animated.View>
     </Pressable>
   );
@@ -521,7 +527,6 @@ const ProfileScreen = () => {
   const [showEarlyBadgeInfo, setShowEarlyBadgeInfo] = useState(false);
   const [showEarlyUnlockModal, setShowEarlyUnlockModal] = useState(false);
   const [claimingEarlyBadge, setClaimingEarlyBadge] = useState(false);
-  const [showForceUpdatePreview, setShowForceUpdatePreview] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [completeChapters, setCompleteChapters] = useState(0);
   const [copied, setCopied] = useState(false);
@@ -565,9 +570,8 @@ const ProfileScreen = () => {
 
   const previewScale = useRef(new Animated.Value(0.35)).current;
   const previewOpacity = useRef(new Animated.Value(0)).current;
-  // Seeded with "now" so the first focus does not duplicate the DataContext's
-  // initial /get-self request on a cold start.
-  const lastFocusRefresh = useRef(Date.now());
+  // Initialize to 0 so the first focus revalidates and ensures profile freshness
+  const lastFocusRefresh = useRef(0);
 
   const joinedSeriesId = useMemo(
     () => normalizeSeriesId(user?.joinedSeries as JoinedSeriesRef),
@@ -610,16 +614,28 @@ const ProfileScreen = () => {
 
     (async () => {
       try {
+        let reads: any[] = [];
         const raw = await AsyncStorage.getItem(getRecentReadsKey(userId));
-        const reads = raw ? JSON.parse(raw) : [];
+        if (raw) {
+          reads = JSON.parse(raw);
+        } else if (Array.isArray(user?.recentReads) && user.recentReads.length > 0) {
+          reads = user.recentReads.map((r: any) => ({
+            content: r.chapter || r.content,
+            readtill: String(r.readtill || "1"),
+            total: String(r.total || "1"),
+          }));
+        } else {
+          reads = await getRecentReads(userId);
+        }
+
         const chapterIds = new Set(
           (seriesData.chapters || [])
-            .map((item: any) => item?.content?._id)
+            .map((item: any) => item?.content?._id || item?.content || item?._id)
             .filter(Boolean)
         );
         const readIds = new Set(
           (Array.isArray(reads) ? reads : [])
-            .map((entry: any) => entry?.content?._id || entry?._id)
+            .map((entry: any) => entry?.content?._id || entry?._id || entry?.content)
             .filter((id: string) => id && chapterIds.has(id))
         );
         if (alive) setCompleteChapters(readIds.size);
@@ -631,7 +647,7 @@ const ProfileScreen = () => {
     return () => {
       alive = false;
     };
-  }, [seriesData?.chapters, user?._id, user?.userId]);
+  }, [seriesData?.chapters, user?._id, user?.userId, user?.recentReads]);
 
   /* ---------------- Focus / foreground revalidation ---------------- */
   const refreshSeries = seriesQuery.refresh;
@@ -823,7 +839,7 @@ const ProfileScreen = () => {
   const shareReferral = useCallback(async () => {
     try {
       await Share.share({
-        message: `I'm reading on Readapt. Join me with my code ${referralCode} — https://play.google.com/store/apps`,
+        message: getReferralShareMessage(referralCode),
       });
     } catch {}
   }, [referralCode]);
@@ -1072,7 +1088,24 @@ const ProfileScreen = () => {
               </View>
               <Text style={styles.cardMeta}>Share your code with friends and earn rewards.</Text>
             </View>
-            <AnimatedCopyButton copied={copied} onPress={copyReferral} />
+            <View style={styles.referActions}>
+              <AnimatedCircleCopyButton copied={copied} onPress={copyReferral} />
+              <TouchableOpacity
+                style={styles.circleShareBtn}
+                activeOpacity={0.8}
+                onPress={shareReferral}
+                hitSlop={6}
+                accessibilityLabel="Share referral code"
+              >
+                <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+                  <Circle cx="18" cy="5" r="3" />
+                  <Circle cx="6" cy="12" r="3" />
+                  <Circle cx="18" cy="19" r="3" />
+                  <Line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+                  <Line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                </Svg>
+              </TouchableOpacity>
+            </View>
           </View>
 
           <Pressable onPress={copyReferral} style={styles.referCodeBox}>
@@ -1115,19 +1148,6 @@ const ProfileScreen = () => {
           </Svg>
           <Text style={styles.logoutText}>Log Out</Text>
         </Pressable>
-
-        {/* Dev / Test: Preview Force Update Screen */}
-        <TouchableOpacity
-          style={styles.devPreviewBtn}
-          activeOpacity={0.8}
-          onPress={() => setShowForceUpdatePreview(true)}
-        >
-          <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
-            <Path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
-            <Path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
-          </Svg>
-          <Text style={styles.devPreviewBtnText}>Preview Force Update Screen</Text>
-        </TouchableOpacity>
 
         <Text style={styles.footer}>© 2026 Readapt • Version {APP_VERSION}</Text>
       </ScrollView>
@@ -1210,7 +1230,7 @@ const ProfileScreen = () => {
                   <Text style={styles.streakStepTitle}>Read or Listen Daily</Text>
                 </View>
                 <Text style={styles.streakStepDesc}>
-                  Complete at least <Text style={{ fontWeight: "700", color: "#f1f5f9" }}>1 chapter</Text> every day before midnight.
+                  Read or listen for at least <Text style={{ fontWeight: "700", color: "#f1f5f9" }}>4 minutes</Text> every day before midnight.
                 </Text>
               </View>
             </View>
@@ -1296,15 +1316,164 @@ const ProfileScreen = () => {
       </UpgradeSheet>
 
       {/* Refer & Earn info sheet */}
-      <UpgradeSheet visible={showReferInfo} onClose={() => setShowReferInfo(false)} title="How Refer & Earn Works?">
-        <View style={styles.infoSheetBody}>
-          <Text style={{ fontSize: 14, lineHeight: 22, color: "#d1d5db", textAlign: "center" }}>
-            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>1.</Text> Invite friends using your unique referral code
-            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>2.</Text> When they sign up and start reading, you both earn rewards
-            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>3.</Text> Track your referral earnings in the app
-            <Text style={{ fontWeight: "700", color: "#2DD4BF" }}>4.</Text> Unlock exclusive badges and perks as your referrals grow
-          </Text>
-        </View>
+      <UpgradeSheet
+        visible={showReferInfo}
+        onClose={() => setShowReferInfo(false)}
+        title="How Refer & Earn Works"
+      >
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.referSheetScroll}
+        >
+          {/* Hero Header */}
+          <View style={styles.referSheetHero}>
+            <View style={styles.referHeroPill}>
+              <Svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                <Polyline points="20 12 20 22 4 22 4 12" />
+                <Rect x="2" y="7" width="20" height="5" rx="1" />
+                <Line x1="12" y1="22" x2="12" y2="7" />
+                <Path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" />
+                <Path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" />
+              </Svg>
+              <Text style={styles.referHeroPillText}>Invite Friends & Win</Text>
+            </View>
+            <Text style={styles.referHeroSub}>
+              Share Readapt with your friends to unlock exclusive reading perks and climb the leaderboard together.
+            </Text>
+          </View>
+
+          {/* Quick Referral Code Pill */}
+          <View style={styles.referSheetCodeCard}>
+            <View style={styles.referSheetCodeLeft}>
+              <Text style={styles.referSheetCodeTag}>YOUR REFERRAL CODE</Text>
+              <Text style={styles.referSheetCodeText} selectable>{referralCode}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.referSheetCopyBtn}
+              activeOpacity={0.8}
+              onPress={copyReferral}
+            >
+              <Svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+                <Rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <Path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </Svg>
+              <Text style={styles.referSheetCopyText}>{copied ? "Copied" : "Copy"}</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Structured Step Cards */}
+          <View style={styles.referStepsWrap}>
+            {/* Step 1 */}
+            <View style={styles.referStepCard}>
+              <View style={[styles.referStepIconWrap, { backgroundColor: "rgba(45,212,191,0.12)", borderColor: "rgba(45,212,191,0.3)" }]}>
+                <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={ACCENT} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Circle cx="18" cy="5" r="3" />
+                  <Circle cx="6" cy="12" r="3" />
+                  <Circle cx="18" cy="19" r="3" />
+                  <Line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+                  <Line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+                </Svg>
+              </View>
+              <View style={styles.referStepBody}>
+                <View style={styles.referStepHeader}>
+                  <Text style={[styles.referStepTag, { color: ACCENT }]}>STEP 1</Text>
+                  <Text style={styles.referStepTitle}>Share Your Unique Code</Text>
+                </View>
+                <Text style={styles.referStepDesc}>
+                  Invite friends to Readapt using your personal referral code or invite link.
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 2 */}
+            <View style={styles.referStepCard}>
+              <View style={[styles.referStepIconWrap, { backgroundColor: "rgba(245,158,11,0.12)", borderColor: "rgba(245,158,11,0.3)" }]}>
+                <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={AMBER} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                  <Path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                </Svg>
+              </View>
+              <View style={styles.referStepBody}>
+                <View style={styles.referStepHeader}>
+                  <Text style={[styles.referStepTag, { color: AMBER }]}>STEP 2</Text>
+                  <Text style={styles.referStepTitle}>They Sign Up & Read</Text>
+                </View>
+                <Text style={styles.referStepDesc}>
+                  When they create an account and start reading, you both earn milestone rewards.
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 3 */}
+            <View style={styles.referStepCard}>
+              <View style={[styles.referStepIconWrap, { backgroundColor: "rgba(167,139,250,0.12)", borderColor: "rgba(167,139,250,0.3)" }]}>
+                <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                  <Polyline points="17 6 23 6 23 12" />
+                </Svg>
+              </View>
+              <View style={styles.referStepBody}>
+                <View style={styles.referStepHeader}>
+                  <Text style={[styles.referStepTag, { color: "#a78bfa" }]}>STEP 3</Text>
+                  <Text style={styles.referStepTitle}>Track Live Earnings</Text>
+                </View>
+                <Text style={styles.referStepDesc}>
+                  Monitor joined friends, active streaks, and bonus points live in the app.
+                </Text>
+              </View>
+            </View>
+
+            {/* Step 4 */}
+            <View style={styles.referStepCard}>
+              <View style={[styles.referStepIconWrap, { backgroundColor: "rgba(52,211,153,0.12)", borderColor: "rgba(52,211,153,0.3)" }]}>
+                <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <Circle cx="12" cy="8" r="6" />
+                  <Path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11" />
+                </Svg>
+              </View>
+              <View style={styles.referStepBody}>
+                <View style={styles.referStepHeader}>
+                  <Text style={[styles.referStepTag, { color: "#34d399" }]}>STEP 4</Text>
+                  <Text style={styles.referStepTitle}>Unlock Badges & Perks</Text>
+                </View>
+                <Text style={styles.referStepDesc}>
+                  Gain rare reader badges, streak shields, and higher rank on the leaderboard.
+                </Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Action Button: Share */}
+          <TouchableOpacity
+            style={styles.referPrimaryBtn}
+            activeOpacity={0.85}
+            onPress={() => {
+              setShowReferInfo(false);
+              shareReferral();
+            }}
+          >
+            <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#04211d" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+              <Circle cx="18" cy="5" r="3" />
+              <Circle cx="6" cy="12" r="3" />
+              <Circle cx="18" cy="19" r="3" />
+              <Line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+              <Line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+            </Svg>
+            <Text style={styles.referPrimaryBtnText}>Share Referral Link</Text>
+          </TouchableOpacity>
+
+          {/* Secondary Button: Dashboard */}
+          <TouchableOpacity
+            style={styles.referSecondaryBtn}
+            activeOpacity={0.8}
+            onPress={() => {
+              setShowReferInfo(false);
+              navigation.navigate("ReferAndEarn");
+            }}
+          >
+            <Text style={styles.referSecondaryBtnText}>Open Refer & Earn Dashboard</Text>
+          </TouchableOpacity>
+        </ScrollView>
       </UpgradeSheet>
 
       {/* Level help */}
@@ -1425,13 +1594,6 @@ const ProfileScreen = () => {
         visible={showEarlyUnlockModal}
         onClaim={handleClaimEarlyBadge}
         loading={claimingEarlyBadge}
-      />
-
-      {/* Force Update Preview Modal (Dev / Testing) */}
-      <ForceUpdateModal
-        visible={showForceUpdatePreview}
-        isPreview={true}
-        onClose={() => setShowForceUpdatePreview(false)}
       />
 
       {/* Logout confirm */}
@@ -1709,34 +1871,42 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
   },
-  copyBtnPressable: {
-    borderRadius: 999,
-  },
-  copyBtn: {
-    borderRadius: 999,
-    paddingHorizontal: 13,
-    paddingVertical: 7,
-    minWidth: 78,
-    height: 33,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  copyBtnContent: {
-    width: "100%",
-    height: "100%",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  copyBtnInner: {
+  referActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
+    gap: 8,
   },
-  copyBtnInnerAbsolute: {
+  circleActionPressable: {
+    borderRadius: 999,
+  },
+  circleActionBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  circleIconWrap: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  circleIconWrapAbsolute: {
     position: "absolute",
   },
-  copyText: { color: "#04211d", fontSize: 12, fontWeight: "800" },
-  copyTextSuccess: { color: "#ffffff", fontSize: 12, fontWeight: "800" },
+  circleShareBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: ACCENT,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: ACCENT,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
   referCodeBox: {
     marginTop: 14,
     borderRadius: 12,
@@ -1778,25 +1948,158 @@ const styles = StyleSheet.create({
     borderColor: "rgba(239,68,68,0.55)",
   },
   logoutText: { color: "#f87171", fontSize: 15.5, fontWeight: "700" },
-  devPreviewBtn: {
+  footer: { color: "rgba(148,163,184,0.55)", fontSize: 11, textAlign: "center", marginTop: 18, fontWeight: "500" },
+
+  /* Refer & Earn Sheet Styles */
+  referSheetScroll: {
+    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingBottom: 28,
+  },
+  referSheetHero: {
+    alignItems: "center",
+    marginBottom: 14,
+  },
+  referHeroPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(45,212,191,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(45,212,191,0.32)",
+    marginBottom: 8,
+  },
+  referHeroPillText: {
+    color: "#2DD4BF",
+    fontSize: 13,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  referHeroSub: {
+    color: "rgba(203,213,225,0.75)",
+    fontSize: 13,
+    textAlign: "center",
+    lineHeight: 19,
+    paddingHorizontal: 12,
+  },
+  referSheetCodeCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "rgba(45,212,191,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(45,212,191,0.22)",
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginBottom: 14,
+  },
+  referSheetCodeLeft: {
+    flex: 1,
+  },
+  referSheetCodeTag: {
+    color: "rgba(148,163,184,0.85)",
+    fontSize: 9.5,
+    fontWeight: "800",
+    letterSpacing: 1.2,
+  },
+  referSheetCodeText: {
+    color: "#ffffff",
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+    marginTop: 2,
+  },
+  referSheetCopyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(45,212,191,0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(45,212,191,0.35)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  referSheetCopyText: {
+    color: "#2DD4BF",
+    fontSize: 12.5,
+    fontWeight: "700",
+  },
+  referStepsWrap: {
+    gap: 10,
+    marginBottom: 16,
+  },
+  referStepCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.035)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  referStepIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  referStepBody: {
+    flex: 1,
+  },
+  referStepHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 2,
+  },
+  referStepTag: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+  },
+  referStepTitle: {
+    color: "#ffffff",
+    fontSize: 13.5,
+    fontWeight: "700",
+  },
+  referStepDesc: {
+    color: "rgba(148,163,184,0.85)",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  referPrimaryBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    marginHorizontal: 20,
-    marginTop: 14,
-    paddingVertical: 12,
-    borderRadius: 999,
-    backgroundColor: "rgba(0, 210, 180, 0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(0, 210, 180, 0.3)",
+    backgroundColor: ACCENT,
+    borderRadius: 14,
+    paddingVertical: 14,
+    marginBottom: 8,
   },
-  devPreviewBtnText: {
-    color: ACCENT,
-    fontSize: 13.5,
+  referPrimaryBtnText: {
+    color: "#04211d",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  referSecondaryBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 10,
+  },
+  referSecondaryBtnText: {
+    color: "rgba(148,163,184,0.8)",
+    fontSize: 13,
     fontWeight: "600",
   },
-  footer: { color: "rgba(148,163,184,0.55)", fontSize: 11, textAlign: "center", marginTop: 18, fontWeight: "500" },
 
   cardPressed: { opacity: 0.92, transform: [{ scale: 0.995 }] },
 

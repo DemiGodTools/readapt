@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DeviceEventEmitter, AppState, AppStateStatus } from "react-native";
 import { api } from "../lib/api";
@@ -9,7 +9,7 @@ export const STREAK_UNLOCKED_EVENT = "READAPT_STREAK_UNLOCKED";
 export const PENDING_STREAK_KEY = "readapt_pending_streak_celebration";
 export const LAST_CELEBRATED_DATE_KEY = "readapt_last_celebrated_streak_date";
 export const OFFLINE_PENDING_SECONDS_KEY = "readapt_offline_pending_streak_seconds";
-export const DAILY_TARGET_SECONDS = 240; // 4 minutes quality reading / listening time
+export const DAILY_TARGET_SECONDS = 240; // 4 minutes daily reading / listening bucket
 
 let Notifications: any = null;
 try {
@@ -91,63 +91,84 @@ export const getCalendarDayDifference = (todayStr: string, pastDateStr?: string 
 };
 
 /**
- * Normalizes streak state against the current calendar date.
- * - Handles both lastCompletedDate and legacy lastDate formats, including ISO strings.
- * - If user already has an active streak, NEVER wipes it to 0 unless there is definitive proof of a 2+ day gap.
- * - Preserves todayReadingSeconds on the same calendar day.
+ * Normalizes streak state against the current calendar date:
+ * 1. Resets todayReadingSeconds to 0 whenever a new calendar day begins.
+ * 2. Degrades streak to 0 if the user missed yesterday (gap >= 2 days or no previous completion).
+ * 3. Keeps streak alive if yesterday was completed (gap === 1).
+ * 4. Preserves active streak if today is already completed (gap === 0).
+ * 5. If today's reading bucket reaches target (>= 240s), marks today as completed and updates streak.
  */
 export const normalizeStreakState = (rawState?: Partial<StreakState> | null): StreakState => {
   const today = getTodayDateKey();
-  const rawStreak = Math.max(0, Number(rawState?.currentStreak) || 0);
   const rawCompletedDate = typeof rawState?.lastCompletedDate === "string"
     ? rawState.lastCompletedDate
     : typeof (rawState as any)?.lastDate === "string"
     ? (rawState as any).lastDate
     : "";
-  const completedDate = rawCompletedDate.split("T")[0].trim();
+  const lastCompletedDate = rawCompletedDate.split("T")[0].trim();
 
-  const base: StreakState = {
-    currentStreak: rawStreak,
-    longestStreak: Math.max(rawStreak, Number(rawState?.longestStreak) || 0),
-    todayReadingSeconds: Math.max(0, Number(rawState?.todayReadingSeconds) || 0),
-    targetSeconds: Number(rawState?.targetSeconds) || DAILY_TARGET_SECONDS,
-    isCompletedToday: Boolean(rawState?.isCompletedToday),
-    lastCompletedDate: completedDate,
-    lastActiveDate: today,
-  };
+  const recordedDate = (
+    rawState?.lastActiveDate ||
+    (rawState as any)?.todayDate ||
+    ""
+  ).split("T")[0].trim();
 
-  if (completedDate) {
-    const diffFromCompleted = getCalendarDayDifference(today, completedDate);
-    if (diffFromCompleted === 0) {
+  const isSameCalendarDay = recordedDate === today;
+
+  // Reading bucket resets to 0 on a new calendar day
+  let todayReadingSeconds = isSameCalendarDay
+    ? Math.max(0, Number(rawState?.todayReadingSeconds) || 0)
+    : 0;
+
+  const targetSeconds = DAILY_TARGET_SECONDS;
+  const rawStreak = Math.max(0, Number(rawState?.currentStreak) || 0);
+  let longestStreak = Math.max(rawStreak, Number(rawState?.longestStreak) || 0);
+
+  let currentStreak = 0;
+  let isCompletedToday = false;
+  let activeCompletedDate = lastCompletedDate;
+
+  if (lastCompletedDate) {
+    const diff = getCalendarDayDifference(today, lastCompletedDate);
+    if (diff === 0) {
       // Completed today!
-      base.isCompletedToday = true;
-      base.currentStreak = Math.max(base.currentStreak, 1);
-    } else if (diffFromCompleted === 1) {
-      // Completed yesterday! Streak is alive and healthy, waiting for today's reading
-      base.isCompletedToday = false;
-      // base.currentStreak stays intact!
-    } else if (diffFromCompleted >= 2) {
-      // Missed 1 or more full days without completing -> degraded to 0
-      base.currentStreak = 0;
-      base.isCompletedToday = false;
+      isCompletedToday = true;
+      currentStreak = Math.max(rawStreak, 1);
+    } else if (diff === 1) {
+      // Completed yesterday! Streak is healthy and waiting for today's 4 minutes
+      isCompletedToday = false;
+      currentStreak = rawStreak;
+    } else {
+      // Gap >= 2 days: Missed yesterday! Streak degrades to 0
+      currentStreak = 0;
+      isCompletedToday = false;
     }
   } else {
-    // If completedDate is missing or unrecorded but currentStreak was > 0, PRESERVE IT!
-    if (base.currentStreak > 0) {
-      base.lastCompletedDate = today;
-      base.isCompletedToday = true;
+    currentStreak = 0;
+    isCompletedToday = false;
+  }
+
+  // Check if today's bucket reaches the 4-minute target
+  if (todayReadingSeconds >= targetSeconds) {
+    if (!isCompletedToday) {
+      isCompletedToday = true;
+      activeCompletedDate = today;
+      const diff = lastCompletedDate ? getCalendarDayDifference(today, lastCompletedDate) : Infinity;
+      currentStreak = diff === 1 ? currentStreak + 1 : 1;
     }
   }
 
-  // If reading seconds reached target today, goal is achieved
-  if (base.todayReadingSeconds >= base.targetSeconds) {
-    base.isCompletedToday = true;
-    base.currentStreak = Math.max(base.currentStreak, 1);
-    base.lastCompletedDate = today;
-  }
+  longestStreak = Math.max(longestStreak, currentStreak);
 
-  base.longestStreak = Math.max(base.longestStreak, base.currentStreak);
-  return base;
+  return {
+    currentStreak,
+    longestStreak,
+    todayReadingSeconds,
+    targetSeconds,
+    isCompletedToday,
+    lastCompletedDate: activeCompletedDate,
+    lastActiveDate: today,
+  };
 };
 
 export const getStreakKey = (userId?: string): string => {
@@ -263,6 +284,55 @@ export const updateStreak = async (userId?: string) => {
   }
 };
 
+/**
+ * Temporary testing utility: toggles streak between 0 (inactive/degraded) and active (3-day completed)
+ */
+export const toggleTestStreak = async (userId?: string) => {
+  const today = getTodayDateKey();
+  const current = normalizeStreakState(globalStreakState);
+  const key = getStreakKey(userId);
+
+  if (current.currentStreak > 0 || current.isCompletedToday) {
+    // Toggle OFF -> Degraded to 0
+    const offState: StreakState = {
+      currentStreak: 0,
+      longestStreak: current.longestStreak,
+      todayReadingSeconds: 0,
+      targetSeconds: DAILY_TARGET_SECONDS,
+      isCompletedToday: false,
+      lastCompletedDate: "",
+      lastActiveDate: today,
+    };
+    globalStreakState = offState;
+    await AsyncStorage.setItem(key, JSON.stringify(offState));
+    await AsyncStorage.removeItem(PENDING_STREAK_KEY);
+    await AsyncStorage.removeItem(LAST_CELEBRATED_DATE_KEY);
+    DeviceEventEmitter.emit("STREAK_STATE_CHANGED", offState);
+    return offState;
+  } else {
+    // Toggle ON -> Completed today (3 days streak)
+    const newStreak = 3;
+    const onState: StreakState = {
+      currentStreak: newStreak,
+      longestStreak: Math.max(current.longestStreak, newStreak),
+      todayReadingSeconds: DAILY_TARGET_SECONDS,
+      targetSeconds: DAILY_TARGET_SECONDS,
+      isCompletedToday: true,
+      lastCompletedDate: today,
+      lastActiveDate: today,
+    };
+    globalStreakState = onState;
+    await AsyncStorage.setItem(key, JSON.stringify(onState));
+    await setPendingStreakCelebration(newStreak);
+    DeviceEventEmitter.emit("STREAK_STATE_CHANGED", onState);
+    DeviceEventEmitter.emit(STREAK_UNLOCKED_EVENT, {
+      currentStreak: newStreak,
+      deferred: false,
+    });
+    return onState;
+  }
+};
+
 export const useStreak = (explicitUserId?: string) => {
   let contextUser: any = null;
   try {
@@ -273,15 +343,17 @@ export const useStreak = (explicitUserId?: string) => {
   const activeUserId = explicitUserId || contextUser?._id || contextUser?.userId;
 
   const [state, setState] = useState<StreakState>(() => {
-    if (globalStreakState.currentStreak > 0) {
+    if (globalStreakState.lastActiveDate === getTodayDateKey()) {
       return normalizeStreakState(globalStreakState);
     }
     const userStreak = contextUser?.streakData?.currentStreak ?? (contextUser as any)?.streak;
-    if (typeof userStreak === "number" && userStreak > 0) {
+    if (typeof userStreak === "number") {
       const init = normalizeStreakState({
         ...globalStreakState,
         currentStreak: userStreak,
         lastCompletedDate: contextUser?.streakData?.lastDate || contextUser?.streakData?.lastCompletedDate,
+        lastActiveDate: contextUser?.streakData?.lastActiveDate,
+        todayReadingSeconds: contextUser?.streakData?.todayReadingSeconds,
       });
       globalStreakState = init;
       return init;
@@ -297,7 +369,6 @@ export const useStreak = (explicitUserId?: string) => {
       setState(normalizeStreakState(newState));
     });
     const unlockSub = DeviceEventEmitter.addListener(STREAK_UNLOCKED_EVENT, (unlockedData: any) => {
-      // If deferred (i.e. unlocked while active in reader/player), do not interrupt inline
       if (unlockedData?.currentStreak !== undefined && !unlockedData?.deferred) {
         setCelebrationVisible(true);
       }
@@ -305,7 +376,6 @@ export const useStreak = (explicitUserId?: string) => {
 
     return () => {
       sub.remove();
-      unlockSub.remove();
     };
   }, []);
 
@@ -316,6 +386,7 @@ export const useStreak = (explicitUserId?: string) => {
     }
 
     inFlightStreakPromise = (async () => {
+      const today = getTodayDateKey();
       try {
         const key = getStreakKey(activeUserId);
 
@@ -334,9 +405,13 @@ export const useStreak = (explicitUserId?: string) => {
           localState = normalizeStreakState(contextUser.streakData);
           globalStreakState = localState;
           setState(localState);
+        } else {
+          localState = normalizeStreakState(globalStreakState);
+          globalStreakState = localState;
+          setState(localState);
         }
 
-        // 2. If we accumulated pending offline seconds, attempt to flush them to the server
+        // 2. Flush pending offline seconds if any
         try {
           const pendingRaw = await AsyncStorage.getItem(OFFLINE_PENDING_SECONDS_KEY);
           const pendingSec = Number(pendingRaw) || 0;
@@ -353,24 +428,79 @@ export const useStreak = (explicitUserId?: string) => {
           }
         } catch {}
 
-        // 3. Fetch fresh status from server (works when online, gracefully falls back when offline)
+        // 3. Fetch fresh status from server
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata";
         const res = await api.get(`/streak?timezone=${encodeURIComponent(tz)}`, { timeout: 6000 });
 
         if (res?.data?.success && res.data.streak) {
           const s = res.data.streak;
-          // Reconcile: Server data must never downgrade verified local progress!
-          const reconciled: StreakState = normalizeStreakState({
-            currentStreak: Math.max(localState.currentStreak, s.currentStreak ?? 0, globalStreakState.currentStreak),
-            longestStreak: Math.max(localState.longestStreak, s.longestStreak ?? 0, localState.currentStreak, globalStreakState.longestStreak),
-            todayReadingSeconds: Math.max(localState.todayReadingSeconds, s.todayReadingSeconds ?? 0, globalStreakState.todayReadingSeconds),
-            targetSeconds: DAILY_TARGET_SECONDS,
-            isCompletedToday: localState.isCompletedToday || Boolean(s.isCompletedToday) || globalStreakState.isCompletedToday,
-            lastCompletedDate: (localState.isCompletedToday || globalStreakState.isCompletedToday)
-              ? getTodayDateKey()
-              : (s.lastCompletedDate || localState.lastCompletedDate || globalStreakState.lastCompletedDate),
-            lastActiveDate: getTodayDateKey(),
+          const serverNormalized = normalizeStreakState({
+            currentStreak: s.currentStreak,
+            longestStreak: s.longestStreak,
+            todayReadingSeconds: s.todayReadingSeconds,
+            lastCompletedDate: s.lastCompletedDate || s.lastDate,
+            lastActiveDate: s.lastActiveDate,
+            isCompletedToday: s.isCompletedToday,
           });
+
+          // Reconcile server and local:
+          let reconciledStreak = 0;
+          let reconciledCompletedToday = false;
+          let reconciledLastCompleted = "";
+
+          if (localState.isCompletedToday || serverNormalized.isCompletedToday) {
+            reconciledCompletedToday = true;
+            reconciledLastCompleted = today;
+            reconciledStreak = Math.max(localState.currentStreak, serverNormalized.currentStreak, 1);
+          } else {
+            // Neither completed today yet. Check if yesterday was completed:
+            const diffLocal = localState.lastCompletedDate
+              ? getCalendarDayDifference(today, localState.lastCompletedDate)
+              : Infinity;
+            const diffServer = serverNormalized.lastCompletedDate
+              ? getCalendarDayDifference(today, serverNormalized.lastCompletedDate)
+              : Infinity;
+
+            if (diffLocal === 1 || diffServer === 1) {
+              // Yesterday was completed -> streak is alive and waiting for today's 4 minutes
+              reconciledStreak = Math.max(
+                diffLocal === 1 ? localState.currentStreak : 0,
+                diffServer === 1 ? serverNormalized.currentStreak : 0
+              );
+              reconciledLastCompleted = diffLocal === 1 ? localState.lastCompletedDate : serverNormalized.lastCompletedDate;
+            } else {
+              // Missed yesterday (diff >= 2) -> STREAK IS ZERO!
+              reconciledStreak = 0;
+              reconciledLastCompleted = localState.lastCompletedDate || serverNormalized.lastCompletedDate;
+            }
+            reconciledCompletedToday = false;
+          }
+
+          const reconciledSeconds = Math.max(
+            localState.todayReadingSeconds,
+            serverNormalized.todayReadingSeconds
+          );
+
+          // Check if today's reading already finished target
+          if (reconciledSeconds >= DAILY_TARGET_SECONDS && !reconciledCompletedToday) {
+            reconciledCompletedToday = true;
+            reconciledLastCompleted = today;
+            reconciledStreak = reconciledStreak > 0 ? reconciledStreak + 1 : 1;
+          }
+
+          const reconciled: StreakState = {
+            currentStreak: reconciledStreak,
+            longestStreak: Math.max(
+              localState.longestStreak,
+              serverNormalized.longestStreak,
+              reconciledStreak
+            ),
+            todayReadingSeconds: reconciledSeconds,
+            targetSeconds: DAILY_TARGET_SECONDS,
+            isCompletedToday: reconciledCompletedToday,
+            lastCompletedDate: reconciledLastCompleted,
+            lastActiveDate: today,
+          };
 
           globalStreakState = reconciled;
           setState(reconciled);
@@ -379,7 +509,7 @@ export const useStreak = (explicitUserId?: string) => {
           return reconciled;
         }
       } catch (error) {
-        // Offline / network failure -> local state remains source of truth
+        // Offline / network failure -> local normalized state remains source of truth
       } finally {
         inFlightStreakPromise = null;
         setLoading(false);
@@ -391,7 +521,8 @@ export const useStreak = (explicitUserId?: string) => {
   }, [activeUserId, contextUser?.streakData]);
 
   /**
-   * Called by Reader or Audio Player to record verified reading seconds
+   * Called by Reader (PDF or Audio) to record reading seconds into today's bucket.
+   * Completes streak when bucket reaches 4 minutes (240s).
    */
   const recordReadingSeconds = useCallback(
     async (
@@ -401,26 +532,25 @@ export const useStreak = (explicitUserId?: string) => {
       if (seconds <= 0) return false;
 
       const today = getTodayDateKey();
-      // 1. Normalize baseline without wiping today's reading
       const normalizedBase = normalizeStreakState(globalStreakState);
 
       const updatedSeconds = normalizedBase.todayReadingSeconds + seconds;
       const willComplete =
-        updatedSeconds >= normalizedBase.targetSeconds && !normalizedBase.isCompletedToday;
+        updatedSeconds >= DAILY_TARGET_SECONDS && !normalizedBase.isCompletedToday;
 
       let newStreak = normalizedBase.currentStreak;
       let newCompletedDate = normalizedBase.lastCompletedDate;
 
       if (willComplete) {
-        const diffDays = getCalendarDayDifference(today, normalizedBase.lastCompletedDate);
+        const diffDays = normalizedBase.lastCompletedDate
+          ? getCalendarDayDifference(today, normalizedBase.lastCompletedDate)
+          : Infinity;
+
         if (diffDays === 1) {
           // Completed yesterday -> increment streak!
           newStreak = (normalizedBase.currentStreak || 0) + 1;
-        } else if (diffDays === 0) {
-          // Already completed today -> keep streak at least 1
-          newStreak = Math.max(normalizedBase.currentStreak, 1);
         } else {
-          // Starting fresh or after break -> Day 1!
+          // Fresh streak or recovering after missed day -> start at 1
           newStreak = 1;
         }
         newCompletedDate = today;
@@ -453,7 +583,7 @@ export const useStreak = (explicitUserId?: string) => {
         });
       }
 
-      // Offline-resilient sync: include any accumulated pending offline seconds
+      // Offline-resilient sync: include pending offline seconds
       let pendingToSync = seconds;
       try {
         const storedPending = await AsyncStorage.getItem(OFFLINE_PENDING_SECONDS_KEY);
@@ -471,22 +601,25 @@ export const useStreak = (explicitUserId?: string) => {
         );
 
         if (res?.data?.success) {
-          // Sync succeeded -> clear pending queue
           await AsyncStorage.removeItem(OFFLINE_PENDING_SECONDS_KEY);
 
           if (res.data.streak) {
             const serverStreak = res.data.streak;
-            const mergedState: StreakState = normalizeStreakState({
-              currentStreak: Math.max(optimisticState.currentStreak, serverStreak.currentStreak ?? 0),
-              longestStreak: Math.max(optimisticState.longestStreak, serverStreak.longestStreak ?? 0),
-              todayReadingSeconds: Math.max(optimisticState.todayReadingSeconds, serverStreak.todayReadingSeconds ?? 0),
+            const serverNormalized = normalizeStreakState(serverStreak);
+
+            const mergedState: StreakState = {
+              currentStreak: optimisticState.isCompletedToday
+                ? optimisticState.currentStreak
+                : serverNormalized.currentStreak,
+              longestStreak: Math.max(optimisticState.longestStreak, serverNormalized.longestStreak),
+              todayReadingSeconds: Math.max(optimisticState.todayReadingSeconds, serverNormalized.todayReadingSeconds),
               targetSeconds: DAILY_TARGET_SECONDS,
-              isCompletedToday: optimisticState.isCompletedToday || Boolean(serverStreak.isCompletedToday),
+              isCompletedToday: optimisticState.isCompletedToday || serverNormalized.isCompletedToday,
               lastCompletedDate: optimisticState.isCompletedToday
                 ? today
-                : (serverStreak.lastCompletedDate || optimisticState.lastCompletedDate),
+                : (serverNormalized.lastCompletedDate || optimisticState.lastCompletedDate),
               lastActiveDate: today,
-            });
+            };
 
             globalStreakState = mergedState;
             setState(mergedState);
@@ -494,11 +627,9 @@ export const useStreak = (explicitUserId?: string) => {
             DeviceEventEmitter.emit("STREAK_STATE_CHANGED", mergedState);
           }
         } else {
-          // Server returned failure: preserve seconds in offline queue
           await AsyncStorage.setItem(OFFLINE_PENDING_SECONDS_KEY, String(pendingToSync));
         }
       } catch (err) {
-        // Offline / network failure: safely queue seconds to sync on next connection
         await AsyncStorage.setItem(OFFLINE_PENDING_SECONDS_KEY, String(pendingToSync)).catch(() => {});
       }
 
@@ -515,6 +646,10 @@ export const useStreak = (explicitUserId?: string) => {
     setCelebrationVisible(false);
   }, []);
 
+  const toggleStreak = useCallback(async () => {
+    return await toggleTestStreak(activeUserId);
+  }, [activeUserId]);
+
   return {
     streak: state.currentStreak,
     longestStreak: state.longestStreak,
@@ -526,6 +661,7 @@ export const useStreak = (explicitUserId?: string) => {
     recordReadingSeconds,
     celebrationVisible,
     dismissCelebration,
+    toggleStreak,
   };
 };
 

@@ -1724,13 +1724,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   // 2. Non-blocking Background Cache Pipeline (persists for offline reading)
   // =========================================================================
   const backgroundCachePipeline = useCallback(
-    async (chapterId: string, remoteUrl: string) => {
+    async (chapterId: string, remoteUrl: string): Promise<string | null> => {
       const cleanUrl = normalizeMediaUrl(remoteUrl);
-      if (!chapterId || !cleanUrl) return;
-      if (cleanUrl.startsWith("file://") || cleanUrl.startsWith("content://")) return;
+      if (!chapterId || !cleanUrl) return null;
+      if (cleanUrl.startsWith("file://") || cleanUrl.startsWith("content://")) return cleanUrl;
 
       const targetDir = FileSystem.documentDirectory;
-      if (!targetDir) return;
+      if (!targetDir) return null;
       const urlHash = getFastHash(cleanUrl);
       const localFileUri = `${targetDir}fastpdf_${chapterId}_${urlHash}.pdf`;
       const storageUriKey = `fast_pdf_uri_${chapterId}`;
@@ -1739,13 +1739,20 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       try {
         const info = await FileSystem.getInfoAsync(localFileUri);
         if (info.exists && (info.size ?? 0) > 512) {
-          ramPdfUriMap.set(chapterId, info.uri);
-          ramUrlMap.set(chapterId, cleanUrl);
-          await AsyncStorage.multiSet([
-            [storageUriKey, info.uri],
-            [storageUrlKey, cleanUrl],
-          ]);
-          return;
+          const magic = await FileSystem.readAsStringAsync(localFileUri, { length: 5 }).catch(() => "");
+          if (magic.startsWith("%PDF")) {
+            ramPdfUriMap.set(chapterId, info.uri);
+            ramUrlMap.set(chapterId, cleanUrl);
+            await AsyncStorage.multiSet([
+              [storageUriKey, info.uri],
+              [storageUrlKey, cleanUrl],
+            ]);
+            setPdfPath(info.uri);
+            return info.uri;
+          } else {
+            await FileSystem.deleteAsync(localFileUri, { idempotent: true }).catch(() => {});
+            await AsyncStorage.multiRemove([storageUriKey, storageUrlKey]).catch(() => {});
+          }
         }
 
         let job = activeDownloadJobs.get(localFileUri);
@@ -1755,13 +1762,17 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               if (res?.uri) {
                 const verify = await FileSystem.getInfoAsync(res.uri);
                 if (verify.exists && (verify.size ?? 0) > 512) {
-                  ramPdfUriMap.set(chapterId, verify.uri);
-                  ramUrlMap.set(chapterId, cleanUrl);
-                  await AsyncStorage.multiSet([
-                    [storageUriKey, verify.uri],
-                    [storageUrlKey, cleanUrl],
-                  ]);
-                  return verify.uri;
+                  const magic = await FileSystem.readAsStringAsync(res.uri, { length: 5 }).catch(() => "");
+                  if (magic.startsWith("%PDF")) {
+                    ramPdfUriMap.set(chapterId, verify.uri);
+                    ramUrlMap.set(chapterId, cleanUrl);
+                    await AsyncStorage.multiSet([
+                      [storageUriKey, verify.uri],
+                      [storageUrlKey, cleanUrl],
+                    ]);
+                    setPdfPath(verify.uri);
+                    return verify.uri;
+                  }
                 }
               }
               await FileSystem.deleteAsync(localFileUri, { idempotent: true }).catch(() => {});
@@ -1776,8 +1787,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             });
           activeDownloadJobs.set(localFileUri, job);
         }
-        await job;
-      } catch (e) {}
+        return await job;
+      } catch (e) {
+        return null;
+      }
     },
     []
   );
@@ -1929,13 +1942,19 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         if (!mountedLocalUri && diskUri) {
           const info = await FileSystem.getInfoAsync(diskUri);
           if (info.exists && (info.size ?? 0) > 512) {
-            mountedLocalUri = info.uri;
-            ramPdfUriMap.set(targetId, info.uri);
-            if (diskUrl) {
-              storedMediaUrl = diskUrl;
-              ramUrlMap.set(targetId, diskUrl);
+            const magic = await FileSystem.readAsStringAsync(diskUri, { length: 5 }).catch(() => "");
+            if (magic.startsWith("%PDF")) {
+              mountedLocalUri = info.uri;
+              ramPdfUriMap.set(targetId, info.uri);
+              if (diskUrl) {
+                storedMediaUrl = diskUrl;
+                ramUrlMap.set(targetId, diskUrl);
+              }
+              if (!isCancelledRef?.current) setPdfPath(info.uri);
+            } else {
+              await FileSystem.deleteAsync(diskUri, { idempotent: true }).catch(() => {});
+              await AsyncStorage.multiRemove([storageUriKey, storageUrlKey]).catch(() => {});
             }
-            if (!isCancelledRef?.current) setPdfPath(info.uri);
           }
         }
 
@@ -1950,9 +1969,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             if (dlUri && dlUri.startsWith("file://")) {
               const dlInfo = await FileSystem.getInfoAsync(dlUri);
               if (dlInfo.exists && (dlInfo.size ?? 0) > 512) {
-                mountedLocalUri = dlInfo.uri;
-                ramPdfUriMap.set(targetId, dlInfo.uri);
-                if (!isCancelledRef?.current) setPdfPath(dlInfo.uri);
+                const magic = await FileSystem.readAsStringAsync(dlUri, { length: 5 }).catch(() => "");
+                if (magic.startsWith("%PDF")) {
+                  mountedLocalUri = dlInfo.uri;
+                  ramPdfUriMap.set(targetId, dlInfo.uri);
+                  if (!isCancelledRef?.current) setPdfPath(dlInfo.uri);
+                }
               }
             }
           }
@@ -1970,12 +1992,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         const targetUrlToStream = storedMediaUrl || initialMedia;
 
         if (!mountedLocalUri && targetUrlToStream) {
-          // Mount immediately with HTTP Range streaming
-          if (!isCancelledRef?.current) {
-            setPdfPath((cur) => cur || targetUrlToStream);
-          }
-          // Launch non-blocking background cache pipeline
-          backgroundCachePipeline(targetId, targetUrlToStream);
+          // Download & verify local file before mounting to avoid Android Pdfium 307 corruption
+          backgroundCachePipeline(targetId, targetUrlToStream).then((cachedUri) => {
+            if (cachedUri && !isCancelledRef?.current) {
+              setPdfPath(cachedUri);
+            }
+          });
         }
       } catch (e) {}
 
@@ -2039,12 +2061,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               setIsQnaLoading(false);
             }
 
-            // If media url changed or wasn't set, mount streaming immediately & background cache
-            if (freshMediaUrl && (!mountedLocalUri || urlChangedInDb)) {
-              if (!isCancelledRef?.current) {
-                setPdfPath(freshMediaUrl);
-              }
-              backgroundCachePipeline(targetId, freshMediaUrl);
+            // If media url changed in DB, download updated file in background
+            if (freshMediaUrl && urlChangedInDb) {
+              backgroundCachePipeline(targetId, freshMediaUrl).then((cachedUri) => {
+                if (cachedUri && !isCancelledRef?.current) {
+                  setPdfPath(cachedUri);
+                }
+              });
             }
 
             try {
@@ -2332,18 +2355,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       pdfPath.startsWith("http://") || pdfPath.startsWith("https://");
 
     if (isRemote) {
-      // Stream directly with HTTP Range Requests and native disk caching
+      // Remote URL with native disk caching (clean headers prevent CDN 403 blocks)
       return {
         uri: pdfPath,
         cache: true,
         cacheFileName: `stream_${activeChapterId}_${getFastHash(pdfPath)}.pdf`,
         expiration: 86400 * 14,
-        headers: {
-          "Accept-Ranges": "bytes",
-          Range: "bytes=0-", // Tells server & native networking stack to use HTTP 206 Partial Content
-          "X-Pdf-Linearized-Stream": "true",
-          "Cache-Control": "public, max-age=1209600, stale-while-revalidate=86400",
-        },
       };
     }
 
@@ -2423,6 +2440,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     [isAnnotating, onUserActivity]
   );
 
+  const corruptRetryCountRef = useRef<Map<string, number>>(new Map());
+
   const onPdfError = useCallback(
     (err: any) => {
       console.warn("Master PDF render error:", err);
@@ -2430,8 +2449,16 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       if (
         errStr.includes("corrupted") ||
         errStr.includes("format") ||
-        errStr.includes("password")
+        errStr.includes("password") ||
+        errStr.includes("cannot read")
       ) {
+        const retries = corruptRetryCountRef.current.get(activeChapterId) || 0;
+        if (retries >= 2) {
+          showToast({ title: "Unable to parse PDF. File may be unavailable on server." });
+          return;
+        }
+        corruptRetryCountRef.current.set(activeChapterId, retries + 1);
+
         AsyncStorage.removeItem(`fast_pdf_uri_${activeChapterId}`);
         AsyncStorage.removeItem(`fast_pdf_url_${activeChapterId}`);
         ramPdfUriMap.delete(activeChapterId);
@@ -2439,7 +2466,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         if (pdfPath?.startsWith("file://"))
           FileSystem.deleteAsync(pdfPath, { idempotent: true }).catch(() => {});
         setPdfPath(null);
-        showToast({ title: "Corrupt file cleared. Re-downloading..." });
         loadChapterAndPdfFast(activeChapterId);
       }
     },

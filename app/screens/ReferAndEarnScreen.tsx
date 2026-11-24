@@ -44,6 +44,7 @@ import { api } from "../../lib/api";
 import { useUser } from "../../hooks/useUser";
 import { useToast } from "../../hooks/useToast";
 import { copyText } from "../../lib/safeNative";
+import { getReferralShareMessage } from "../../lib/referral";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -466,8 +467,11 @@ export default function ReferAndEarnScreen() {
     }
   }, [user?.referralCode, user?.totalReferralsCount]);
 
+  const referralsRef = useRef<ReferredFriend[]>([]);
+  referralsRef.current = referrals;
+
   const fetchReferralStats = useCallback(async () => {
-    if (referrals.length === 0) {
+    if (referralsRef.current.length === 0) {
       setLoading(true);
     }
     try {
@@ -489,7 +493,7 @@ export default function ReferAndEarnScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [updateUser, referrals.length]);
+  }, [updateUser]);
 
   useFocusEffect(
     useCallback(() => {
@@ -498,11 +502,10 @@ export default function ReferAndEarnScreen() {
   );
 
   useEffect(() => {
-    fetchReferralStats();
     return () => {
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
     };
-  }, [fetchReferralStats]);
+  }, []);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -525,7 +528,7 @@ export default function ReferAndEarnScreen() {
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
     } else {
-      Share.share({ message: codeToCopy });
+      Share.share({ message: getReferralShareMessage(codeToCopy) });
     }
   };
 
@@ -536,7 +539,7 @@ export default function ReferAndEarnScreen() {
     } catch {}
     try {
       await Share.share({
-        message: `Join me on READAPT to build a daily reading habit! Use my invite code: ${codeToShare}`,
+        message: getReferralShareMessage(codeToShare),
       });
     } catch {}
   };

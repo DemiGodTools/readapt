@@ -2,9 +2,8 @@ import { useEffect, useRef, useCallback } from "react";
 import { AppState, AppStateStatus } from "react-native";
 import { useStreak } from "./useStreak";
 
-const AFK_TIMEOUT_MS = 180000; // 3 minutes without touch before AFK pause (comfortable for reading full pages)
-const BATCH_FLUSH_INTERVAL_MS = 15000; // Flush to streak tracker every 15 seconds
-const MIN_VALID_FLUSH_SECONDS = 5; // Minimum 5 seconds before dispatching batch
+const BATCH_FLUSH_INTERVAL_MS = 10000; // Flush to streak tracker every 10 seconds
+const MIN_VALID_FLUSH_SECONDS = 3; // Minimum 3 seconds before dispatching batch (1 when forced)
 
 interface ReadingTrackerOptions {
   isActive: boolean;
@@ -12,6 +11,13 @@ interface ReadingTrackerOptions {
   isPlayingAudio?: boolean;
 }
 
+/**
+ * useReadingTracker
+ * Continuously tracks time spent inside a reader session (PDF reader or Audio reader).
+ * - No AFK timeouts or touch/swipe restrictions: as long as the reader is open, time accumulates into today's bucket.
+ * - For PDF reader: counts continuously while the reader is active and app is in foreground.
+ * - For Audio reader: counts continuously while the player is active in foreground, and credits background playback if audio is playing.
+ */
 export const useReadingTracker = ({
   isActive,
   isAudio = false,
@@ -20,34 +26,33 @@ export const useReadingTracker = ({
   const { recordReadingSeconds } = useStreak();
 
   const pendingSecondsRef = useRef(0);
-  const lastInteractionTimeRef = useRef(Date.now());
   const lastAudioWallTimeRef = useRef(Date.now());
-  const hasInteractedRef = useRef(!isAudio); // default true on entry
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const isAudioPlayingRef = useRef(isPlayingAudio);
   isAudioPlayingRef.current = isPlayingAudio;
 
-  // Sync accumulated seconds
-  const flushSeconds = useCallback(async (force = false) => {
-    const toFlush = pendingSecondsRef.current;
-    if (toFlush >= (force ? 1 : MIN_VALID_FLUSH_SECONDS)) {
-      pendingSecondsRef.current = 0;
-      await recordReadingSeconds(toFlush, { inReader: true });
-    }
-  }, [recordReadingSeconds]);
+  // Sync accumulated seconds to streak state
+  const flushSeconds = useCallback(
+    async (force = false) => {
+      const toFlush = pendingSecondsRef.current;
+      if (toFlush >= (force ? 1 : MIN_VALID_FLUSH_SECONDS)) {
+        pendingSecondsRef.current = 0;
+        await recordReadingSeconds(toFlush, { inReader: true });
+      }
+    },
+    [recordReadingSeconds]
+  );
 
-  // Handle touch, scroll, drag, zoom
-  const onUserActivity = useCallback(() => {
-    lastInteractionTimeRef.current = Date.now();
-    hasInteractedRef.current = true;
-  }, []);
+  // Backward-compatible user activity callbacks (no AFK check, so no-op)
+  const onUserActivity = useCallback(() => {}, []);
 
-  // Handle page turn or scroll progression
-  const onPageChange = useCallback((_newPage?: number) => {
-    lastInteractionTimeRef.current = Date.now();
-    hasInteractedRef.current = true;
-    flushSeconds(true);
-  }, [flushSeconds]);
+  // Handle page turn or scroll progression -> flush accumulated progress
+  const onPageChange = useCallback(
+    (_newPage?: number) => {
+      flushSeconds(true);
+    },
+    [flushSeconds]
+  );
 
   // Listen for App Background / Foreground
   useEffect(() => {
@@ -70,7 +75,6 @@ export const useReadingTracker = ({
           }
         }
         lastAudioWallTimeRef.current = Date.now();
-        lastInteractionTimeRef.current = Date.now();
         flushSeconds(true);
       }
     });
@@ -80,7 +84,8 @@ export const useReadingTracker = ({
     };
   }, [flushSeconds, isAudio]);
 
-  // Periodic heartbeat / 1-second counting loop
+  // Periodic heartbeat / 1-second counting loop:
+  // As long as reader is open, time increments without requiring any touch or swipe
   useEffect(() => {
     if (!isActive) {
       flushSeconds(true);
@@ -93,19 +98,14 @@ export const useReadingTracker = ({
       const isForeground = appStateRef.current === "active";
 
       if (isAudio) {
-        // Audiobook: counts as long as audio is playing
-        if (isPlayingAudio) {
+        // Audio reader: counts if reader screen is active in foreground OR audio is playing
+        if (isForeground || isPlayingAudio) {
           pendingSecondsRef.current += 1;
           lastAudioWallTimeRef.current = Date.now();
         }
       } else {
-        // Reader: only counts in foreground and if user is actively reading
-        if (!isForeground) return;
-
-        const timeSinceLastTouch = Date.now() - lastInteractionTimeRef.current;
-        const isNotAFK = timeSinceLastTouch <= AFK_TIMEOUT_MS;
-
-        if (isNotAFK && hasInteractedRef.current) {
+        // PDF / Book reader: counts continuously while reader screen is open in foreground (NO AFK)
+        if (isForeground) {
           pendingSecondsRef.current += 1;
         }
       }

@@ -26,10 +26,19 @@ const ensureCacheDir = async () => {
   } catch (_) {}
 };
 
+const getUrlHash = (str: string): string => {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h).toString(36);
+};
+
 const sanitizeFileName = (id: string, url: string): string => {
-  const safeId = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const safeId = (id || "track").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const urlHash = getUrlHash(url || "");
   const ext = url.includes(".m4a") ? ".m4a" : url.includes(".aac") ? ".aac" : ".mp3";
-  return `${safeId}${ext}`;
+  return `${safeId}_${urlHash}${ext}`;
 };
 
 const loadIndex = async () => {
@@ -48,27 +57,38 @@ const saveIndex = async () => {
 
 export const AudioCacheManager = {
   async getCachedTrackUri(trackId: string, remoteUrl: string): Promise<{ uri: string; isComplete: boolean } | null> {
+    if (!remoteUrl) return null;
     try {
       const dl = await getSingleDownloaded(trackId);
       if (dl?.localUri) {
-        const dlInfo = await FileSystem.getInfoAsync(dl.localUri);
-        if (dlInfo.exists && (dlInfo.size ?? 0) > 4096) {
-          return { uri: dl.localUri, isComplete: true };
+        // Strict guard: ensure downloaded file is an audio file, never a PDF
+        const isAudio =
+          dl.type === "audio" ||
+          dl.localUri.endsWith(".mp3") ||
+          dl.localUri.endsWith(".m4a") ||
+          dl.localUri.endsWith(".aac");
+        if (isAudio) {
+          const dlInfo = await FileSystem.getInfoAsync(dl.localUri);
+          if (dlInfo.exists && (dlInfo.size ?? 0) > 4096) {
+            return { uri: dl.localUri, isComplete: true };
+          }
         }
       }
 
       await loadIndex();
       const item = cacheIndex.get(trackId);
       if (item) {
-        const itemInfo = await FileSystem.getInfoAsync(item.localPath);
-        if (itemInfo.exists && (itemInfo.size ?? 0) > 4096) {
-          item.lastUsedAt = Date.now();
-          void saveIndex();
-          return { uri: item.localPath, isComplete: item.isComplete };
-        } else {
-          cacheIndex.delete(trackId);
-          void saveIndex();
+        // Strict guard: cached track MUST match the requested remoteUrl!
+        if (item.url === remoteUrl) {
+          const itemInfo = await FileSystem.getInfoAsync(item.localPath);
+          if (itemInfo.exists && (itemInfo.size ?? 0) > 4096) {
+            item.lastUsedAt = Date.now();
+            void saveIndex();
+            return { uri: item.localPath, isComplete: item.isComplete };
+          }
         }
+        cacheIndex.delete(trackId);
+        void saveIndex();
       }
 
       const filePath = `${CACHE_DIR}${sanitizeFileName(trackId, remoteUrl)}`;
@@ -83,16 +103,19 @@ export const AudioCacheManager = {
   },
 
   async cacheTrackInBackground(trackId: string, remoteUrl: string): Promise<void> {
-    if (!remoteUrl || !remoteUrl.startsWith("http") || activeDownloads.has(trackId)) return;
+    if (!remoteUrl || !remoteUrl.startsWith("http")) return;
+    const downloadKey = `${trackId}_${getUrlHash(remoteUrl)}`;
+    if (activeDownloads.has(downloadKey)) return;
     await loadIndex();
-    if (cacheIndex.get(trackId)?.isComplete) return;
+    const existing = cacheIndex.get(trackId);
+    if (existing?.isComplete && existing.url === remoteUrl) return;
 
     const localPath = `${CACHE_DIR}${sanitizeFileName(trackId, remoteUrl)}`;
     try {
       const downloadResumable = FileSystem.createDownloadResumable(remoteUrl, localPath, {}, () => {});
-      activeDownloads.set(trackId, downloadResumable);
+      activeDownloads.set(downloadKey, downloadResumable);
       const result = await downloadResumable.downloadAsync();
-      activeDownloads.delete(trackId);
+      activeDownloads.delete(downloadKey);
 
       if (result?.uri) {
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
@@ -100,7 +123,7 @@ export const AudioCacheManager = {
         await saveIndex();
         void this.pruneCacheIfNeeded();
       }
-    } catch (_) { activeDownloads.delete(trackId); }
+    } catch (_) { activeDownloads.delete(downloadKey); }
   },
 
   warmTrackMetadata(trackId: string, remoteUrl: string): void {

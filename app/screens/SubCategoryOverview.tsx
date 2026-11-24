@@ -99,6 +99,7 @@ const SubCategoryOverview: React.FC<any> = () => {
           (Array.isArray(item?.chapters) && item.chapters.length > 0) ||
           Boolean(item?.isFramework);
 
+        let networkFetchSuccess = false;
         if (effectiveCategoryId) {
           const url = subCategoryId
             ? `${ROOT_API_BASE}/category/${effectiveCategoryId}/content?subCategoryId=${subCategoryId}`
@@ -106,6 +107,7 @@ const SubCategoryOverview: React.FC<any> = () => {
 
           try {
             const res = await api.get(url, { timeout: 8000 });
+            networkFetchSuccess = true;
             const data = res?.data?.data;
             if (Array.isArray(data)) {
               data.forEach((item: any) => {
@@ -187,8 +189,11 @@ const SubCategoryOverview: React.FC<any> = () => {
           console.warn("Series matching warning:", seriesErr);
         }
 
-        // Only overwrite if we actually got items, or if it was a pull-to-refresh
-        if (fetchedBooks.length > 0 || fetchedSeries.length > 0 || isPullToRefresh) {
+        // Commit fresh state and cache when we received data from network,
+        // or if items were found, or on pull-to-refresh.
+        // Even when 0 items exist, saving { books: [], series: [] } ensures that
+        // subsequent visits instantly display the empty state rather than shimmering skeleton.
+        if (networkFetchSuccess || fetchedBooks.length > 0 || fetchedSeries.length > 0 || isPullToRefresh) {
           setBooks(fetchedBooks);
           setSeries(fetchedSeries);
 

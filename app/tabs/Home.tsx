@@ -30,6 +30,7 @@ import Svg, {
   Text as SvgText,
 } from "react-native-svg";
 import { api } from "../../lib/api";
+import { prefetchImages } from "../../components/props/CachedImage";
 import ChapterCardSkelly from "../../components/props/ChapterCardSkelly";
 import SeriesCardSkelly from "../../components/props/SeriesCardSkelly";
 import { ISeries } from "../../types/Series";
@@ -404,14 +405,22 @@ const HomeScreen = () => {
       if (token && typeof token === "string" && token.trim()) {
         headers.Authorization = `Bearer ${token.trim()}`;
       }
-      const res = await api.get("/feed", { headers, timeout: 18000 });
+      const res = await api.get("/feed", { headers, timeout: 15000 });
       const payload = res?.data?.data ?? res?.data;
       if (payload) {
         setFeedData(payload);
         AsyncStorage.setItem("cached_feed_data", JSON.stringify(payload)).catch(() => {});
+
+        // Pre-warm / prefetch book & banner cover images so they paint instantly without flicker
+        const coversToWarm: string[] = [];
+        (payload.banners || []).forEach((b: any) => { if (b.cover || b.image) coversToWarm.push(b.cover || b.image); });
+        (payload.available || []).forEach((c: any) => { if (c.cover) coversToWarm.push(c.cover); });
+        (payload.trending || []).forEach((c: any) => { if (c.cover) coversToWarm.push(c.cover); });
+        (payload.series || []).forEach((s: any) => { if (s.cover) coversToWarm.push(s.cover); });
+        prefetchImages(coversToWarm).catch(() => {});
       }
     } catch (err: any) {
-      console.error("Feed API Error Detail:", err?.message);
+      console.warn("Feed API Notice:", err?.message);
     } finally {
       setLoading(false);
     }

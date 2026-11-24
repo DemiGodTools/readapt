@@ -13,6 +13,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IUser } from "../../types/User";
 import { notifyAuthChange } from "../../hooks/useAuth";
 import { api, setApiUserEmail, setApiAccessToken } from "../../lib/api";
+import { hydrateRecentReadsFromUser, resetUserStorageCache } from "../../lib/userStorage";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { useGlobalAudioActions } from "../../hooks/useGlobalAudio";
 
@@ -175,6 +176,9 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
         if (data?.data) {
           setUser(data.data);
           setApiUserEmail(data.data.email);
+          if (Array.isArray(data.data.recentReads) && data.data.recentReads.length > 0) {
+            hydrateRecentReadsFromUser(data.data._id || data.data.userId, data.data.recentReads).catch(() => {});
+          }
           AsyncStorage.setItem(
             USER_CACHE_KEY,
             JSON.stringify(data.data)
@@ -211,6 +215,9 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
       if (newUser) {
         setUser(newUser);
         if (newUser.email) setApiUserEmail(newUser.email);
+        if (Array.isArray((newUser as any).recentReads) && (newUser as any).recentReads.length > 0) {
+          hydrateRecentReadsFromUser((newUser as any)._id || (newUser as any).userId, (newUser as any).recentReads).catch(() => {});
+        }
         AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(newUser)).catch(
           () => {}
         );
@@ -230,6 +237,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const logout = useCallback(async () => {
+    resetUserStorageCache();
     try {
       const currentToken = token || (await resolveToken());
       const headers = currentToken

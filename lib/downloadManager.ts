@@ -40,11 +40,12 @@ export const getDownloadedChapters = async (targetUserId?: string): Promise<Down
 };
 
 export const checkIsDownloaded = async (chapterId: string, targetUserId?: string): Promise<boolean> => {
+  if (!chapterId || chapterId === "undefined" || chapterId === "null") return false;
   try {
     const key = await getDownloadsKey(targetUserId);
     const jsonValue = await AsyncStorage.getItem(key);
     const downloaded: DownloadedChapter[] = jsonValue != null ? JSON.parse(jsonValue) : [];
-    return downloaded.some((item) => String(item._id) === String(chapterId));
+    return downloaded.some((item) => String(item._id || (item as any).id) === String(chapterId));
   } catch (e) {
     console.error('Error reading downloads', e);
     return false;
@@ -53,11 +54,12 @@ export const checkIsDownloaded = async (chapterId: string, targetUserId?: string
 
 // Get single downloaded chapter for active user
 export const getSingleDownloaded = async (chapterId: string, targetUserId?: string): Promise<DownloadedChapter | undefined> => {
+  if (!chapterId || chapterId === "undefined" || chapterId === "null") return undefined;
   try {
     const key = await getDownloadsKey(targetUserId);
     const jsonValue = await AsyncStorage.getItem(key);
     const downloads: DownloadedChapter[] = jsonValue != null ? JSON.parse(jsonValue) : [];
-    return downloads.find((item) => String(item._id) === String(chapterId));
+    return downloads.find((item) => String(item._id || (item as any).id) === String(chapterId));
   } catch (e) {
     console.error('Error reading downloads', e);
     return undefined;
@@ -74,9 +76,13 @@ export const downloadChapter = async (
     const key = await getDownloadsKey(activeUid);
 
     // 1. Create a local file path
-    const fileExtension = chapter.media.split('?')[0].split('.').pop() || (chapter.type === 'audio' ? 'mp3' : 'pdf');
+    const chId = String(chapter._id || (chapter as any).id || Date.now());
+    let fileExtension = chapter.media ? chapter.media.split('?')[0].split('.').pop() || '' : '';
+    if (!fileExtension || fileExtension.length > 5 || fileExtension.includes('/')) {
+      fileExtension = chapter.type === 'audio' ? 'mp3' : 'pdf';
+    }
     const documentDir = (FileSystem as any).documentDirectory || '';
-    const localUri = `${documentDir}${chapter._id}.${fileExtension}`;
+    const localUri = `${documentDir}${chId}.${fileExtension}`;
 
     // 2. Setup download resumable to track progress
     const downloadResumable = FileSystem.createDownloadResumable(

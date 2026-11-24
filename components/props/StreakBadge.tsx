@@ -12,7 +12,6 @@ import {
 } from "react-native";
 import { useNavigation } from "@react-navigation/native";
 import { useStreak } from "../../hooks/useStreak";
-import { useUser } from "../../hooks/useUser";
 
 interface StreakBadgeProps {
   streak?: number;
@@ -29,24 +28,14 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
   size = "medium",
   style,
 }) => {
-  const { streak: hookStreak, isCompletedToday: hookIsCompleted } = useStreak();
+  const { streak: hookStreak, isCompletedToday: hookIsCompleted, toggleStreak } = useStreak();
   const navigation = useNavigation<any>();
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  let contextUserStreak: number | undefined;
-  try {
-    const { user } = useUser();
-    contextUserStreak = (user as any)?.streakData?.currentStreak ?? (user as any)?.streak;
-  } catch (_) {}
-
-  // Prioritize explicit prop, then hook live reactive state, then user context cache
+  // Prioritize explicit prop, otherwise use reactive hook streak
   const effectiveStreak =
     propStreak !== undefined
       ? propStreak
-      : hookStreak > 0
-      ? hookStreak
-      : typeof contextUserStreak === "number" && contextUserStreak > 0
-      ? contextUserStreak
       : hookStreak;
 
   const effectiveCompleted =
@@ -78,10 +67,15 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
     if (onPress) {
       onPress();
     } else {
-      try {
-        navigation.navigate("DailyRewards");
-      } catch (_) {}
+      // Temporary test toggle: tapping the streak pill toggles active / inactive (0)
+      toggleStreak();
     }
+  };
+
+  const handleLongPress = () => {
+    try {
+      navigation.navigate("DailyRewards");
+    } catch (_) {}
   };
 
   const dimensions = useMemo(() => {
@@ -95,6 +89,8 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       onPress={handlePress}
+      onLongPress={handleLongPress}
+      delayLongPress={400}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={[style]}
     >

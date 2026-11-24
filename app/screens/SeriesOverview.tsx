@@ -36,7 +36,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import pallete from "../../lib/Colors";
-import { api } from "../../lib/api";
+import { api, ROOT_API_BASE } from "../../lib/api";
 import useAuth from "../../hooks/useAuth";
 import { useUser } from "../../hooks/useUser";
 import { useToast } from "../../hooks/useToast";
@@ -220,7 +220,18 @@ export default function SeriesOverview() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<any>();
-  const currentSeriesId = route.params?.seriesId;
+  const currentSeriesId = useMemo(() => {
+    const raw =
+      route.params?.seriesId ||
+      route.params?.id ||
+      route.params?._id ||
+      route.params?.params?.seriesId ||
+      route.params?.params?.id;
+    if (!raw) return null;
+    if (typeof raw === "string") return raw.trim();
+    if (typeof raw === "object") return String(raw._id || raw.id || "").trim();
+    return String(raw).trim();
+  }, [route.params]);
 
   const { accessToken } = useAuth();
   const { user, reload, updateUser } = useUser();
@@ -264,14 +275,30 @@ export default function SeriesOverview() {
 
   // 1. Fetch Series Details (0ms instant cache hydration + API sync)
   const loadSeries = useCallback(async () => {
-    if (!currentSeriesId) return;
-    const cacheKey = `cache_series_${currentSeriesId}`;
+    if (!currentSeriesId) {
+      setLoading(false);
+      return;
+    }
+    const cacheKey1 = `cache_series_${currentSeriesId}`;
+    const cacheKey2 = `cached_series_${currentSeriesId}`;
 
     try {
-      const cached = await AsyncStorage.getItem(cacheKey);
-      if (cached) {
-        setSeriesData(JSON.parse(cached));
+      const [c1, c2, feedRaw] = await AsyncStorage.multiGet([cacheKey1, cacheKey2, "cached_feed_data"]);
+      if (c1[1]) {
+        setSeriesData(JSON.parse(c1[1]));
         setLoading(false);
+      } else if (c2[1]) {
+        setSeriesData(JSON.parse(c2[1]));
+        setLoading(false);
+      } else if (feedRaw[1]) {
+        try {
+          const feedParsed = JSON.parse(feedRaw[1]);
+          const found = (feedParsed?.series || []).find((s: any) => String(s?._id) === String(currentSeriesId));
+          if (found) {
+            setSeriesData(found);
+            setLoading(false);
+          }
+        } catch (_) {}
       }
     } catch {}
 
@@ -296,13 +323,35 @@ export default function SeriesOverview() {
         }
       }
 
-      const res = await api.get(`/series/${currentSeriesId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      });
-      const fresh = res?.data?.data;
-      if (fresh) {
+      const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+
+      // Primary attempt: standard user endpoint with 12s timeout
+      let res: any = null;
+      try {
+        res = await api.get(`/series/${currentSeriesId}`, {
+          headers,
+          timeout: 12000,
+        });
+      } catch (err: any) {
+        // Fallback: direct ROOT_API_BASE
+        try {
+          res = await api.get(`${ROOT_API_BASE}/user/series/${currentSeriesId}`, {
+            headers,
+            timeout: 12000,
+          });
+        } catch (_) {
+          res = await api.get(`${ROOT_API_BASE}/series/${currentSeriesId}`, {
+            headers,
+            timeout: 12000,
+          });
+        }
+      }
+
+      const fresh = res?.data?.data || res?.data?.series || res?.data;
+      if (fresh && (fresh._id || fresh.title)) {
         setSeriesData(fresh);
-        AsyncStorage.setItem(cacheKey, JSON.stringify(fresh)).catch(() => {});
+        AsyncStorage.setItem(cacheKey1, JSON.stringify(fresh)).catch(() => {});
+        AsyncStorage.setItem(cacheKey2, JSON.stringify(fresh)).catch(() => {});
       }
     } catch (err: any) {
       console.warn("Series load failed:", err?.message);
@@ -1018,6 +1067,39 @@ export default function SeriesOverview() {
     return (
       <View style={[styles.body, { justifyContent: "center", alignItems: "center" }]}>
         <ActivityIndicator size="large" color={accentColor} />
+      </View>
+    );
+  }
+
+  if (!seriesData && !loading) {
+    return (
+      <View style={[styles.body, { justifyContent: "center", alignItems: "center", paddingHorizontal: 24 }]}>
+        <AlertTriangleIcon />
+        <Text style={{ color: "#fff", fontSize: 18, fontWeight: "700", marginTop: 14, textAlign: "center" }}>
+          Unable to Load Series
+        </Text>
+        <Text style={{ color: "#94a3b8", fontSize: 13, marginTop: 8, textAlign: "center", lineHeight: 20 }}>
+          {currentSeriesId ? "Could not fetch series details. Please check your connection and try again." : "No series was selected."}
+        </Text>
+        <View style={{ flexDirection: "row", gap: 12, marginTop: 22 }}>
+          <TouchableOpacity
+            style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.08)" }}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={{ color: "#fff", fontWeight: "600" }}>Go Back</Text>
+          </TouchableOpacity>
+          {currentSeriesId && (
+            <TouchableOpacity
+              style={{ paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10, backgroundColor: accentColor }}
+              onPress={() => {
+                setLoading(true);
+                loadSeries();
+              }}
+            >
+              <Text style={{ color: "#000", fontWeight: "700" }}>Try Again</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     );
   }

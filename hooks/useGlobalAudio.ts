@@ -89,15 +89,24 @@ let globalStatus: AudioStatus = {
 
 export const getTrackId = (track?: IChapter | null): string => {
   if (!track) return "";
-  return String(track._id || (track as any).hlsUrl || track.media || "");
+  const id = track._id || (track as any).id;
+  if (id && String(id).trim() && String(id) !== "undefined" && String(id) !== "null") {
+    return String(id).trim();
+  }
+  const media = (track as any).hlsUrl || track.media;
+  if (media && typeof media === "string" && media.trim()) {
+    return media.trim();
+  }
+  return "";
 };
 
 export const resolveBestStreamUrl = (track?: IChapter | null): string => {
-  if (!track) return DEFAULT_FALLBACK_URL;
+  if (!track) return "";
   const rawHls = (track as any).hlsUrl || (track as any).hls || (track as any).m3u8Url;
   if (typeof rawHls === "string" && rawHls.trim().length > 0) return rawHls.trim();
-  const rawMedia = track.media || DEFAULT_FALLBACK_URL;
-  return rawMedia;
+  const rawMedia = track.media;
+  if (rawMedia && typeof rawMedia === "string" && rawMedia.trim().length > 0) return rawMedia.trim();
+  return "";
 };
 
 interface LockScreenMetadata {
@@ -465,37 +474,59 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     } catch (_) {}
   }
 
-  // ⚡ Warm Player Reuse: If track already has an active player in pool, activate it instantly
+  if (!remoteUrl) {
+    console.warn("No audio media URL found for track:", trackId);
+    updateGlobalStatus({
+      isLoaded: false,
+      playing: false,
+      isBuffering: false,
+      error: "Audio file unavailable",
+    }, true);
+    return;
+  }
+
+  // ⚡ Warm Player Reuse: If track already has an active player in pool with matching URL, activate it instantly
   const existingWarmEntry = hotPlayerPool.get(trackId);
   if (existingWarmEntry && existingWarmEntry.player) {
-    globalPlayer = existingWarmEntry.player;
-    globalCurrentTrack = track;
-    globalPlayIntent = true;
-    playIntentLockUntil = Date.now() + 6000;
-    existingWarmEntry.lastUsedAt = Date.now();
-    applyRateToPlayer(globalPlayer, globalPlaybackRate);
-    applyVolumeToPlayer(globalPlayer, globalVolume);
-    attachStatusListener(existingWarmEntry);
+    if (existingWarmEntry.mediaUrl === remoteUrl) {
+      globalPlayer = existingWarmEntry.player;
+      globalCurrentTrack = track;
+      globalPlayIntent = true;
+      playIntentLockUntil = Date.now() + 6000;
+      existingWarmEntry.lastUsedAt = Date.now();
+      applyRateToPlayer(globalPlayer, globalPlaybackRate);
+      applyVolumeToPlayer(globalPlayer, globalVolume);
+      attachStatusListener(existingWarmEntry);
 
-    updateGlobalStatus({
-      isLoaded: true,
-      playing: true,
-      currentTime: initialPositionSec,
-      duration: existingWarmEntry.durationSec || 0,
-      isBuffering: false,
-      playbackRate: globalPlaybackRate,
-      volume: globalVolume,
-      protocol: existingWarmEntry.protocol,
-      error: null,
-    }, true);
+      updateGlobalStatus({
+        isLoaded: true,
+        playing: true,
+        currentTime: initialPositionSec,
+        duration: existingWarmEntry.durationSec || 0,
+        isBuffering: false,
+        playbackRate: globalPlaybackRate,
+        volume: globalVolume,
+        protocol: existingWarmEntry.protocol,
+        error: null,
+      }, true);
 
-    if (initialPositionSec > 0) {
-      pendingInitialSeekSec = initialPositionSec;
-      void seekToInternal(initialPositionSec);
+      if (initialPositionSec > 0) {
+        pendingInitialSeekSec = initialPositionSec;
+        void seekToInternal(initialPositionSec);
+      }
+      try { globalPlayer.play(); } catch (_) {}
+      syncLockScreenControls(globalPlayer, globalCurrentTrack, true);
+      return;
+    } else {
+      // Audio URL changed! Purge old warm player
+      try {
+        existingWarmEntry.subscription?.remove();
+        existingWarmEntry.player.pause();
+        if (typeof (existingWarmEntry.player as any).release === "function") (existingWarmEntry.player as any).release();
+        else existingWarmEntry.player.remove();
+      } catch (_) {}
+      hotPlayerPool.delete(trackId);
     }
-    try { globalPlayer.play(); } catch (_) {}
-    syncLockScreenControls(globalPlayer, globalCurrentTrack, true);
-    return;
   }
 
   // Clean up any stale unlinked player entry for this trackId
