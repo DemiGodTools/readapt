@@ -200,6 +200,10 @@ const ContentCard = memo(
     const effectiveLikesCount =
       likeOverride?.count ?? (cachedLike !== undefined ? cachedLike.count : likesCount);
 
+    const displayLikesCount = effectiveLiked
+      ? Math.max(1, effectiveLikesCount)
+      : Math.max(0, effectiveLikesCount);
+
     return (
       <PopButton
         styles={[
@@ -318,7 +322,7 @@ const ContentCard = memo(
               <Path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
             </Svg>
             <Text style={[styles.statText, compact && { fontSize: 10 }, effectiveLiked && { color: "#eb4040", fontWeight: "700" }]}>
-              {effectiveLikesCount}
+              {displayLikesCount}
             </Text>
           </View>
 

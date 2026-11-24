@@ -207,18 +207,22 @@ const syncLockScreenControls = (
   if (!player || !track) return;
   const trackId = getTrackId(track);
   if (!trackId) return;
-  if (!force && lockScreenOwnerPlayer === player && lockScreenTrackId === trackId) return;
 
   const metadata = buildLockScreenMetadata(track);
   if (!metadata) return;
 
-  try {
-    if (typeof (player as any).setActiveForLockScreen === "function") {
-      (player as any).setActiveForLockScreen(true, metadata, LOCK_SCREEN_OPTIONS);
-      lockScreenTrackId = trackId;
-      lockScreenOwnerPlayer = player;
-    }
-  } catch (_) {}
+  const isAlreadyActiveOwner = lockScreenOwnerPlayer === player && lockScreenTrackId === trackId;
+
+  if (!isAlreadyActiveOwner) {
+    try {
+      if (typeof (player as any).setActiveForLockScreen === "function") {
+        (player as any).setActiveForLockScreen(true, metadata, LOCK_SCREEN_OPTIONS);
+        lockScreenTrackId = trackId;
+        lockScreenOwnerPlayer = player;
+      }
+    } catch (_) {}
+  }
+
   try {
     if (typeof (player as any).updateLockScreenMetadata === "function") {
       (player as any).updateLockScreenMetadata(metadata);
@@ -236,15 +240,12 @@ const refreshLockScreenMetadata = (track?: IChapter | null) => {
   if (!metadata) return;
 
   try {
-    if (typeof (owner as any).setActiveForLockScreen === "function") {
+    if (typeof (owner as any).updateLockScreenMetadata === "function") {
+      (owner as any).updateLockScreenMetadata(metadata);
+    } else if (typeof (owner as any).setActiveForLockScreen === "function") {
       (owner as any).setActiveForLockScreen(true, metadata, LOCK_SCREEN_OPTIONS);
       lockScreenTrackId = targetId;
       lockScreenOwnerPlayer = owner;
-    }
-  } catch (_) {}
-  try {
-    if (typeof (owner as any).updateLockScreenMetadata === "function") {
-      (owner as any).updateLockScreenMetadata(metadata);
     }
   } catch (_) {}
 };
@@ -762,7 +763,10 @@ const removeAllTracksInternal = () => {
 };
 
 export const updateCurrentTrackMetadata = (track: Partial<IChapter>) => {
-  if (globalCurrentTrack && (!track._id || String(track._id) === String(globalCurrentTrack._id))) {
+  if (!globalCurrentTrack) return;
+  const curId = getTrackId(globalCurrentTrack);
+  const newId = getTrackId(track as IChapter);
+  if (!newId || !curId || curId === newId) {
     globalCurrentTrack = { ...globalCurrentTrack, ...track };
     refreshLockScreenMetadata(globalCurrentTrack);
     notifyStateListeners();

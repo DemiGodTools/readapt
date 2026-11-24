@@ -625,7 +625,7 @@ const SettingsScreen = () => {
             <Text style={{ color: THEME.tealPrimary, fontWeight: "700" }}>
               Email Support:
             </Text>{" "}
-            support@readapt.app
+            readaptsupport@gmail.com
             {"\n"}•{" "}
             <Text style={{ color: THEME.tealPrimary, fontWeight: "700" }}>
               Response Time:
@@ -641,7 +641,7 @@ const SettingsScreen = () => {
             style={styles.helpActionBtn}
             activeOpacity={0.86}
             onPress={() => {
-              Linking.openURL("mailto:support@readapt.app").catch(() => {});
+              Linking.openURL("mailto:readaptsupport@gmail.com").catch(() => {});
             }}
           >
             <LinearGradient

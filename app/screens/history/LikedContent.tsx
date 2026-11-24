@@ -13,6 +13,7 @@ import { useNetworkStatus } from "../../../hooks/useNetwork";
 import { useFocusEffect } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { api } from "../../../lib/api";
+import { LikeManager } from "../../../lib/likeManager";
 
 type Props = NativeStackScreenProps<RootStackParamList, "LikedContent">;
 
@@ -24,12 +25,58 @@ const CARD_WIDTH = Math.floor(
   (SCREEN_WIDTH - HORIZONTAL_PADDING * 2 - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS
 );
 
+/**
+ * Extracts all rich chapter objects from cached feed data (zero network, instant in-memory lookup)
+ */
+const extractFeedChapterMap = (rawFeed: string | null): Map<string, any> => {
+  const map = new Map<string, any>();
+  if (!rawFeed) return map;
+  try {
+    const parsed = JSON.parse(rawFeed);
+
+    const registerChapter = (raw: any) => {
+      if (!raw) return;
+      const ch = raw.content && typeof raw.content === "object" ? raw.content : raw;
+      const id = String(ch._id || ch.id || "");
+      if (id && !map.has(id)) {
+        map.set(id, ch);
+      }
+    };
+
+    // 1. Categories chapters
+    if (Array.isArray(parsed.categories)) {
+      parsed.categories.forEach((cat: any) => {
+        if (Array.isArray(cat?.chapters)) cat.chapters.forEach(registerChapter);
+      });
+    }
+
+    // 2. Series chapters
+    if (Array.isArray(parsed.series)) {
+      parsed.series.forEach((s: any) => {
+        if (Array.isArray(s?.chapters)) s.chapters.forEach(registerChapter);
+      });
+    }
+
+    // 3. Standalone books
+    if (Array.isArray(parsed.standalones)) parsed.standalones.forEach(registerChapter);
+
+    // 4. Continue reading
+    if (Array.isArray(parsed.continueReading)) parsed.continueReading.forEach(registerChapter);
+
+    // 5. Trending books
+    if (Array.isArray(parsed.trending)) parsed.trending.forEach(registerChapter);
+  } catch (_) {}
+  return map;
+};
+
 const LikedContent = ({ route, navigation }: Props) => {
   const { user, loadingUser, reload } = useUser();
   const insets = useSafeAreaInsets();
   const { isConnected } = useNetworkStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [resolvedLikes, setResolvedLikes] = useState<any[]>([]);
+
+  const navHeaderPadding = Math.max(insets.top + 55, 75);
 
   // 1. Refresh user on screen focus so liked changes always reflect immediately
   useFocusEffect(
@@ -38,7 +85,7 @@ const LikedContent = ({ route, navigation }: Props) => {
     }, [reload])
   );
 
-  // 2. Real-time update when like event fires across the app
+  // 2. Real-time update when like event fires anywhere across the app
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener("like-updated", () => {
       reload().catch(() => {});
@@ -46,69 +93,141 @@ const LikedContent = ({ route, navigation }: Props) => {
     return () => sub.remove();
   }, [reload]);
 
-  // 3. Robust resolution: handles populated objects, string IDs, and filters nulls
+  // 3. Fast, zero-DB-load resolution of liked content with real like counts
   useEffect(() => {
     let isMounted = true;
-    const resolveUnpopulated = async () => {
+
+    const resolveLikes = async () => {
+      await LikeManager.init();
+
       if (!user?.likes || !Array.isArray(user.likes)) {
         if (isMounted) setResolvedLikes([]);
         return;
       }
 
-      const stringIds: string[] = [];
-      const populatedItems: any[] = [];
-
-      user.likes.forEach((item: any) => {
-        if (!item) return;
-        if (typeof item === "string") {
-          stringIds.push(item);
-        } else if (typeof item === "object" && (item._id || item.id)) {
-          populatedItems.push(item);
-        }
-      });
-
-      if (stringIds.length === 0) {
-        if (isMounted) setResolvedLikes(populatedItems);
-        return;
-      }
-
-      // Check feed cache for matching chapter objects
-      let feedPool: any[] = [];
+      // Fast in-memory map from cached feed (instant, zero DB calls)
+      let feedMap = new Map<string, any>();
       try {
         const rawFeed = await AsyncStorage.getItem("cached_feed_data");
-        if (rawFeed) {
-          const parsed = JSON.parse(rawFeed);
-          feedPool = [
-            ...(parsed.trending || []),
-            ...(parsed.personalized || []),
-            ...(parsed.all || []),
-          ];
-        }
-      } catch {}
+        feedMap = extractFeedChapterMap(rawFeed);
+      } catch (_) {}
 
-      const foundFromFeed: any[] = [];
+      const resolvedList: any[] = [];
       const missingIds: string[] = [];
 
-      stringIds.forEach((id) => {
-        const found = feedPool.find((b: any) => String(b?._id || b?.id) === String(id));
-        if (found) foundFromFeed.push(found);
-        else missingIds.push(id);
-      });
+      for (const rawItem of user.likes) {
+        if (!rawItem) continue;
+        const item = rawItem as any;
+        const id = typeof item === "string" ? String(item).trim() : String(item?._id || item?.id || "").trim();
+        if (!id) continue;
 
-      if (missingIds.length > 0) {
-        try {
-          const res = await api.post("/chapter/by-IDs", { ids: missingIds });
-          if (res?.data?.success && Array.isArray(res.data.data)) {
-            foundFromFeed.push(...res.data.data);
-          }
-        } catch {}
+        // Try local feed cache first, then item object if populated
+        let bookData = feedMap.get(id);
+        if (!bookData && typeof item === "object" && (item.title || item.cover)) {
+          bookData = item;
+        }
+
+        if (bookData) {
+          // Compute real like count
+          const lmEntry = LikeManager.get(id);
+          const rawLikes = bookData.likes;
+          const dataCount = Array.isArray(rawLikes)
+            ? rawLikes.length
+            : typeof rawLikes === "number"
+            ? rawLikes
+            : 0;
+
+          // Confirmed count: highest known count, at least 1 since user liked it!
+          const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
+
+          // Keep LikeManager cache synchronized
+          LikeManager.set(id, true, realCount, false);
+
+          resolvedList.push({
+            ...bookData,
+            _id: id,
+            likes: realCount,
+            isLiked: true,
+          });
+        } else {
+          missingIds.push(id);
+        }
       }
 
-      const allCombined = [...populatedItems, ...foundFromFeed];
+      // If any string IDs were not in feed cache, check local per-chapter storage first
+      if (missingIds.length > 0) {
+        const remainingToFetch: string[] = [];
+
+        for (const id of missingIds) {
+          try {
+            const chRaw = await AsyncStorage.getItem(`cached_ch_${id}`);
+            if (chRaw) {
+              const parsed = JSON.parse(chRaw);
+              const lmEntry = LikeManager.get(id);
+              const dataCount = Array.isArray(parsed.likes)
+                ? parsed.likes.length
+                : typeof parsed.likes === "number"
+                ? parsed.likes
+                : 0;
+              const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
+              LikeManager.set(id, true, realCount, false);
+
+              resolvedList.push({
+                ...parsed,
+                _id: id,
+                likes: realCount,
+                isLiked: true,
+              });
+              continue;
+            }
+          } catch (_) {}
+          remainingToFetch.push(id);
+        }
+
+        // Only fetch truly unknown chapters from API if device is online
+        if (remainingToFetch.length > 0 && isConnected) {
+          const fetchPromises = remainingToFetch.map(async (id) => {
+            try {
+              const res = await api.get(`/chapter/${id}`, { timeout: 6000 });
+              const ch = res?.data?.data || res?.data?.chapter || res?.data;
+              if (ch && (ch.title || ch._id)) {
+                const lmEntry = LikeManager.get(id);
+                const dataCount = Array.isArray(ch.likes)
+                  ? ch.likes.length
+                  : typeof ch.likes === "number"
+                  ? ch.likes
+                  : 0;
+                const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
+                LikeManager.set(id, true, realCount, false);
+
+                // Cache so subsequent visits are instant and never hit DB
+                await AsyncStorage.setItem(`cached_ch_${id}`, JSON.stringify(ch)).catch(() => {});
+
+                return {
+                  ...ch,
+                  _id: id,
+                  likes: realCount,
+                  isLiked: true,
+                };
+              }
+            } catch (_) {}
+            return null;
+          });
+
+          const fetchedResults = await Promise.all(fetchPromises);
+          fetchedResults.forEach((ch) => {
+            if (ch) resolvedList.push(ch);
+          });
+        }
+      }
+
+      // Deduplicate by chapter _id
       const uniqueMap = new Map<string, any>();
-      allCombined.forEach((it) => {
-        const id = String(it._id || it.id);
-        if (!uniqueMap.has(id)) uniqueMap.set(id, it);
+      resolvedList.forEach((it) => {
+        const itId = String(it._id || it.id);
+        if (itId && !uniqueMap.has(itId)) {
+          uniqueMap.set(itId, it);
+        }
       });
 
       if (isMounted) {
@@ -116,11 +235,11 @@ const LikedContent = ({ route, navigation }: Props) => {
       }
     };
 
-    resolveUnpopulated();
+    resolveLikes();
     return () => {
       isMounted = false;
     };
-  }, [user?.likes]);
+  }, [user?.likes, isConnected]);
 
   const sortedLikes = useMemo(() => {
     return [...resolvedLikes].sort((a: any, b: any) => {
@@ -154,14 +273,14 @@ const LikedContent = ({ route, navigation }: Props) => {
 
   if (!user && !isConnected) {
     return (
-      <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+      <View style={[styles.container, { paddingTop: navHeaderPadding, paddingBottom: insets.bottom }]}>
         <Offline />
       </View>
     );
   }
 
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+    <View style={[styles.container, { paddingTop: navHeaderPadding, paddingBottom: insets.bottom }]}>
       {sortedLikes && !loadingUser && (
         <FlatList
           key="liked-grid-3-col"
@@ -217,7 +336,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: pallete.bgmain || "#090314",
-    paddingTop: 90,
   },
   title: {
     fontSize: 20,
@@ -225,7 +343,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 0.5,
     color: pallete.textwhite,
-    marginVertical: 40,
+    marginTop: 12,
+    marginBottom: 20,
   },
   listContent: {
     flexGrow: 1,

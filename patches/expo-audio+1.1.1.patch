@@ -1,5 +1,5 @@
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
-index 04486e2..56af802 100644
+index 04486e2..414d352 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 @@ -9,6 +9,7 @@ import android.content.Intent
@@ -10,7 +10,7 @@ index 04486e2..56af802 100644
  import android.os.Binder
  import android.os.Build
  import android.os.Bundle
-@@ -211,6 +212,10 @@ class AudioControlsService : MediaSessionService() {
+@@ -211,18 +212,29 @@ class AudioControlsService : MediaSessionService() {
      currentMetadata = metadata
      currentOptions = options
  
@@ -21,7 +21,10 @@ index 04486e2..56af802 100644
      metadata?.artworkUrl?.let {
        loadArtworkFromUrl(it) { bitmap ->
          currentArtwork = bitmap
-@@ -220,9 +225,15 @@ class AudioControlsService : MediaSessionService() {
++        player?.let { p -> applyArtworkToPlayer(p, bitmap) }
+         postOrStartForegroundNotification(startInForeground = false)
+       }
+     }
      player?.isActiveForLockScreen = true
  
      if (player != null) {
@@ -38,10 +41,31 @@ index 04486e2..56af802 100644
          .setCallback(AudioMediaSessionCallback())
          .build()
  
-@@ -254,11 +265,44 @@ class AudioControlsService : MediaSessionService() {
+@@ -254,14 +266,80 @@ class AudioControlsService : MediaSessionService() {
      }
    }
  
++  private fun applyArtworkToPlayer(player: AudioPlayer, bitmap: Bitmap?) {
++    if (bitmap == null) return
++    try {
++      val stream = java.io.ByteArrayOutputStream()
++      bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
++      val byteArray = stream.toByteArray()
++      val updated = (player.ref.playlistMetadata ?: androidx.media3.common.MediaMetadata.EMPTY)
++        .buildUpon()
++        .setArtworkData(byteArray, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER)
++        .build()
++      player.ref.playlistMetadata = updated
++      val item = player.ref.currentMediaItem
++      if (item != null) {
++        val itemUpdated = item.mediaMetadata.buildUpon()
++          .setArtworkData(byteArray, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER)
++          .build()
++        player.ref.replaceMediaItem(player.ref.currentMediaItemIndex, item.buildUpon().setMediaMetadata(itemUpdated).build())
++      }
++    } catch (_: Exception) {}
++  }
++
 +  /**
 +   * Publishes title/artist/album/artwork onto the player's current MediaItem so
 +   * the MediaSession (and therefore the system media player, lock screen and
@@ -49,16 +73,27 @@ index 04486e2..56af802 100644
 +   */
 +  private fun applyMediaMetadataToPlayer(player: AudioPlayer, metadata: Metadata?) {
 +    if (metadata == null) return
-+    val item = player.ref.currentMediaItem ?: return
-+    val existing = item.mediaMetadata
 +
-+    val builder = existing.buildUpon()
++    val builder = (player.ref.playlistMetadata ?: androidx.media3.common.MediaMetadata.EMPTY).buildUpon()
 +    metadata.title?.takeIf { it.isNotBlank() }?.let { builder.setTitle(it) }
 +    metadata.artist?.takeIf { it.isNotBlank() }?.let { builder.setArtist(it) }
 +    metadata.albumTitle?.takeIf { it.isNotBlank() }?.let { builder.setAlbumTitle(it) }
 +    metadata.artworkUrl?.let { builder.setArtworkUri(Uri.parse(it.toString())) }
-+
++    currentArtwork?.let { bitmap ->
++      try {
++        val stream = java.io.ByteArrayOutputStream()
++        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
++        builder.setArtworkData(stream.toByteArray(), androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER)
++      } catch (_: Exception) {}
++    }
 +    val updated = builder.build()
++
++    try {
++      player.ref.playlistMetadata = updated
++    } catch (_: Exception) {}
++
++    val item = player.ref.currentMediaItem ?: return
++    val existing = item.mediaMetadata
 +    if (updated == existing) return
 +
 +    // Preserve the current playback position across the media item swap
@@ -75,7 +110,8 @@ index 04486e2..56af802 100644
 +  }
 +
    private fun updateMetadataInternal(player: AudioPlayer, metadata: Metadata?) {
-     if (player != currentPlayer || metadata == currentMetadata) {
+-    if (player != currentPlayer || metadata == currentMetadata) {
++    if (player != currentPlayer) {
        return
      }
      currentMetadata = metadata
@@ -83,7 +119,11 @@ index 04486e2..56af802 100644
      currentMetadata?.artworkUrl?.let {
        loadArtworkFromUrl(it) { bitmap ->
          currentArtwork = bitmap
-@@ -275,7 +319,12 @@ class AudioControlsService : MediaSessionService() {
++        applyArtworkToPlayer(player, bitmap)
+         postOrStartForegroundNotification(startInForeground = false)
+       }
+     } ?: postOrStartForegroundNotification(startInForeground = false)
+@@ -275,7 +353,12 @@ class AudioControlsService : MediaSessionService() {
      playbackListener = null
      currentPlayer = null
      currentMetadata = null

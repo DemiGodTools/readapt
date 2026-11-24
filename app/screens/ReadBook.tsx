@@ -2061,8 +2061,8 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               setIsQnaLoading(false);
             }
 
-            // If media url changed in DB, download updated file in background
-            if (freshMediaUrl && urlChangedInDb) {
+            // If media url changed in DB or if no local pdf has been mounted yet, download and mount!
+            if (freshMediaUrl && (!mountedLocalUri || !pdfPath || urlChangedInDb)) {
               backgroundCachePipeline(targetId, freshMediaUrl).then((cachedUri) => {
                 if (cachedUri && !isCancelledRef?.current) {
                   setPdfPath(cachedUri);

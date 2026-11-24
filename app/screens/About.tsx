@@ -99,10 +99,10 @@ const About = ({ route, navigation }: Props) => {
         <View style={styles.brandHeader}>
           <View style={styles.squircle}>
             <Image
-              source={{ uri: 'https://i.imgur.com/p7ccGmH.jpeg' }}
-              // or: require('../assets/splash-icon.png')
+              source={require('../../assets/icon.png')}
               style={styles.appIcon}
               resizeMode="cover"
+              fadeDuration={0}
             />
           </View>
           <View style={styles.brandDetails}>

@@ -1312,10 +1312,14 @@ const AudioPlayerScreen = ({ route }: Props) => {
         lastAutoStartedBookIdRef.current = null;
         if (initialData && String(initialData._id) === String(chapterId)) {
           setBook(initialData as IChapter);
+          if (!initialData.media && !(initialData as any).content?.media) {
+            setIsLoading(true);
+          }
         } else if (currentTrack && getTrackId(currentTrack) === String(chapterId)) {
           setBook(currentTrack as IChapter);
         } else {
           setBook(null); // Clear previous book data immediately to prevent stale audio playing
+          setIsLoading(true);
         }
       }
 
@@ -2047,15 +2051,16 @@ const AudioPlayerScreen = ({ route }: Props) => {
     if (!book || !book._id) return;
     const targetBookId = String(book._id);
     if (lastAutoStartedBookIdRef.current === targetBookId) return;
-    lastAutoStartedBookIdRef.current = targetBookId;
     let isCancelled = false;
 
     const startOrResumeAudio = async () => {
       const resolvedMedia = book.media || (book as any).content?.media;
       if (!resolvedMedia) {
+        if (isLoading) return;
         showToast({ title: "Audio is not available for this chapter." });
         return;
       }
+      lastAutoStartedBookIdRef.current = targetBookId;
 
       const rawContent = (book as any)?.content;
       const targetBook: IChapter = {
@@ -2104,7 +2109,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
     return () => {
       isCancelled = true;
     };
-  }, [book?._id, currentTrack, playTrack, seekTimeParam, updateRecentReads]);
+  }, [book?._id, book?.media, currentTrack, playTrack, seekTimeParam, updateRecentReads, isLoading]);
 
   // Periodic progress tracker: auto-saves listening position every 15s so it's NEVER lost
   useEffect(() => {

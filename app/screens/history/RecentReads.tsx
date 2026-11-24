@@ -151,8 +151,10 @@ const RecentReads = ({ route, navigation }: Props) => {
     </View>
   );
 
+  const navHeaderPadding = Math.max(insets.top + 55, 75);
+
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+    <View style={[styles.container, { paddingTop: navHeaderPadding, paddingBottom: insets.bottom }]}>
       <FlatList
         data={recentReads}
         keyExtractor={(item) => item.date}
@@ -228,7 +230,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: pallete.bgmain || "#090314",
-    paddingTop: 70,
   },
   listContent: {
     flexGrow: 1,
@@ -253,7 +254,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     letterSpacing: 0.5,
     color: pallete.textwhite,
-    marginVertical: 24,
+    marginTop: 12,
+    marginBottom: 20,
   },
   emptyReadsPage: {
     flex: 1,
