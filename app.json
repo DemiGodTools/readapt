@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Readapt",
-    "slug": "readapt",
+    "slug": "waves",
     "scheme": ["readapt", "waves"],
     "newArchEnabled": true,
     "version": "1.0.0",
