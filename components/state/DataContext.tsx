@@ -12,7 +12,7 @@ import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IUser } from "../../types/User";
 import { notifyAuthChange } from "../../hooks/useAuth";
-import { api, setApiUserEmail } from "../../lib/api";
+import { api, setApiUserEmail, setApiAccessToken } from "../../lib/api";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { useGlobalAudioActions } from "../../hooks/useGlobalAudio";
 
@@ -160,11 +160,13 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
         if (!activeToken) {
           setUser(null);
           setToken("");
+          setApiAccessToken(null);
           setLoadingUser(false);
           return;
         }
 
         setToken(activeToken);
+        setApiAccessToken(activeToken);
 
         const { data } = await api.get(`/get-self`, {
           headers: { Authorization: `Bearer ${activeToken}` },
@@ -205,6 +207,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   const setAuthSession = useCallback(
     async (newToken: string, newUser?: IUser) => {
       setToken(newToken);
+      setApiAccessToken(newToken);
       if (newUser) {
         setUser(newUser);
         if (newUser.email) setApiUserEmail(newUser.email);
@@ -261,6 +264,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
     setUser(null);
     setToken("");
+    setApiAccessToken(null);
     setApiUserEmail(null);
     try {
       audioActions.removeAllTracks();

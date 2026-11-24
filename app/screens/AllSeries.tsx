@@ -6,12 +6,12 @@ import {
   Pressable,
   Dimensions,
   ActivityIndicator,
-  FlatList,
   Modal,
   Platform,
   RefreshControl,
   DeviceEventEmitter,
 } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -411,17 +411,13 @@ export default function AllSeries() {
           </Pressable>
         </View>
       ) : (
-        <FlatList
+        <FlashList
           data={filteredAndSortedSeries}
-          keyExtractor={(item) => item._id}
+          keyExtractor={(item: any) => item._id}
           renderItem={renderCard}
           numColumns={3}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          columnWrapperStyle={styles.columnWrapper}
-          initialNumToRender={12}
-          maxToRenderPerBatch={9}
-          windowSize={7}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}

@@ -5,7 +5,6 @@ import {
   Text,
   StyleSheet,
   TextInput,
-  FlatList,
   Dimensions,
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +14,7 @@ import {
   Keyboard,
   Vibration,
 } from "react-native";
+import { FlashList } from "@shopify/flash-list";
 import {
   Gesture,
   GestureDetector,
@@ -970,9 +970,9 @@ const CommentsDrawer = ({
           </View>
         </GestureDetector>
 
-        <FlatList
+        <FlashList
           data={comments}
-          keyExtractor={(item, index) => String(item?._id ?? index)}
+          keyExtractor={(item: any, index: number) => String(item?._id ?? index)}
           renderItem={renderComment}
           scrollEnabled={true}
           contentContainerStyle={styles.listContent}

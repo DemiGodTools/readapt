@@ -43,6 +43,17 @@ export const api = axios.create({
 let isConnected = true;
 let showToast: ((message: string) => void) | null = null;
 let cachedUserEmail: string | null = null;
+let inMemoryAccessToken: string | null = null;
+
+export const setApiAccessToken = (token?: string | null) => {
+  if (token && typeof token === "string" && token.trim() && token !== "undefined" && token !== "null") {
+    inMemoryAccessToken = token.trim();
+  } else {
+    inMemoryAccessToken = null;
+  }
+};
+
+export const getApiAccessToken = () => inMemoryAccessToken;
 
 export const setApiUserEmail = (email?: string | null) => {
   if (email && typeof email === "string" && email.trim()) {
@@ -82,45 +93,43 @@ api.interceptors.request.use(async (config) => {
     let cleanToken: string | null = null;
 
     if (isAuthInvalid) {
-      let rawToken: string | null = null;
-      const stored = await SecureStore.getItemAsync("accessToken");
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          rawToken = parsed?.token || (typeof parsed === "string" ? parsed : null);
-        } catch {
-          rawToken = stored;
-        }
-      }
-
-      if (!rawToken) {
-        const asyncStored = await AsyncStorage.getItem("accessToken");
-        if (asyncStored) {
+      if (inMemoryAccessToken) {
+        cleanToken = inMemoryAccessToken;
+      } else {
+        let rawToken: string | null = null;
+        const stored = await SecureStore.getItemAsync("accessToken");
+        if (stored) {
           try {
-            const parsed = JSON.parse(asyncStored);
+            const parsed = JSON.parse(stored);
             rawToken = parsed?.token || (typeof parsed === "string" ? parsed : null);
           } catch {
-            rawToken = asyncStored;
+            rawToken = stored;
           }
+        }
+
+        if (!rawToken) {
+          const asyncStored = await AsyncStorage.getItem("accessToken");
+          if (asyncStored) {
+            try {
+              const parsed = JSON.parse(asyncStored);
+              rawToken = parsed?.token || (typeof parsed === "string" ? parsed : null);
+            } catch {
+              rawToken = asyncStored;
+            }
+          }
+        }
+
+        if (rawToken && typeof rawToken === "string") {
+          cleanToken = rawToken.trim();
+          inMemoryAccessToken = cleanToken;
         }
       }
 
-      if (rawToken && typeof rawToken === "string") {
-        cleanToken = rawToken.trim();
-        if (cleanToken && cleanToken !== "undefined" && cleanToken !== "null") {
-          if (config.headers?.set) {
-            config.headers.set("Authorization", `Bearer ${cleanToken}`);
-          } else if (config.headers) {
-            config.headers.Authorization = `Bearer ${cleanToken}`;
-          }
-        } else {
-          if (config.headers?.delete) {
-            config.headers.delete("Authorization");
-            config.headers.delete("authorization");
-          } else if (config.headers) {
-            delete config.headers.Authorization;
-            delete config.headers.authorization;
-          }
+      if (cleanToken && cleanToken !== "undefined" && cleanToken !== "null") {
+        if (config.headers?.set) {
+          config.headers.set("Authorization", `Bearer ${cleanToken}`);
+        } else if (config.headers) {
+          config.headers.Authorization = `Bearer ${cleanToken}`;
         }
       } else {
         if (config.headers?.delete) {

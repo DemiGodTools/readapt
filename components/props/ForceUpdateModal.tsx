@@ -8,8 +8,8 @@ import {
   Linking,
   BackHandler,
   Dimensions,
-  Image,
 } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, {
@@ -286,10 +286,10 @@ export default function ForceUpdateModal({
           style={[styles.heroArtworkContainer, { height: heroImageHeight }]}
           pointerEvents="none"
         >
-          <Image
+          <ExpoImage
             source={require("../../assets/update.png")}
             style={styles.heroArtworkImage}
-            resizeMode="cover"
+            contentFit="cover"
           />
           <LinearGradient
             colors={[

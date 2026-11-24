@@ -1,6 +1,5 @@
 import { createNavigationContainerRef, NavigationContainer, DarkTheme } from "@react-navigation/native";
-import { createStackNavigator, CardStyleInterpolators } from "@react-navigation/stack";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { useState, useEffect } from "react";
 import useAuth from "../../hooks/useAuth";
 import BotttomNav from "./BotttomNav";
@@ -24,7 +23,6 @@ import SettingsScreen from "../../app/screens/SettingsScreen";
 import ReferralCodeScreen from "../../app/screens/ReferralCodeScreen";
 import ReferAndEarnScreen from "../../app/screens/ReferAndEarnScreen"; 
 import { useUser } from "../../hooks/useUser";
-import AudioControls from "../props/AudioControls";
 import { useToast } from "../../hooks/useToast";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { configureApiInterceptor } from "../../lib/api";
@@ -61,9 +59,9 @@ export type RootStackParamList = {
   SearchScreen?: { initialQuery?: string };
 };
 
-export const navigationRef = createNavigationContainerRef()
+export const navigationRef = createNavigationContainerRef();
 
-const Stack = createStackNavigator<RootStackParamList>();
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const navTheme = {
   ...DarkTheme,
@@ -75,26 +73,17 @@ const navTheme = {
 };
 
 export default function MainNavigation() {
-  const {isLoggedIn, isLoading} = useAuth();
-  const {user, loadingUser} = useUser()
-  const [initialPage, setinitialPage] =
+  const { isLoggedIn, isLoading } = useAuth();
+  const { user } = useUser();
+  const [initialPage, setInitialPage] =
     useState<keyof RootStackParamList>("Splash");
-
-  const checkSubscription = async () => {
-    const now = new Date()
-    if(user?.subscription.plan && user.subscription.expiresOn) {
-      const expiryDate = new Date(user?.subscription.expiresOn)
-      console.log(now, expiryDate)
-    }
-  }
 
   useEffect(() => {
     if (!isLoading) {
       if (!isLoggedIn) {
-        setinitialPage("Login");
+        setInitialPage("Login");
       } else {
-        checkSubscription()
-        setinitialPage("Tabs");
+        setInitialPage("Tabs");
       }
     }
   }, [isLoggedIn, isLoading]);
@@ -120,30 +109,22 @@ export default function MainNavigation() {
   }, []);
 
   useEffect(() => {
-    configureApiInterceptor(Boolean(isConnected), (msg) => {
-      showToast({ title: "This function is not available offline"});
+    configureApiInterceptor(Boolean(isConnected), () => {
+      showToast({ title: "This function is not available offline" });
     });
   }, [isConnected, showToast]);
 
   return (
     <ErrorBoundary>
-      <SafeAreaProvider>
       <NavigationContainer ref={navigationRef} theme={navTheme}>
         <Stack.Navigator
           initialRouteName={initialPage}
-          // The "any" type resolves the TS strictness error preventing compilation
           screenOptions={({ navigation }: any) => ({
-            cardStyle: {
-              paddingBottom: 0,
+            contentStyle: {
               backgroundColor: "#090314",
             },
+            animation: "slide_from_right",
             headerShown: true,
-            headerTransparent: false,
-            headerStyle: {
-              backgroundColor: "#090314",
-              elevation: 0,
-              shadowOpacity: 0,
-            },
             header: () => (
               <BackNav
                 onBackPress={() => navigation?.goBack()}
@@ -157,9 +138,11 @@ export default function MainNavigation() {
             options={{ headerShown: false }}
           />
 
-          <Stack.Screen name="Login" options={{ headerShown: false }}>
-            {(props) => <Login {...props} />}
-          </Stack.Screen>
+          <Stack.Screen
+            name="Login"
+            component={Login}
+            options={{ headerShown: false }}
+          />
 
           <Stack.Screen 
             name="SeriesOverview" 
@@ -167,32 +150,33 @@ export default function MainNavigation() {
             options={{ headerShown: false }} 
           />
 
-          <Stack.Screen name="ReadBook">
-            {(props) => <ReadBook {...props} />}
-          </Stack.Screen>
+          <Stack.Screen
+            name="ReadBook"
+            component={ReadBook}
+          />
           
           <Stack.Screen
             name="AudioRdr"
+            component={AudioRdr}
             options={{
-              gestureEnabled: true,
-              gestureDirection: "vertical",
-              cardStyleInterpolator: CardStyleInterpolators.forVerticalIOS,
+              animation: "slide_from_bottom",
             }}
-          >
-            {(props) => <AudioRdr {...props} />}
-          </Stack.Screen>
+          />
 
-          <Stack.Screen name="RecentReads">
-            {(props) => <RecentReads {...props} />}
-          </Stack.Screen>
+          <Stack.Screen
+            name="RecentReads"
+            component={RecentReads}
+          />
 
-          <Stack.Screen name="LikedContent">
-            {(props) => <LikedContent {...props} />}
-          </Stack.Screen>
+          <Stack.Screen
+            name="LikedContent"
+            component={LikedContent}
+          />
 
-          <Stack.Screen name="About">
-            {(props) => <About {...props} />}
-          </Stack.Screen>
+          <Stack.Screen
+            name="About"
+            component={About}
+          />
 
           <Stack.Screen 
             name="TrendingBooks" 
@@ -206,9 +190,10 @@ export default function MainNavigation() {
             options={{ headerShown: false }} 
           />
 
-          <Stack.Screen name="Splash">
-            {(props) => <SplashScreen {...props} />}
-          </Stack.Screen>
+          <Stack.Screen
+            name="Splash"
+            component={SplashScreen}
+          />
 
           <Stack.Screen 
             name="Subscription" 
@@ -238,7 +223,6 @@ export default function MainNavigation() {
             component={SearchScreen}
             options={{
               headerShown: false,
-              cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
             }}
           />
 
@@ -247,7 +231,6 @@ export default function MainNavigation() {
             component={SettingsScreen}
             options={{
               headerShown: false,
-              cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
             }}
           />
 
@@ -256,7 +239,6 @@ export default function MainNavigation() {
             component={ReferralCodeScreen}
             options={{
               headerShown: false,
-              cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
             }}
           />
 
@@ -265,16 +247,13 @@ export default function MainNavigation() {
             component={ReferAndEarnScreen}
             options={{
               headerShown: false,
-              cardStyleInterpolator: CardStyleInterpolators.forHorizontalIOS,
             }}
           />
-          
         </Stack.Navigator>
       </NavigationContainer>
 
       {/* Force Update Gate Modal */}
       <ForceUpdateModal visible={forceUpdateActive} versionInfo={versionInfo} />
-    </SafeAreaProvider>
-  </ErrorBoundary>
+    </ErrorBoundary>
   );
 }

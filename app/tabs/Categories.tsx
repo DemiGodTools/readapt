@@ -32,10 +32,8 @@ import { ICategory, ISubCategory } from "../../types/Category";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import pallete from "../../lib/Colors";
 
-// Enable Hardware Layout Animations for Android
-if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+// LayoutAnimation experimental flag disabled to maintain 60-120 FPS on Android
+
 
 const Shimmer = createShimmerPlaceholder(LinearGradient);
 const CACHE_KEY = "@cached_categories_tree";

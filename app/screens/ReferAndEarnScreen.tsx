@@ -10,11 +10,11 @@ import {
   RefreshControl,
   ActivityIndicator,
   Vibration,
-  Image,
   Dimensions,
   Modal,
   FlatList,
 } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, {
@@ -611,10 +611,10 @@ export default function ReferAndEarnScreen() {
 
           {/* Semi-circular bottom-clipped container for referdap.png */}
           <View style={styles.heroImageFrame}>
-            <Image
+            <ExpoImage
               source={require("../../assets/referdap.png")}
               style={styles.heroImage}
-              resizeMode="contain"
+              contentFit="contain"
             />
             {/* Smooth bottom feathering gradient matching the semi-circular end */}
             <LinearGradient

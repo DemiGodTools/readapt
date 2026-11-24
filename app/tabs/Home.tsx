@@ -50,12 +50,8 @@ import Offline from "../../components/state/Offline";
 import { useStreak, consumePendingStreakCelebration } from "../../hooks/useStreak";
 import StreakCelebrationModal, { preloadStreakCelebrationAssets } from "../../components/props/StreakCelebrationModal";
 
-if (
-  Platform.OS === "android" &&
-  UIManager.setLayoutAnimationEnabledExperimental
-) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+// UIManager.setLayoutAnimationEnabledExperimental disabled to prevent full-tree native layout freeze on Android
+
 
 const { width } = Dimensions.get("window");
 const CARD_GAP = 5;

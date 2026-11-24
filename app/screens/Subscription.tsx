@@ -3,12 +3,12 @@ import {
   View, 
   Text, 
   StyleSheet, 
-  Image, 
   Dimensions, 
   Pressable,
   ScrollView,
   PanResponder
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { 
@@ -157,19 +157,19 @@ const InteractiveHeroImage = ({ onInteractionChange }: { onInteractionChange: (a
     <View style={styles.heroInteractiveContainer} {...panResponder.panHandlers}>
       {/* 2D Static Base Image added behind the 3D Image */}
       <View style={styles.baseImageContainer} pointerEvents="none">
-        <Image 
+        <ExpoImage 
           source={require('../../assets/base.png')} 
           style={styles.baseImage}
-          resizeMode="contain"
+          contentFit="contain"
         />
       </View>
 
       {/* 3D Glowing Book Image */}
       <Animated.View style={[styles.heroCard3D, heroAnimatedStyle]}>
-        <Image 
+        <ExpoImage 
           source={require('../../assets/glowpage.png')} 
           style={styles.heroImage}
-          resizeMode="contain"
+          contentFit="contain"
         />
       </Animated.View>
     </View>
@@ -187,16 +187,16 @@ export default function Subscription() {
         style={StyleSheet.absoluteFillObject}
       />
 
-      <Image 
+      <ExpoImage 
         source={require('../../assets/bottomwave.png')} 
         style={styles.bottomWave}
-        resizeMode="cover"
+        contentFit="cover"
       />
 
-      <Image 
+      <ExpoImage 
         source={require('../../assets/page.png')} 
         style={[styles.logo, { top: Math.max(insets.top, 110) }]}
-        resizeMode="contain"
+        contentFit="contain"
       />
 
       <ScrollView

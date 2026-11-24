@@ -367,4 +367,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default SeriesCard;
+export default React.memo(SeriesCard);
