@@ -28,7 +28,7 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
   size = "medium",
   style,
 }) => {
-  const { streak: hookStreak, isCompletedToday: hookIsCompleted, toggleStreak } = useStreak();
+  const { streak: hookStreak, isCompletedToday: hookIsCompleted } = useStreak();
   const navigation = useNavigation<any>();
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
@@ -67,15 +67,10 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
     if (onPress) {
       onPress();
     } else {
-      // Temporary test toggle: tapping the streak pill toggles active / inactive (0)
-      toggleStreak();
+      try {
+        navigation.navigate("DailyRewards");
+      } catch (_) {}
     }
-  };
-
-  const handleLongPress = () => {
-    try {
-      navigation.navigate("DailyRewards");
-    } catch (_) {}
   };
 
   const dimensions = useMemo(() => {
@@ -89,8 +84,6 @@ export const StreakBadge: React.FC<StreakBadgeProps> = ({
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
       onPress={handlePress}
-      onLongPress={handleLongPress}
-      delayLongPress={400}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={[style]}
     >

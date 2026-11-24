@@ -1973,7 +1973,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
             api
               .get(`/series/${cleanSId}`, { timeout: 8000 })
               .then((sRes) => {
-                if (sRes?.data?.data) setSeriesData(sRes.data.data);
+                if (sRes?.data?.data) {
+                  setSeriesData(sRes.data.data);
+                  (updateTrackMetadata as any)?.({ series: sRes.data.data });
+                }
               })
               .catch(() => {});
           }
@@ -2054,10 +2057,16 @@ const AudioPlayerScreen = ({ route }: Props) => {
         return;
       }
 
+      const rawContent = (book as any)?.content;
       const targetBook: IChapter = {
+        ...(typeof rawContent === "object" ? rawContent : {}),
         ...book,
         _id: targetBookId,
         media: resolvedMedia,
+        title: book.title || rawContent?.title || (book as any).name || "",
+        author: book.author || rawContent?.author || (book as any).creator || (book as any).series?.author || "",
+        cover: book.cover || rawContent?.cover || (book as any).image || (book as any).series?.cover || "",
+        series: book.series || rawContent?.series || seriesData || undefined,
       };
 
       // If already playing this exact track on player, don't restart

@@ -284,55 +284,6 @@ export const updateStreak = async (userId?: string) => {
   }
 };
 
-/**
- * Temporary testing utility: toggles streak between 0 (inactive/degraded) and active (3-day completed)
- */
-export const toggleTestStreak = async (userId?: string) => {
-  const today = getTodayDateKey();
-  const current = normalizeStreakState(globalStreakState);
-  const key = getStreakKey(userId);
-
-  if (current.currentStreak > 0 || current.isCompletedToday) {
-    // Toggle OFF -> Degraded to 0
-    const offState: StreakState = {
-      currentStreak: 0,
-      longestStreak: current.longestStreak,
-      todayReadingSeconds: 0,
-      targetSeconds: DAILY_TARGET_SECONDS,
-      isCompletedToday: false,
-      lastCompletedDate: "",
-      lastActiveDate: today,
-    };
-    globalStreakState = offState;
-    await AsyncStorage.setItem(key, JSON.stringify(offState));
-    await AsyncStorage.removeItem(PENDING_STREAK_KEY);
-    await AsyncStorage.removeItem(LAST_CELEBRATED_DATE_KEY);
-    DeviceEventEmitter.emit("STREAK_STATE_CHANGED", offState);
-    return offState;
-  } else {
-    // Toggle ON -> Completed today (3 days streak)
-    const newStreak = 3;
-    const onState: StreakState = {
-      currentStreak: newStreak,
-      longestStreak: Math.max(current.longestStreak, newStreak),
-      todayReadingSeconds: DAILY_TARGET_SECONDS,
-      targetSeconds: DAILY_TARGET_SECONDS,
-      isCompletedToday: true,
-      lastCompletedDate: today,
-      lastActiveDate: today,
-    };
-    globalStreakState = onState;
-    await AsyncStorage.setItem(key, JSON.stringify(onState));
-    await setPendingStreakCelebration(newStreak);
-    DeviceEventEmitter.emit("STREAK_STATE_CHANGED", onState);
-    DeviceEventEmitter.emit(STREAK_UNLOCKED_EVENT, {
-      currentStreak: newStreak,
-      deferred: false,
-    });
-    return onState;
-  }
-};
-
 export const useStreak = (explicitUserId?: string) => {
   let contextUser: any = null;
   try {
@@ -646,10 +597,6 @@ export const useStreak = (explicitUserId?: string) => {
     setCelebrationVisible(false);
   }, []);
 
-  const toggleStreak = useCallback(async () => {
-    return await toggleTestStreak(activeUserId);
-  }, [activeUserId]);
-
   return {
     streak: state.currentStreak,
     longestStreak: state.longestStreak,
@@ -661,7 +608,6 @@ export const useStreak = (explicitUserId?: string) => {
     recordReadingSeconds,
     celebrationVisible,
     dismissCelebration,
-    toggleStreak,
   };
 };
 

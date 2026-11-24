@@ -10,6 +10,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AudioCacheManager } from "./AudioCacheManager";
 import { IChapter } from "../types/Chapter";
+import { WEB_PORTAL_BASE } from "../lib/api";
 
 let Notifications: any = null;
 try {
@@ -42,6 +43,7 @@ interface HotPlayerEntry {
   subscription?: { remove: () => void };
   durationSec: number;
   lastUsedAt: number;
+  lockScreenMetadataSynced?: boolean;
 }
 
 const MAX_HOT_RAM_PLAYERS = 3;
@@ -119,31 +121,75 @@ interface LockScreenMetadata {
 const buildLockScreenMetadata = (track?: IChapter | null): LockScreenMetadata | null => {
   if (!track) return null;
 
-  const rawSeries = (track as any).series;
+  // Unpack nested track wrappers (e.g. content, book, data, item)
+  const raw: any =
+    (track as any).content && typeof (track as any).content === "object"
+      ? (track as any).content
+      : (track as any).book && typeof (track as any).book === "object"
+      ? (track as any).book
+      : track;
+
+  const rawSeries = (track as any).series || raw.series;
   const seriesObj = rawSeries && typeof rawSeries === "object" ? rawSeries : null;
-  const seriesTitle = seriesObj ? String(seriesObj.title || "").trim() : "";
-  const seriesAuthor = seriesObj ? String(seriesObj.author || "").trim() : "";
+  const seriesTitle = seriesObj ? String(seriesObj.title || seriesObj.name || "").trim() : "";
+  const seriesAuthor = seriesObj ? String(seriesObj.author || seriesObj.creator || "").trim() : "";
 
-  const ownCover = typeof track.cover === "string" ? track.cover.trim() : "";
+  const ownCover =
+    (typeof raw.cover === "string" ? raw.cover : null) ||
+    (typeof (track as any).cover === "string" ? (track as any).cover : null) ||
+    (typeof raw.image === "string" ? raw.image : null) ||
+    (typeof (track as any).image === "string" ? (track as any).image : null) ||
+    (typeof raw.thumbnail === "string" ? raw.thumbnail : null) ||
+    "";
+
   const seriesCover =
-    seriesObj && typeof seriesObj.cover === "string" ? seriesObj.cover.trim() : "";
+    seriesObj && typeof seriesObj.cover === "string"
+      ? seriesObj.cover
+      : seriesObj && typeof seriesObj.image === "string"
+      ? seriesObj.image
+      : "";
 
-  const tocTitle = Array.isArray((track as any).toc)
-    ? String((track as any).toc[0]?.title || "").trim()
+  const tocTitle = Array.isArray(raw.toc || (track as any).toc)
+    ? String((raw.toc || (track as any).toc)[0]?.title || "").trim()
     : "";
 
-  const title = String(track.title || "").trim() || tocTitle || seriesTitle || "Readapt Audio";
-  const artist = String(track.author || "").trim() || seriesAuthor || "Readapt";
+  const candidateTitle =
+    String(raw.title || (track as any).title || raw.name || (track as any).name || raw.chapterTitle || tocTitle || seriesTitle || "").trim();
+  const title = candidateTitle || "Readapt Audio";
+
+  const candidateAuthor =
+    String(raw.author || (track as any).author || raw.creator || (track as any).creator || seriesAuthor || "").trim();
+  const artist = candidateAuthor || (seriesTitle ? seriesTitle : "Readapt");
+
+  const albumTitle = seriesTitle || String(raw.category?.name || raw.category || "Readapt Audio").trim();
 
   const metadata: LockScreenMetadata = {
     title,
     artist,
-    albumTitle: seriesTitle || "Readapt Audio",
+    albumTitle,
   };
 
-  // Only remote artwork is supported by the native now-playing APIs
-  const cover = [ownCover, seriesCover].find((c) => /^https?:\/\//i.test(c));
-  if (cover) metadata.artworkUrl = cover;
+  // Resolve cover artwork to a valid absolute HTTP/HTTPS URL
+  const rawCoverCandidate = [ownCover, seriesCover]
+    .find((c) => Boolean(c && typeof c === "string" && c.trim().length > 0))
+    ?.trim() || "";
+  let resolvedArtworkUrl: string | undefined = undefined;
+
+  if (rawCoverCandidate) {
+    if (/^https?:\/\//i.test(rawCoverCandidate)) {
+      resolvedArtworkUrl = rawCoverCandidate;
+    } else if (rawCoverCandidate.startsWith("//")) {
+      resolvedArtworkUrl = `https:${rawCoverCandidate}`;
+    } else if (rawCoverCandidate.startsWith("/")) {
+      resolvedArtworkUrl = `${WEB_PORTAL_BASE}${rawCoverCandidate}`;
+    } else if (rawCoverCandidate.startsWith("file://")) {
+      resolvedArtworkUrl = rawCoverCandidate;
+    }
+  }
+
+  if (resolvedArtworkUrl) {
+    metadata.artworkUrl = resolvedArtworkUrl;
+  }
 
   return metadata;
 };
@@ -173,16 +219,29 @@ const syncLockScreenControls = (
       lockScreenOwnerPlayer = player;
     }
   } catch (_) {}
+  try {
+    if (typeof (player as any).updateLockScreenMetadata === "function") {
+      (player as any).updateLockScreenMetadata(metadata);
+    }
+  } catch (_) {}
 };
 
 const refreshLockScreenMetadata = (track?: IChapter | null) => {
   const owner = lockScreenOwnerPlayer || globalPlayer;
   if (!track || !owner) return;
-  if (lockScreenTrackId !== getTrackId(track)) return;
+  const targetId = getTrackId(track);
+  if (lockScreenTrackId && lockScreenTrackId !== targetId) return;
 
   const metadata = buildLockScreenMetadata(track);
   if (!metadata) return;
 
+  try {
+    if (typeof (owner as any).setActiveForLockScreen === "function") {
+      (owner as any).setActiveForLockScreen(true, metadata, LOCK_SCREEN_OPTIONS);
+      lockScreenTrackId = targetId;
+      lockScreenOwnerPlayer = owner;
+    }
+  } catch (_) {}
   try {
     if (typeof (owner as any).updateLockScreenMetadata === "function") {
       (owner as any).updateLockScreenMetadata(metadata);
@@ -351,7 +410,10 @@ const attachStatusListener = (entry: HotPlayerEntry) => {
 
     // Keep the system media session attached to the active player/track so the
     // notification center + lock screen controls stay available while playing.
-    if (isLoadedBool) syncLockScreenControls(entry.player, globalCurrentTrack);
+    if (isLoadedBool && !entry.lockScreenMetadataSynced) {
+      entry.lockScreenMetadataSynced = true;
+      syncLockScreenControls(entry.player, globalCurrentTrack, true);
+    }
 
     // Once native playback actually started, stop treating our play() request as fresh.
     if (isLoadedBool && nativePlaying && now < playIntentLockUntil) {

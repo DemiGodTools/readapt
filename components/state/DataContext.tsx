@@ -49,6 +49,7 @@ type AudioContextType = {
   setVolume: (vol: number) => number;
   preloadTrack: (track: any) => void;
   removeAllTracks: () => void;
+  updateTrackMetadata?: (track: any) => void;
 };
 
 export const AudioContext = createContext<AudioContextType | null>(null);
