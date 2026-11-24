@@ -161,6 +161,8 @@ export function handleNotificationTap(response: Notifications.NotificationRespon
       nav.navigate("AllSeries");
     } else if (target === "Profile") {
       nav.navigate("Tabs");
+    } else if (target === "AudioRdr" && data.bookId) {
+      nav.navigate("AudioRdr", { bookId: data.bookId });
     } else if (data.seriesId) {
       nav.navigate("SeriesOverview", { seriesId: data.seriesId });
     } else if (data.bookId) {
