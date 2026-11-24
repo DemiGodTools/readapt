@@ -228,7 +228,7 @@ const Login = ({ navigation }: Props) => {
   useEffect(() => {
     GoogleSignin.configure({
       webClientId:
-        "743066184878-es8jqus96o8ip2qlrmd7md7n5o5j8ndv.apps.googleusercontent.com",
+        "1001972321456-g4vaean9s9k5401fnhqaum1erft9q2vh.apps.googleusercontent.com",
       offlineAccess: true,
     });
   }, []);
