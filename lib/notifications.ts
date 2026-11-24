@@ -32,6 +32,15 @@ export async function registerForPushNotificationsAsync(): Promise<string | null
         lightColor: "#00D2B4",
         sound: "default",
       });
+
+      await Notifications.setNotificationChannelAsync("sticky_alerts", {
+        name: "Urgent & Ongoing Alerts",
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: "#FF5252",
+        sound: "default",
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      });
     }
 
     // 2. Permission check
