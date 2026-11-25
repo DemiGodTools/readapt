@@ -2,7 +2,10 @@
   "expo": {
     "name": "Readapt",
     "slug": "waves",
-    "scheme": ["readapt", "waves"],
+    "scheme": [
+      "readapt",
+      "waves"
+    ],
     "newArchEnabled": true,
     "version": "1.0.0",
     "orientation": "portrait",
@@ -63,7 +66,10 @@
         {
           "enableBackgroundPlayback": true
         }
-      ]
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/analytics",
+      "@react-native-firebase/crashlytics"
     ],
     "extra": {
       "eas": {

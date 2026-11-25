@@ -1,4 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from "react";
+import { recordCrashlyticsError } from "../../lib/analytics";
 import {
   View,
   Text,
@@ -36,6 +37,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     this.setState({ errorInfo });
+    recordCrashlyticsError(error, errorInfo?.componentStack || "ErrorBoundary");
     if (__DEV__) {
       console.error("ErrorBoundary caught an unhandled exception:", error, errorInfo);
     }

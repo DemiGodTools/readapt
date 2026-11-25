@@ -1,6 +1,6 @@
 import { createNavigationContainerRef, NavigationContainer, DarkTheme } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import useAuth from "../../hooks/useAuth";
 import BotttomNav from "./BotttomNav";
 import Login from "../../app/screens/Login";
@@ -31,6 +31,7 @@ import { checkAppVersion, VersionInfo } from "../../lib/versionCheck";
 import ForceUpdateModal from "../props/ForceUpdateModal";
 import { registerForPushNotificationsAsync, setupNotificationListeners } from "../../lib/notifications";
 import { ErrorBoundary } from "../props/ErrorBoundary";
+import { setAnalyticsUser, trackScreenView } from "../../lib/analytics";
 
 export type RootStackParamList = {
   Tabs: undefined;
@@ -75,8 +76,13 @@ const navTheme = {
 export default function MainNavigation() {
   const { isLoggedIn, isLoading } = useAuth();
   const { user } = useUser();
+  const routeNameRef = useRef<string | undefined>(undefined);
   const [initialPage, setInitialPage] =
     useState<keyof RootStackParamList>("Splash");
+
+  useEffect(() => {
+    setAnalyticsUser(user || null);
+  }, [user?._id, user?.subscription?.plan, user?.profileLevel]);
 
   useEffect(() => {
     if (!isLoading) {
@@ -116,7 +122,24 @@ export default function MainNavigation() {
 
   return (
     <ErrorBoundary>
-      <NavigationContainer ref={navigationRef} theme={navTheme}>
+      <NavigationContainer
+        ref={navigationRef}
+        theme={navTheme}
+        onReady={() => {
+          const currentRoute = (navigationRef.getCurrentRoute() as any)?.name;
+          routeNameRef.current = currentRoute;
+          if (currentRoute) {
+            trackScreenView(currentRoute);
+          }
+        }}
+        onStateChange={() => {
+          const currentRoute = (navigationRef.getCurrentRoute() as any)?.name;
+          if (currentRoute && routeNameRef.current !== currentRoute) {
+            routeNameRef.current = currentRoute;
+            trackScreenView(currentRoute);
+          }
+        }}
+      >
         <Stack.Navigator
           initialRouteName={initialPage}
           screenOptions={({ navigation }: any) => ({
