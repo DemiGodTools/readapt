@@ -10,6 +10,7 @@ import {
 } from "react";
 import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import { IUser } from "../../types/User";
 import { notifyAuthChange } from "../../hooks/useAuth";
 import { api, setApiUserEmail, setApiAccessToken } from "../../lib/api";
@@ -261,6 +262,10 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
           })
         ).catch(() => {});
       }
+    } catch {}
+
+    try {
+      await GoogleSignin.signOut().catch(() => {});
     } catch {}
 
     try {

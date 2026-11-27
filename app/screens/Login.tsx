@@ -146,6 +146,7 @@ const Login = ({ navigation }: Props) => {
   } | null>(null);
 
   const isLoadingUi = activeAuthMode !== null;
+  const isHandlingLoginRef = useRef(false);
 
   const checkPendingDeletion = useCallback(async () => {
     try {
@@ -235,10 +236,10 @@ const Login = ({ navigation }: Props) => {
   }, []);
 
   useEffect(() => {
-    if (isLoggedIn) {
+    if (!isLoading && isLoggedIn && !isHandlingLoginRef.current) {
       navigation.replace("Tabs");
     }
-  }, [isLoading, isLoggedIn]);
+  }, [isLoading, isLoggedIn, navigation]);
 
   const handleGoogleSignIn = async (useAnotherAccount = false) => {
     if (isLoadingUi) return;
@@ -309,6 +310,7 @@ const Login = ({ navigation }: Props) => {
       showToast({ title: "No internet connection. Please check your network." });
       return;
     }
+    isHandlingLoginRef.current = true;
     try {
       const { data } = await api.post(BACKEND_LOGIN_URL, {
         provider: "google",
@@ -366,12 +368,13 @@ const Login = ({ navigation }: Props) => {
 
       if (data?.isNewUser) {
         navigation.replace("ReferralCodeScreen");
-      } else if (data?.user?.isProfileCompleted === false) {
+      } else if (data?.user?.isProfileCompleted === false && !data?.user?.profession?.trim()) {
         navigation.replace("ProfileCreation");
       } else {
         navigation.replace("Tabs");
       }
     } catch (err: any) {
+      isHandlingLoginRef.current = false;
       const errorMsg =
         err.response?.data?.message ||
         (err.message === "Network Error"
