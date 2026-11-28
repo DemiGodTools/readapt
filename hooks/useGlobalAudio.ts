@@ -642,10 +642,14 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     applyRateToPlayer(player, globalPlaybackRate);
     applyVolumeToPlayer(player, globalVolume);
 
+    const initialDurationSec = parseAnyDurationToSec(
+      (track as any)?.duration || (track as any)?.audioDuration
+    );
+
     const newEntry: HotPlayerEntry = {
       trackId, mediaUrl: remoteUrl, resolvedUri: playbackUri,
       protocol: isCached ? "local" : protocol,
-      player, durationSec: 0, lastUsedAt: Date.now(),
+      player, durationSec: initialDurationSec, lastUsedAt: Date.now(),
     };
 
     attachStatusListener(newEntry);
@@ -658,14 +662,24 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     // Hand the track to the OS so the system notification / lock screen controls appear
     syncLockScreenControls(player, track, true);
     
+    // Delay background full-file caching by 6s so ExoPlayer's initial buffering & seeking
+    // get 100% of the network bandwidth without competing against a parallel download.
     if (!isCached && protocol === "range-chunk") {
-      AudioCacheManager.cacheTrackInBackground(trackId, remoteUrl)
-        .then(() => {
-          if (globalCurrentTrack && getTrackId(globalCurrentTrack) === trackId) {
-            updateGlobalStatus({ isCached: true }, true);
-          }
-        })
-        .catch(() => {});
+      setTimeout(() => {
+        if (
+          loadToken === currentLoadToken &&
+          globalCurrentTrack &&
+          getTrackId(globalCurrentTrack) === trackId
+        ) {
+          AudioCacheManager.cacheTrackInBackground(trackId, remoteUrl)
+            .then(() => {
+              if (globalCurrentTrack && getTrackId(globalCurrentTrack) === trackId) {
+                updateGlobalStatus({ isCached: true }, true);
+              }
+            })
+            .catch(() => {});
+        }
+      }, 6000);
     }
   } catch (err: any) {
     globalPlayIntent = false;
