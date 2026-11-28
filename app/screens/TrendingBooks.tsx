@@ -21,6 +21,7 @@ import pallete from '../../lib/Colors';
 import { api } from '../../lib/api';
 import useAuth from '../../hooks/useAuth';
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { safeNavigate } from '../../lib/safeNav';
 
 const { width } = Dimensions.get('window');
 const TAB_CONTAINER_WIDTH = width - 40; 
@@ -434,11 +435,11 @@ export default function TrendingBooks() {
   }, [fetchTrendingData]);
 
   const handleBookPress = useCallback((bookId: string) => {
-    (navigation as any).navigate("ReadBook", { bookId });
+    safeNavigate(navigation, "ReadBook", { bookId });
   }, [navigation]);
 
   const handleSeriesPress = useCallback((seriesId: string) => {
-    (navigation as any).navigate("SeriesOverview", { seriesId });
+    safeNavigate(navigation, "SeriesOverview", { seriesId });
   }, [navigation]);
 
   const renderBookItem = useCallback(({ item, index }: { item: any; index: number }) => (

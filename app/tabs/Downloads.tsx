@@ -25,6 +25,7 @@ import UpgradeSheet from "../../components/props/UpgradeSheet";
 import { useNavigation } from "@react-navigation/native";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { safeNavigate } from "../../lib/safeNav";
 
 const ACCENT = "#01796F";
 
@@ -224,13 +225,13 @@ export default function Downloads() {
 
     if (String(item.type || "").toLowerCase().includes("audio")) {
       const seekSec = typeof readTill?.readtill === "number" ? readTill.readtill : parseFloat(String(readTill?.readtill || "0")) || 0;
-      (navigation as any).navigate("AudioRdr", {
+      safeNavigate(navigation, "AudioRdr", {
         bookId: item._id,
         seekTime: seekSec,
         initialBookData,
       });
     } else {
-      (navigation as any).navigate("ReadBook", {
+      safeNavigate(navigation, "ReadBook", {
         bookId: item._id,
         page: targetPage,
         initialPage: targetPage,

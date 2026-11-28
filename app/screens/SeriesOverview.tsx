@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import CachedImage, { isRenderableUrl } from "../../components/props/CachedImage";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
+import { safeNavigate } from "../../lib/safeNav";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import {
@@ -962,13 +963,13 @@ export default function SeriesOverview() {
     const mediaType = targetChapter.type ?? "pdf";
 
     if (mediaType === "pdf") {
-      navigation.navigate("ReadBook", {
+      safeNavigate(navigation, "ReadBook", {
         bookId: targetId,
         initialBookData: targetChapter,
         showQnaRequirementToast: true,
       } as any);
     } else {
-      navigation.navigate("AudioRdr", {
+      safeNavigate(navigation, "AudioRdr", {
         bookId: targetId,
         initialBookData: targetChapter,
         showQnaRequirementToast: true,

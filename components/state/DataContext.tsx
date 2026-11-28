@@ -80,6 +80,8 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasHydratedCacheRef = useRef(false);
   const { isConnected } = useNetworkStatus();
+  const isConnectedRef = useRef(isConnected);
+  isConnectedRef.current = isConnected;
   const wasConnectedRef = useRef(isConnected);
 
   // Static actions reference — prevents audio state updates from re-rendering the entire app!
@@ -174,6 +176,12 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
         setToken(activeToken);
         setApiAccessToken(activeToken);
+
+        // Flush any queued offline reading progress BEFORE fetching /get-self
+        // so server reflects offline progress before hydrating local caches.
+        if (isConnectedRef.current) {
+          await flushOfflineProgressQueue();
+        }
 
         const { data } = await api.get(`/get-self`, {
           headers: { Authorization: `Bearer ${activeToken}` },
@@ -309,8 +317,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
     const wasConnected = wasConnectedRef.current;
     wasConnectedRef.current = isConnected;
     if (isConnected && !wasConnected) {
-      void flushOfflineProgressQueue();
-      getUser();
+      void flushOfflineProgressQueue().then(() => getUser());
     }
   }, [isConnected, getUser]);
 

@@ -95,6 +95,7 @@ import PopButton from "../../components/props/PopButton";
 import { useToast } from "../../hooks/useToast";
 import { useUser } from "../../hooks/useUser";
 import { LikeManager } from "../../lib/likeManager";
+import { safeNavigate } from "../../lib/safeNav";
 import CommentsDrawer from "../../components/props/Comments";
 import { SubscriptionPlan } from "../../enums";
 import { useDownloads } from "../../hooks/useDownloads";
@@ -1485,7 +1486,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
           content: updatedBookContent,
           readtill: String(targetPage),
           total: String(resolvedTotal),
-          readAt: new Date().toString(),
+          readAt: new Date().toISOString(),
         });
         await saveRecentReads(user?._id || user?.userId, filtered);
       } catch (error) {}
@@ -2650,14 +2651,70 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       return;
     }
 
-    const prevLiked = isLiked;
-    const nextLiked = !prevLiked;
-    const prevLikes = Number(book.likes) || 0;
-    const optimisticLikes = Math.max(0, prevLikes + (nextLiked ? 1 : -1));
+    const fallbackCount = Number(book.likes) || 0;
+    const { nextLiked, nextCount: optimisticLikes } =
+      LikeManager.applyOptimisticTap(
+        activeChapterId,
+        isLiked,
+        fallbackCount,
+        async (desiredLiked) => {
+          const res = await api.post("/chapter/like", {
+            chapterId: activeChapterId,
+            desiredLiked,
+          });
+          if (res?.data?.success) {
+            return {
+              liked: Boolean(res.data.liked),
+              likes:
+                typeof res.data.likes === "number"
+                  ? res.data.likes
+                  : Math.max(0, fallbackCount + (Boolean(res.data.liked) === isLiked ? 0 : res.data.liked ? 1 : -1)),
+            };
+          }
+          return null;
+        },
+        async (result) => {
+          setIsLiked(result.liked);
+          setBook((prev) =>
+            prev ? { ...prev, likes: result.likes, isLiked: result.liked } : prev
+          );
+
+          if (user) {
+            const currentLikes = Array.isArray(user.likes) ? [...user.likes] : [];
+            const filtered = currentLikes.filter((l: any) => {
+              const id = typeof l === "string" ? l : String(l?._id || l?.$oid || "");
+              return id !== activeChapterId;
+            });
+            const updatedLikes = result.liked ? [...filtered, activeChapterId] : filtered;
+            updateUser({ likes: updatedLikes as any });
+          }
+
+          await AsyncStorage.setItem(
+            `liked_${activeChapterId}`,
+            String(result.liked)
+          ).catch(() => {});
+
+          if (result.success) {
+            try {
+              const cached = await AsyncStorage.getItem(`cached_ch_${activeChapterId}`);
+              if (cached) {
+                const parsed = JSON.parse(cached);
+                parsed.likes = result.likes;
+                parsed.isLiked = result.liked;
+                await AsyncStorage.setItem(
+                  `cached_ch_${activeChapterId}`,
+                  JSON.stringify(parsed)
+                );
+              }
+            } catch {}
+          } else {
+            showToast({ title: "Could not update like. Please try again." });
+          }
+        }
+      );
 
     setIsLiked(nextLiked);
     setBook((prev) => (prev ? { ...prev, likes: optimisticLikes, isLiked: nextLiked } : prev));
-    LikeManager.set(activeChapterId, nextLiked, optimisticLikes);
 
     if (user) {
       const currentLikes = Array.isArray(user.likes) ? [...user.likes] : [];
@@ -2688,59 +2745,6 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       heartScale.setValue(1);
       particleAnim.setValue(0);
     });
-
-    LikeManager.scheduleCoalescedSync(
-      activeChapterId,
-      prevLiked,
-      nextLiked,
-      async () => {
-        const res = await api.post("/chapter/like", { chapterId: activeChapterId });
-        if (res?.data?.success) {
-          return {
-            liked: Boolean(res.data.liked),
-            likes: typeof res.data.likes === "number" ? res.data.likes : optimisticLikes,
-          };
-        }
-        return null;
-      },
-      async (result) => {
-        if (result.success) {
-          const confirmedLiked = result.liked;
-          const confirmedLikes = result.likes ?? optimisticLikes;
-
-          setIsLiked(confirmedLiked);
-          setBook((prev) => (prev ? { ...prev, likes: confirmedLikes, isLiked: confirmedLiked } : prev));
-          LikeManager.set(activeChapterId, confirmedLiked, confirmedLikes);
-
-          await AsyncStorage.setItem(
-            `liked_${activeChapterId}`,
-            String(confirmedLiked)
-          ).catch(() => {});
-
-          try {
-            const cached = await AsyncStorage.getItem(`cached_ch_${activeChapterId}`);
-            if (cached) {
-              const parsed = JSON.parse(cached);
-              parsed.likes = confirmedLikes;
-              parsed.isLiked = confirmedLiked;
-              await AsyncStorage.setItem(
-                `cached_ch_${activeChapterId}`,
-                JSON.stringify(parsed)
-              );
-            }
-          } catch {}
-        } else {
-          setIsLiked(result.liked);
-          setBook((prev) => (prev ? { ...prev, likes: prevLikes, isLiked: result.liked } : prev));
-          LikeManager.set(activeChapterId, result.liked, prevLikes);
-          await AsyncStorage.setItem(
-            `liked_${activeChapterId}`,
-            String(result.liked)
-          ).catch(() => {});
-          showToast({ title: "Could not update like. Please try again." });
-        }
-      }
-    );
   };
 
   const share = async () => {
@@ -2905,13 +2909,13 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
     const mediaType = nextData?.type || "pdf";
     if (mediaType === "audio") {
-      navigation.navigate("AudioRdr", {
+      safeNavigate(navigation, "AudioRdr", {
         bookId: nextId,
         initialBookData: nextData,
         isFramework: true,
         seriesType: "framework",
         seriesId: seriesData?._id || (route?.params as any)?.seriesId,
-      } as any);
+      }, { replaceIfInReader: true });
     } else {
       navigation.replace("ReadBook", {
         bookId: nextId,
@@ -3423,15 +3427,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                         void executeSaveProgress();
                         const isAudio = nextBook?.type === "audio";
                         if (isAudio) {
-                          navigation.navigate("AudioRdr", {
+                          safeNavigate(navigation, "AudioRdr", {
                             bookId: String(nextId),
                             initialBookData: nextBook,
-                          });
+                          }, { replaceIfInReader: true });
                         } else {
-                          navigation.push("ReadBook", {
+                          safeNavigate(navigation, "ReadBook", {
                             bookId: String(nextId),
                             initialBookData: nextBook,
-                          });
+                          }, { replaceIfInReader: true });
                         }
                       }}
                       viewer="pdf"
@@ -3469,15 +3473,15 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                         void executeSaveProgress();
                         const isAudio = relBook?.type === "audio";
                         if (isAudio) {
-                          navigation.navigate("AudioRdr", {
+                          safeNavigate(navigation, "AudioRdr", {
                             bookId: String(relBook._id),
                             initialBookData: relBook,
-                          });
+                          }, { replaceIfInReader: true });
                         } else {
-                          navigation.push("ReadBook", {
+                          safeNavigate(navigation, "ReadBook", {
                             bookId: String(relBook._id),
                             initialBookData: relBook,
-                          });
+                          }, { replaceIfInReader: true });
                         }
                       }}
                     >

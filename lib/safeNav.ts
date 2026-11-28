@@ -1,27 +1,58 @@
+import { navigationRef } from "../components/nav/MainNavigation";
+
 /**
- * Cooldown-guarded navigation helper that prevents rage-tapping from pushing
- * duplicate stacked heavy screens (e.g., ReadBook, AudioRdr, SeriesOverview).
+ * Cooldown & stack-guarded navigation helper that prevents rapid/double taps from
+ * opening multiple book/series readers stacked on top of each other.
  */
+const READER_SCREENS = new Set(["ReadBook", "AudioRdr"]);
+
 let lastNavTime = 0;
-let lastNavSignature = "";
+
+export interface SafeNavOptions {
+  cooldownMs?: number;
+  /** Pass true only when deliberately switching books from inside ReadBook / AudioRdr. */
+  replaceIfInReader?: boolean;
+}
 
 export function safeNavigate(
   navigation: any,
   screen: string,
   params?: Record<string, any>,
-  cooldownMs: number = 500
+  options: number | SafeNavOptions = 850
 ): boolean {
   if (!navigation?.navigate || !screen) return false;
+  const opts: SafeNavOptions =
+    typeof options === "number" ? { cooldownMs: options } : options;
+  const cooldownMs = opts.cooldownMs ?? 850;
   const now = Date.now();
-  const targetId = params?.bookId || params?.seriesId || params?.subCategoryId || "";
-  const sig = `${screen}:${targetId}`;
 
-  if (now - lastNavTime < cooldownMs && (sig === lastNavSignature || now - lastNavTime < 280)) {
+  const currentRouteName = navigationRef?.isReady?.()
+    ? (navigationRef.getCurrentRoute() as any)?.name
+    : undefined;
+
+  if (currentRouteName && READER_SCREENS.has(currentRouteName)) {
+    if (opts.replaceIfInReader) {
+      if (now - lastNavTime < cooldownMs) return false;
+      lastNavTime = now;
+      if (typeof navigation.replace === "function") {
+        navigation.replace(screen as never, params as never);
+      } else {
+        navigation.navigate(screen as never, params as never);
+      }
+      return true;
+    }
+    // User already opened a reader; ignore any late tap from the underlying listing screen
+    if (READER_SCREENS.has(screen)) {
+      return false;
+    }
+  }
+
+  // Strict transition lock across ALL cards/routes so fast taps on different books only open the first one
+  if (now - lastNavTime < cooldownMs) {
     return false;
   }
 
   lastNavTime = now;
-  lastNavSignature = sig;
   navigation.navigate(screen as never, params as never);
   return true;
 }

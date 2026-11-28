@@ -71,11 +71,17 @@ export const configureApiInterceptor = (
   showToast = toastFn;
 };
 
+export const getIsNetworkConnected = () => isConnected;
+
 api.interceptors.request.use(async (config) => {
   const method = config.method?.toLowerCase();
 
   if (!isConnected && method !== "get") {
-    if (showToast) {
+    const isSilentOffline = Boolean(
+      (config.headers as any)?.["x-silent-offline"] ||
+      (config.headers?.get && config.headers.get("x-silent-offline"))
+    );
+    if (showToast && !isSilentOffline) {
       showToast("You are offline. Action cannot be completed.");
     }
     return Promise.reject(new axios.Cancel("Offline request blocked."));

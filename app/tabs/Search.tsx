@@ -29,6 +29,7 @@ import { canUserAccessChapter } from "../../lib/entitlements";
 import { RootStackParamList } from "../../components/nav/MainNavigation";
 import SeriesCard from "../../components/props/SeriesCard";
 import { ISeries } from "../../types/Series";
+import { safeNavigate } from "../../lib/safeNav";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -645,12 +646,12 @@ export default function Search() {
 
     const mediaType = book?.type ?? "pdf";
     if (mediaType === "pdf") {
-      navigation.navigate("ReadBook", {
+      safeNavigate(navigation, "ReadBook", {
         bookId: String(targetId),
         initialBookData: book,
       } as any);
     } else {
-      navigation.navigate("AudioRdr", {
+      safeNavigate(navigation, "AudioRdr", {
         bookId: String(targetId),
         initialBookData: book,
       } as any);
@@ -662,7 +663,7 @@ export default function Search() {
     try {
       Vibration.vibrate(6);
     } catch {}
-    navigation.navigate("TrendingBooks");
+    safeNavigate(navigation, "TrendingBooks");
   };
 
   // Filtered Suggested searches for Typing state
