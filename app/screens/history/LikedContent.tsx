@@ -85,10 +85,30 @@ const LikedContent = ({ route, navigation }: Props) => {
     }, [reload])
   );
 
-  // 2. Real-time update when like event fires anywhere across the app
+  // 2. Real-time local update when like event fires anywhere across the app (no /get-self reload storm)
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener("like-updated", () => {
-      reload().catch(() => {});
+    const sub = DeviceEventEmitter.addListener("like-updated", (event: any) => {
+      const evId = String(event?.chapterId || "");
+      if (!evId) return;
+      if (event?.liked === false) {
+        setResolvedLikes((prev) => prev.filter((it) => String(it?._id || it?.id) !== evId));
+      } else if (event?.liked === true) {
+        setResolvedLikes((prev) => {
+          const exists = prev.some((it) => String(it?._id || it?.id) === evId);
+          if (!exists) {
+            void reload().catch(() => {});
+            return prev;
+          }
+          if (typeof event?.count === "number") {
+            return prev.map((it) =>
+              String(it?._id || it?.id) === evId
+                ? { ...it, likes: event.count, isLiked: true }
+                : it
+            );
+          }
+          return prev;
+        });
+      }
     });
     return () => sub.remove();
   }, [reload]);
@@ -154,43 +174,59 @@ const LikedContent = ({ route, navigation }: Props) => {
         }
       }
 
-      // If any string IDs were not in feed cache, check local per-chapter storage first
+      // If any string IDs were not in feed cache, check local per-chapter storage via batched multiGet
       if (missingIds.length > 0) {
         const remainingToFetch: string[] = [];
 
-        for (const id of missingIds) {
-          try {
-            const chRaw = await AsyncStorage.getItem(`cached_ch_${id}`);
+        try {
+          const pairs = await AsyncStorage.multiGet(
+            missingIds.map((id) => `cached_ch_${id}`)
+          );
+          pairs.forEach(([, chRaw], idx) => {
+            const id = missingIds[idx];
             if (chRaw) {
-              const parsed = JSON.parse(chRaw);
-              const lmEntry = LikeManager.get(id);
-              const dataCount = Array.isArray(parsed.likes)
-                ? parsed.likes.length
-                : typeof parsed.likes === "number"
-                ? parsed.likes
-                : 0;
-              const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
-              LikeManager.set(id, true, realCount, false);
+              try {
+                const parsed = JSON.parse(chRaw);
+                const lmEntry = LikeManager.get(id);
+                const dataCount = Array.isArray(parsed.likes)
+                  ? parsed.likes.length
+                  : typeof parsed.likes === "number"
+                  ? parsed.likes
+                  : 0;
+                const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
+                LikeManager.set(id, true, realCount, false);
 
-              resolvedList.push({
-                ...parsed,
-                _id: id,
-                likes: realCount,
-                isLiked: true,
-              });
-              continue;
+                resolvedList.push({
+                  ...parsed,
+                  _id: id,
+                  likes: realCount,
+                  isLiked: true,
+                });
+                return;
+              } catch (_) {}
             }
-          } catch (_) {}
-          remainingToFetch.push(id);
+            remainingToFetch.push(id);
+          });
+        } catch {
+          remainingToFetch.push(...missingIds);
         }
 
-        // Only fetch truly unknown chapters from API if device is online
+        // Batch fetch unknown chapters in a single request instead of N+1 individual GETs
         if (remainingToFetch.length > 0 && isConnected) {
-          const fetchPromises = remainingToFetch.map(async (id) => {
-            try {
-              const res = await api.get(`/chapter/${id}`, { timeout: 6000 });
-              const ch = res?.data?.data || res?.data?.chapter || res?.data;
-              if (ch && (ch.title || ch._id)) {
+          let batchResolved = false;
+          try {
+            const batchRes = await api.post(
+              "/chapter/by-IDs",
+              { ids: remainingToFetch, mode: "card" },
+              { timeout: 10000 }
+            );
+            const batchChapters = batchRes?.data?.chapters || batchRes?.data?.data;
+            if (Array.isArray(batchChapters)) {
+              batchResolved = true;
+              const cachePairs: [string, string][] = [];
+              batchChapters.forEach((ch: any) => {
+                const id = String(ch?._id || ch?.id || "");
+                if (!id) return;
                 const lmEntry = LikeManager.get(id);
                 const dataCount = Array.isArray(ch.likes)
                   ? ch.likes.length
@@ -199,25 +235,53 @@ const LikedContent = ({ route, navigation }: Props) => {
                   : 0;
                 const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
                 LikeManager.set(id, true, realCount, false);
-
-                // Cache so subsequent visits are instant and never hit DB
-                await AsyncStorage.setItem(`cached_ch_${id}`, JSON.stringify(ch)).catch(() => {});
-
-                return {
+                cachePairs.push([`cached_ch_${id}`, JSON.stringify(ch)]);
+                resolvedList.push({
                   ...ch,
                   _id: id,
                   likes: realCount,
                   isLiked: true,
-                };
+                });
+              });
+              if (cachePairs.length > 0) {
+                await AsyncStorage.multiSet(cachePairs).catch(() => {});
               }
-            } catch (_) {}
-            return null;
-          });
+            }
+          } catch (_) {}
 
-          const fetchedResults = await Promise.all(fetchPromises);
-          fetchedResults.forEach((ch) => {
-            if (ch) resolvedList.push(ch);
-          });
+          if (!batchResolved) {
+            const fetchPromises = remainingToFetch.map(async (id) => {
+              try {
+                const res = await api.get(`/chapter/${id}`, { timeout: 6000 });
+                const ch = res?.data?.data || res?.data?.chapter || res?.data;
+                if (ch && (ch.title || ch._id)) {
+                  const lmEntry = LikeManager.get(id);
+                  const dataCount = Array.isArray(ch.likes)
+                    ? ch.likes.length
+                    : typeof ch.likes === "number"
+                    ? ch.likes
+                    : 0;
+                  const realCount = Math.max(1, lmEntry?.count || 0, dataCount);
+                  LikeManager.set(id, true, realCount, false);
+
+                  await AsyncStorage.setItem(`cached_ch_${id}`, JSON.stringify(ch)).catch(() => {});
+
+                  return {
+                    ...ch,
+                    _id: id,
+                    likes: realCount,
+                    isLiked: true,
+                  };
+                }
+              } catch (_) {}
+              return null;
+            });
+
+            const fetchedResults = await Promise.all(fetchPromises);
+            fetchedResults.forEach((ch) => {
+              if (ch) resolvedList.push(ch);
+            });
+          }
         }
       }
 

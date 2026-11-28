@@ -61,6 +61,30 @@ const commentsMemoryCache = new Map<string, Comment[]>();
 const commentsCacheKey = (chapterId: string, isQuestion: boolean) =>
   `${isQuestion ? "qna" : "chapter"}:${chapterId}`;
 
+const stripTempComments = (list: Comment[]): Comment[] =>
+  list.filter(
+    (c) =>
+      c &&
+      c._id &&
+      typeof c.text === "string" &&
+      !c.isPosting &&
+      !String(c._id).startsWith("posting_")
+  );
+
+const persistCommentsCache = (
+  cacheKey: string,
+  list: Comment[],
+  onCommentsUpdated?: (comments: Comment[]) => void
+) => {
+  const clean = stripTempComments(list);
+  commentsMemoryCache.set(cacheKey, clean);
+  AsyncStorage.setItem(
+    `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
+    JSON.stringify(clean)
+  ).catch(() => {});
+  onCommentsUpdated?.(clean);
+};
+
 const CommentSkeleton = () => (
   <View style={styles.skeletonList}>
     {Array.from({ length: 4 }).map((_, index) => (
@@ -162,10 +186,28 @@ const CommentsDrawer = ({
   const [loading, setLoading] = useState(false);
   const [cachedUserAvatar, setCachedUserAvatar] = useState<string>("");
 
-  // Posting & blinking animation states
+  // Posting, pagination & blinking animation states
   const [isPosting, setIsPosting] = useState(false);
   const [postingCommentId, setPostingCommentId] = useState<string | null>(null);
   const [blinkingCommentId, setBlinkingCommentId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const mountedRef = useRef(true);
+  const isPostingRef = useRef(false);
+  const deletingIdsRef = useRef<Set<string>>(new Set());
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  const initialCommentsRef = useRef(initialComments);
+  initialCommentsRef.current = initialComments;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      fetchAbortRef.current?.abort();
+    };
+  }, []);
 
   // Active floating delete menu state
   const [activeMenu, setActiveMenu] = useState<{
@@ -259,14 +301,14 @@ const CommentsDrawer = ({
     if (!visible) return;
 
     const cacheKey = commentsCacheKey(chapterId, isQuestion);
+    const fallbackInit = initialCommentsRef.current;
     if (commentsMemoryCache.has(cacheKey)) {
-      const memory = commentsMemoryCache.get(cacheKey) || [];
+      const memory = stripTempComments(commentsMemoryCache.get(cacheKey) || []);
+      commentsMemoryCache.set(cacheKey, memory);
       setComments(memory);
       setLoading(false);
-    } else if (Array.isArray(initialComments) && initialComments.length > 0) {
-      const valid = initialComments.filter(
-        (c: any) => c && c._id && typeof c.text === "string"
-      );
+    } else if (Array.isArray(fallbackInit) && fallbackInit.length > 0) {
+      const valid = stripTempComments(fallbackInit);
       if (valid.length > 0) {
         setComments(valid);
         commentsMemoryCache.set(cacheKey, valid);
@@ -278,6 +320,7 @@ const CommentsDrawer = ({
       setLoading(true);
       AsyncStorage.getItem(`${COMMENTS_STORAGE_PREFIX}${cacheKey}`)
         .then((raw) => {
+          if (!mountedRef.current) return;
           if (!raw) {
             setLoading(false);
             return;
@@ -287,18 +330,16 @@ const CommentsDrawer = ({
             setLoading(false);
             return;
           }
-          const valid = parsed.filter(
-            (c: any) => c && c._id && typeof c.text === "string"
-          );
+          const valid = stripTempComments(parsed);
           commentsMemoryCache.set(cacheKey, valid);
           setComments(valid);
           setLoading(false);
         })
         .catch(() => {
-          setLoading(false);
+          if (mountedRef.current) setLoading(false);
         });
     }
-  }, [visible, chapterId, isQuestion, initialComments]);
+  }, [visible, chapterId, isQuestion]);
 
   useEffect(() => {
     if (visible) {
@@ -307,15 +348,18 @@ const CommentsDrawer = ({
         damping: 48,
         stiffness: 220,
       });
-      // ⚡ Always fetch fresh comments from the server on open
-      fetchComments();
+      setPage(1);
+      setHasMore(false);
+      // ⚡ Always fetch fresh paginated comments from the server on open
+      void fetchComments(1, false);
     } else {
+      fetchAbortRef.current?.abort();
       translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 });
-      setText(""); 
+      setText("");
       setActiveMenu(null);
       setConfirmComment(null);
     }
-  }, [visible, chapterId]);
+  }, [visible, chapterId, isQuestion]);
 
   useEffect(() => {
     const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
@@ -362,14 +406,21 @@ const CommentsDrawer = ({
     return { opacity };
   });
 
-  const fetchComments = async () => {
+  const fetchComments = async (pageNum = 1, append = false) => {
     if (!chapterId) return;
-    const cacheKey = commentsCacheKey(chapterId, isQuestion);
+    if (!append) {
+      fetchAbortRef.current?.abort();
+    }
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
 
-    // Only show the skeleton when we truly have nothing to render.
+    const cacheKey = commentsCacheKey(chapterId, isQuestion);
     const hasKnownData =
-      commentsMemoryCache.has(cacheKey) || Array.isArray(initialComments);
-    if (!hasKnownData) {
+      commentsMemoryCache.has(cacheKey) || Array.isArray(initialCommentsRef.current);
+
+    if (append) {
+      setLoadingMore(true);
+    } else if (!hasKnownData) {
       setLoading(true);
     }
 
@@ -387,47 +438,71 @@ const CommentsDrawer = ({
       }
       if (user?.email) headers["x-user-email"] = user.email;
 
-      // Lightweight endpoint: comments only, instead of the whole chapter.
       const res = await api
         .get("/chapter/comment", {
-          params: { chapterId, qna: isQuestion ? 1 : 0 },
+          params: { chapterId, qna: isQuestion ? 1 : 0, page: pageNum, limit: 25 },
           headers,
           timeout: 15000,
+          signal: controller.signal,
         })
         .catch(() => null);
 
-      let freshComments = res?.data?.data ?? res?.data?.comments;
+      if (controller.signal.aborted || !mountedRef.current) return;
 
-      // Fallback for backends that do not expose the light endpoint yet.
-      if (!Array.isArray(freshComments)) {
+      let freshComments = res?.data?.data ?? res?.data?.comments;
+      const serverHasMore = Boolean(res?.data?.hasMore);
+
+      // Fallback ONLY for legacy backends where /chapter/comment returns non-array and not aborted
+      if (!Array.isArray(freshComments) && !append && !controller.signal.aborted) {
         const legacy = await api
-          .get(`/chapter/${chapterId}`, { headers, timeout: 15000 })
+          .get(`/chapter/${chapterId}`, {
+            headers,
+            timeout: 15000,
+            signal: controller.signal,
+          })
           .catch(() => null);
+        if (controller.signal.aborted || !mountedRef.current) return;
         freshComments = isQuestion
           ? legacy?.data?.data?.qnaComments
           : legacy?.data?.data?.comments;
       }
 
       if (Array.isArray(freshComments)) {
-        // Safe filter: ensure every comment is valid and non-null
-        const valid = freshComments.filter(
-          (c: any) => c && c._id && typeof c.text === "string"
-        );
-        commentsMemoryCache.set(cacheKey, valid);
-        AsyncStorage.setItem(
-          `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-          JSON.stringify(valid)
-        ).catch(() => {});
-        setComments(valid);
-        onCommentsUpdated?.(valid);
-      } else if (!hasKnownData) {
+        const valid = stripTempComments(freshComments);
+        if (append) {
+          setComments((prev) => {
+            const seen = new Set(prev.map((c) => String(c._id)));
+            const merged = [...prev, ...valid.filter((c) => !seen.has(String(c._id)))];
+            persistCommentsCache(cacheKey, merged, onCommentsUpdated);
+            return merged;
+          });
+        } else {
+          setComments((prev) => {
+            // Preserve any currently in-flight optimistic card while refreshing server list
+            const pendingOptimistic = prev.filter(
+              (c) => c.isPosting || String(c._id).startsWith("posting_")
+            );
+            const next = [...pendingOptimistic, ...valid];
+            persistCommentsCache(cacheKey, valid, onCommentsUpdated);
+            return next;
+          });
+        }
+        setPage(pageNum);
+        setHasMore(serverHasMore);
+      } else if (!append && !hasKnownData) {
         commentsMemoryCache.set(cacheKey, []);
         setComments([]);
+        setHasMore(false);
       }
     } catch (err) {
-      console.warn("Silent comments fetch warning:", err);
+      if (!controller.signal.aborted) {
+        console.warn("Silent comments fetch warning:", err);
+      }
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted && mountedRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -630,32 +705,37 @@ const CommentsDrawer = ({
   const executeCommentDeletion = async (targetComment: Comment) => {
     if (!targetComment || !targetComment._id) return;
 
-    // Guard: cannot delete posting comment
-    if (targetComment._id === postingCommentId || (targetComment as any).isPosting) {
+    const commentIdToDelete = targetComment._id;
+    // Guard: cannot delete posting comment or trigger duplicate delete on same comment
+    if (
+      commentIdToDelete === postingCommentId ||
+      (targetComment as any).isPosting ||
+      deletingIdsRef.current.has(commentIdToDelete)
+    ) {
       return;
     }
 
+    deletingIdsRef.current.add(commentIdToDelete);
     closeConfirmSheet();
     triggerHaptic(14);
 
     if (!isConnected) {
+      deletingIdsRef.current.delete(commentIdToDelete);
       showToast({ title: "Please connect to the Internet." });
       return;
     }
 
-    const commentIdToDelete = targetComment._id;
-    const originalComments = [...comments];
-
-    // Optimistic removal: Remove immediately from state and update cache
-    const updated = comments.filter((c) => c._id !== commentIdToDelete);
-    setComments(updated);
     const cacheKey = commentsCacheKey(chapterId, isQuestion);
-    commentsMemoryCache.set(cacheKey, updated);
-    AsyncStorage.setItem(
-      `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-      JSON.stringify(updated)
-    ).catch(() => {});
-    onCommentsUpdated?.(updated);
+    let removedIndex = 0;
+
+    // Optimistic removal using functional updater so concurrent comments are never lost
+    setComments((prev) => {
+      const idx = prev.findIndex((c) => c._id === commentIdToDelete);
+      removedIndex = idx >= 0 ? idx : 0;
+      const updated = prev.filter((c) => c._id !== commentIdToDelete);
+      persistCommentsCache(cacheKey, updated, onCommentsUpdated);
+      return updated;
+    });
 
     try {
       const headers: Record<string, string> = {};
@@ -664,35 +744,56 @@ const CommentsDrawer = ({
 
       const payload = { commentId: commentIdToDelete, chapterId };
 
-      let res = await api
-        .post("/chapter/comment/remove", payload, { headers })
-        .catch(() => null);
-
-      if (!res?.data?.success) {
-        res = await api
-          .delete("/chapter/comment", { data: payload, headers })
-          .catch(() => null);
+      let res: any = null;
+      try {
+        res = await api.delete("/chapter/comment", {
+          data: payload,
+          headers,
+          timeout: 15000,
+        });
+      } catch (delErr: any) {
+        const status = delErr?.response?.status;
+        if (status === 404 || status === 405) {
+          res = await api.post("/chapter/comment/remove", payload, {
+            headers,
+            timeout: 15000,
+          });
+        } else {
+          throw new Error(
+            delErr?.response?.data?.message ||
+              delErr?.message ||
+              "Could not delete comment"
+          );
+        }
       }
 
       if (res?.data?.success) {
-        showToast({ title: "Comment deleted" });
+        if (mountedRef.current) {
+          showToast({ title: "Comment deleted" });
+        }
       } else {
         throw new Error(res?.data?.message || "Failed to delete comment");
       }
     } catch (err: any) {
       console.error("Delete comment error:", err);
-      setComments(originalComments);
-      commentsMemoryCache.set(cacheKey, originalComments);
-      AsyncStorage.setItem(
-        `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-        JSON.stringify(originalComments)
-      ).catch(() => {});
-      onCommentsUpdated?.(originalComments);
-      showToast({ title: err?.message || "Could not delete comment. Try again." });
+      // Roll back ONLY the deleted item into current state without clobbering newer items
+      setComments((prev) => {
+        if (prev.some((c) => c._id === commentIdToDelete)) return prev;
+        const next = [...prev];
+        const insertAt = Math.min(removedIndex, next.length);
+        next.splice(insertAt, 0, targetComment);
+        persistCommentsCache(cacheKey, next, onCommentsUpdated);
+        return next;
+      });
+      if (mountedRef.current) {
+        showToast({ title: err?.message || "Could not delete comment. Try again." });
+      }
+    } finally {
+      deletingIdsRef.current.delete(commentIdToDelete);
     }
   };
 
-  // Instant posting with spinner on send button, subtle gray card while posting, and blink on success
+  // Instant posting with synchronous double-submit lock, clean UI-only temp card, and non-cascading errors
   const handleSend = async () => {
     if (!isConnected) {
       showToast({ title: "Please connect to the Internet." });
@@ -700,7 +801,7 @@ const CommentsDrawer = ({
     }
 
     const trimmed = text.trim();
-    if (!trimmed || isPosting) return;
+    if (!trimmed || isPostingRef.current) return;
 
     const validChapterId = String(chapterId || "").trim();
     if (!validChapterId || validChapterId === "undefined" || validChapterId === "null") {
@@ -708,6 +809,7 @@ const CommentsDrawer = ({
       return;
     }
 
+    isPostingRef.current = true;
     const tempId = `posting_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const myAvatar = avatarUri(user, "sm") || cachedUserAvatar || user?.image || "";
     const optimisticComment: Comment = {
@@ -729,17 +831,10 @@ const CommentsDrawer = ({
       createdAt: new Date().toISOString(),
     };
 
-    // ⚡ Instant UI update: clear text and place subtle-gray card at the top
+    // ⚡ Instant UI update (kept in React state only — NEVER persisted to cache with isPosting: true)
     setText("");
     const cacheKey = commentsCacheKey(validChapterId, isQuestion);
-    const newCommentsList = [optimisticComment, ...comments];
-    setComments(newCommentsList);
-    commentsMemoryCache.set(cacheKey, newCommentsList);
-    AsyncStorage.setItem(
-      `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-      JSON.stringify(newCommentsList)
-    ).catch(() => {});
-    onCommentsUpdated?.(newCommentsList);
+    setComments((prev) => [optimisticComment, ...prev]);
     setIsPosting(true);
     setPostingCommentId(tempId);
 
@@ -773,31 +868,23 @@ const CommentsDrawer = ({
       try {
         res = await api.post("/chapter/comment", payload, requestConfig);
       } catch (postErr: any) {
-        try {
-          res = await api.post("/chapter/comment/add", payload, requestConfig);
-        } catch (fallbackErr: any) {
-          if (isQuestion) {
-            try {
-              res = await api.post("/question/comment", payload, requestConfig);
-            } catch (qErr: any) {
-              const serverMsg =
-                qErr?.response?.data?.message ||
-                fallbackErr?.response?.data?.message ||
-                postErr?.response?.data?.message ||
-                fallbackErr?.message ||
-                postErr?.message ||
-                "Could not post comment";
-              throw new Error(serverMsg);
-            }
-          } else {
-            const serverMsg =
-              fallbackErr?.response?.data?.message ||
-              postErr?.response?.data?.message ||
-              fallbackErr?.message ||
-              postErr?.message ||
-              "Could not post comment";
-            throw new Error(serverMsg);
-          }
+        const status = postErr?.response?.status;
+        // Only fall back to legacy routes when canonical endpoint is unavailable (404/405),
+        // never on timeouts, rate limits, auth errors, or server validation failures.
+        if (status === 404 || status === 405) {
+          res = await api.post(
+            isQuestion ? "/question/comment" : "/chapter/comment/add",
+            payload,
+            requestConfig
+          );
+        } else {
+          const serverMsg =
+            postErr?.response?.data?.message ||
+            (postErr?.code === "ECONNABORTED"
+              ? "Request timed out. Please try again."
+              : postErr?.message) ||
+            "Could not post comment";
+          throw new Error(serverMsg);
         }
       }
 
@@ -825,47 +912,44 @@ const CommentsDrawer = ({
           text: trimmed,
         };
 
-        // Update comment from temp to real server comment
-        setComments((prev) => {
-          const next = prev.map((c) =>
-            c._id === tempId ? finalizedComment : c
-          );
-          commentsMemoryCache.set(cacheKey, next);
-          AsyncStorage.setItem(
-            `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-            JSON.stringify(next)
-          ).catch(() => {});
-          onCommentsUpdated?.(next);
-          return next;
-        });
+        // Persist finalized comment to cache even if drawer was closed mid-flight
+        const cachedList = stripTempComments(commentsMemoryCache.get(cacheKey) || []);
+        const updatedCache = [
+          finalizedComment,
+          ...cachedList.filter((c) => String(c._id) !== realId),
+        ];
+        persistCommentsCache(cacheKey, updatedCache, onCommentsUpdated);
 
-        // Card blinks and returns to normal state!
-        setBlinkingCommentId(finalizedComment._id);
-        triggerHaptic(10);
-        setTimeout(() => {
-          setBlinkingCommentId((curr) => (curr === finalizedComment._id ? null : curr));
-        }, 450);
+        if (mountedRef.current) {
+          setComments((prev) =>
+            prev.map((c) => (c._id === tempId ? finalizedComment : c))
+          );
+          setBlinkingCommentId(finalizedComment._id);
+          triggerHaptic(10);
+          setTimeout(() => {
+            if (mountedRef.current) {
+              setBlinkingCommentId((curr) =>
+                curr === finalizedComment._id ? null : curr
+              );
+            }
+          }, 450);
+        }
       } else {
         throw new Error(res?.data?.message || "Failed to post comment");
       }
     } catch (err: any) {
       console.error("Comment post error:", err);
-      // Remove posting card and restore draft
-      setComments((prev) => {
-        const reverted = prev.filter((c) => c._id !== tempId);
-        commentsMemoryCache.set(cacheKey, reverted);
-        AsyncStorage.setItem(
-          `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-          JSON.stringify(reverted)
-        ).catch(() => {});
-        onCommentsUpdated?.(reverted);
-        return reverted;
-      });
-      setText(trimmed);
-      showToast({ title: err?.message || "Could not post comment. Tap to retry." });
+      if (mountedRef.current) {
+        setComments((prev) => prev.filter((c) => c._id !== tempId));
+        setText((curr) => curr || trimmed);
+        showToast({ title: err?.message || "Could not post comment. Please try again." });
+      }
     } finally {
-      setIsPosting(false);
-      setPostingCommentId(null);
+      isPostingRef.current = false;
+      if (mountedRef.current) {
+        setIsPosting(false);
+        setPostingCommentId(null);
+      }
     }
   };
 
@@ -977,6 +1061,19 @@ const CommentsDrawer = ({
           scrollEnabled={true}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          onEndReachedThreshold={0.4}
+          onEndReached={() => {
+            if (hasMore && !loading && !loadingMore) {
+              void fetchComments(page + 1, true);
+            }
+          }}
+          ListFooterComponent={
+            loadingMore ? (
+              <View style={{ paddingVertical: 14, alignItems: "center" }}>
+                <ActivityIndicator size="small" color="#01796F" />
+              </View>
+            ) : null
+          }
           onScrollBeginDrag={() => {
             if (activeMenu) closeDeleteMenu();
           }}
@@ -1006,10 +1103,10 @@ const CommentsDrawer = ({
                 onChangeText={setText}
                 multiline={false}
                 maxLength={500}
-                editable={!isPosting}
+                editable={true}
               />
 
-              <PopButton onPress={handleSend}>
+              <PopButton onPress={!isPosting && text.trim() ? handleSend : undefined}>
                 <View
                   style={[
                     styles.sendBtn,

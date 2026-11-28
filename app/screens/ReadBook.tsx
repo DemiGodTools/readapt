@@ -837,7 +837,11 @@ const ChapterDetailsPanel = ({
             <View style={panelStyles.pDivider} />
             <View style={panelStyles.pItem}>
               <Text style={panelStyles.pVal}>
-                {book?.comments?.length || 0}
+                {Array.isArray(book?.comments)
+                  ? book.comments.length
+                  : typeof book?.comments === "number"
+                    ? book.comments
+                    : 0}
               </Text>
               <Text style={panelStyles.pLabel}>Comments</Text>
             </View>
