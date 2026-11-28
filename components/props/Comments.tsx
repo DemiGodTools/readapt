@@ -377,7 +377,22 @@ const CommentsDrawer = ({
   const totalCountRef = useRef(totalCount);
   totalCountRef.current = totalCount;
   const deletingIdsRef = useRef<Set<string>>(new Set());
+  const mutationQueueRef = useRef<Map<string, Promise<void>>>(new Map());
   const fetchAbortRef = useRef<AbortController | null>(null);
+
+  // Serializes POST and DELETE network calls per chapter/qna thread so optimistic UI
+  // stays instant while server mutations & cache updates never race each other.
+  const enqueueMutation = useCallback((queueKey: string, task: () => Promise<void>) => {
+    const prev = mutationQueueRef.current.get(queueKey) || Promise.resolve();
+    const next = prev.catch(() => {}).then(task);
+    mutationQueueRef.current.set(queueKey, next);
+    next.finally(() => {
+      if (mutationQueueRef.current.get(queueKey) === next) {
+        mutationQueueRef.current.delete(queueKey);
+      }
+    });
+    return next;
+  }, []);
   const initialCommentsRef = useRef(initialComments);
   initialCommentsRef.current = initialComments;
   const initialTotalRef = useRef(initialTotalCount);
@@ -933,6 +948,7 @@ const CommentsDrawer = ({
     if (
       commentIdToDelete === postingCommentId ||
       (targetComment as any).isPosting ||
+      String(commentIdToDelete).startsWith("posting_") ||
       deletingIdsRef.current.has(commentIdToDelete)
     ) {
       return;
@@ -961,61 +977,73 @@ const CommentsDrawer = ({
     });
     updateTotalCount(totalCountRef.current - 1);
 
-    try {
-      const headers: Record<string, string> = {};
-      if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
-      if (user?.email) headers["x-user-email"] = user.email;
-
-      const payload = { commentId: commentIdToDelete, chapterId };
-
-      let res: any = null;
+    await enqueueMutation(cacheKey, async () => {
       try {
-        res = await api.delete("/chapter/comment", {
-          data: payload,
-          headers,
-          timeout: 15000,
-        });
-      } catch (delErr: any) {
-        const status = delErr?.response?.status;
-        if (status === 404 || status === 405) {
-          res = await api.post("/chapter/comment/remove", payload, {
+        const headers: Record<string, string> = {};
+        let token = accessToken;
+        if (!token) {
+          try {
+            const stored = await AsyncStorage.getItem("accessToken");
+            if (stored) token = JSON.parse(stored)?.token || stored;
+          } catch {}
+        }
+        if (token && typeof token === "string" && token.trim()) {
+          headers["Authorization"] = `Bearer ${token.trim()}`;
+        }
+        if (user?.email) headers["x-user-email"] = user.email;
+
+        const payload = { commentId: commentIdToDelete, chapterId };
+
+        let res: any = null;
+        try {
+          res = await api.delete("/chapter/comment", {
+            params: payload,
+            data: payload,
             headers,
             timeout: 15000,
           });
-        } else {
-          throw new Error(
-            delErr?.response?.data?.message ||
-              delErr?.message ||
-              "Could not delete comment"
-          );
+        } catch (delErr: any) {
+          const status = delErr?.response?.status;
+          if (status === 400 || status === 404 || status === 405) {
+            res = await api.post("/chapter/comment/remove", payload, {
+              headers,
+              timeout: 15000,
+            });
+          } else {
+            throw new Error(
+              delErr?.response?.data?.message ||
+                delErr?.message ||
+                "Could not delete comment"
+            );
+          }
         }
-      }
 
-      if (res?.data?.success) {
-        if (mountedRef.current) {
-          showToast({ title: "Comment deleted" });
+        if (res?.data?.success) {
+          if (mountedRef.current) {
+            showToast({ title: "Comment deleted" });
+          }
+        } else {
+          throw new Error(res?.data?.message || "Failed to delete comment");
         }
-      } else {
-        throw new Error(res?.data?.message || "Failed to delete comment");
+      } catch (err: any) {
+        console.error("Delete comment error:", err);
+        // Roll back ONLY the deleted item into current state without clobbering newer items
+        setComments((prev) => {
+          if (prev.some((c) => c._id === commentIdToDelete)) return prev;
+          const next = [...prev];
+          const insertAt = Math.min(removedIndex, next.length);
+          next.splice(insertAt, 0, targetComment);
+          persistCommentsCache(cacheKey, next, onCommentsUpdated);
+          return next;
+        });
+        updateTotalCount(totalCountRef.current + 1);
+        if (mountedRef.current) {
+          showToast({ title: err?.message || "Could not delete comment. Try again." });
+        }
+      } finally {
+        deletingIdsRef.current.delete(commentIdToDelete);
       }
-    } catch (err: any) {
-      console.error("Delete comment error:", err);
-      // Roll back ONLY the deleted item into current state without clobbering newer items
-      setComments((prev) => {
-        if (prev.some((c) => c._id === commentIdToDelete)) return prev;
-        const next = [...prev];
-        const insertAt = Math.min(removedIndex, next.length);
-        next.splice(insertAt, 0, targetComment);
-        persistCommentsCache(cacheKey, next, onCommentsUpdated);
-        return next;
-      });
-      updateTotalCount(totalCountRef.current + 1);
-      if (mountedRef.current) {
-        showToast({ title: err?.message || "Could not delete comment. Try again." });
-      }
-    } finally {
-      deletingIdsRef.current.delete(commentIdToDelete);
-    }
+    });
   };
 
   // Instant posting with synchronous double-submit lock, idempotent OkHttp retry, and clean drawer-reopen handling
@@ -1109,107 +1137,114 @@ const CommentsDrawer = ({
         }
       };
 
-      try {
-        let res: any = null;
+      await enqueueMutation(cacheKey, async () => {
         try {
-          res = await postOnce();
-        } catch (firstErr: any) {
-          // Retry ONCE automatically on transient transport/socket drop (no HTTP response),
-          // safe because clientRequestId guarantees server idempotency with zero duplicates.
-          if (!firstErr?.response) {
-            await new Promise((r) => setTimeout(r, 350));
+          let res: any = null;
+          try {
             res = await postOnce();
-          } else {
-            throw firstErr;
+          } catch (firstErr: any) {
+            // Retry ONCE automatically on transient transport/socket drop (no HTTP response),
+            // safe because clientRequestId guarantees server idempotency with zero duplicates.
+            if (!firstErr?.response) {
+              await new Promise((r) => setTimeout(r, 350));
+              res = await postOnce();
+            } else {
+              throw firstErr;
+            }
           }
-        }
 
-        const isSuccess =
-          res?.data?.success === true || res?.status === 200 || res?.status === 201;
+          const isSuccess =
+            res?.data?.success === true || res?.status === 200 || res?.status === 201;
 
-        if (isSuccess) {
-          const realComment = res.data?.comment || res.data?.data;
-          const realId = realComment?._id ? String(realComment._id) : `comment_${Date.now()}`;
-          const finalizedComment: Comment = {
-            ...optimisticComment,
-            ...(typeof realComment === "object" ? realComment : {}),
-            _id: realId,
-            clientRequestId,
-            isPosting: false,
-            by: {
-              _id: user?._id || realComment?.by?._id,
-              name: user?.name || realComment?.by?.name || "You",
-              userId: user?.userId || realComment?.by?.userId || "you",
-              image: myAvatar || realComment?.by?.image || user?.image,
-              imageMd: (user as any)?.imageMd || realComment?.by?.imageMd,
-              imageSm: (user as any)?.imageSm || realComment?.by?.imageSm,
-              profileLevel: user?.profileLevel || realComment?.by?.profileLevel || 1,
-            },
-            userEmail: user?.email,
-            text: trimmed,
-          };
+          if (isSuccess) {
+            const realComment = res.data?.comment || res.data?.data;
+            if (!realComment?._id) {
+              throw new Error("Invalid server response");
+            }
+            const realId = String(realComment._id);
+            const finalizedComment: Comment = {
+              ...optimisticComment,
+              ...(typeof realComment === "object" ? realComment : {}),
+              _id: realId,
+              clientRequestId,
+              isPosting: false,
+              by: {
+                _id: user?._id || realComment?.by?._id,
+                name: user?.name || realComment?.by?.name || "You",
+                userId: user?.userId || realComment?.by?.userId || "you",
+                image: myAvatar || realComment?.by?.image || user?.image,
+                imageMd: (user as any)?.imageMd || realComment?.by?.imageMd,
+                imageSm: (user as any)?.imageSm || realComment?.by?.imageSm,
+                profileLevel: user?.profileLevel || realComment?.by?.profileLevel || 1,
+              },
+              userEmail: user?.email,
+              text: trimmed,
+            };
 
-          const cachedList = stripTempComments(commentsMemoryCache.get(cacheKey) || []);
-          const updatedCache = [
-            finalizedComment,
-            ...cachedList.filter(
-              (c) => String(c._id) !== realId && (!clientRequestId || c.clientRequestId !== clientRequestId)
-            ),
-          ];
-          persistCommentsCache(cacheKey, updatedCache, onCommentsUpdated);
-
-          if (mountedRef.current) {
-            updateTotalCount(totalCountRef.current + 1);
-            setComments((prev) => {
-              const withoutDup = prev.filter(
-                (c) =>
-                  c._id !== realId &&
-                  (!c.clientRequestId || c.clientRequestId !== clientRequestId || c._id === tempId)
-              );
-              const replaced = withoutDup.some((c) => c._id === tempId);
-              return replaced
-                ? withoutDup.map((c) => (c._id === tempId ? finalizedComment : c))
-                : [finalizedComment, ...withoutDup];
-            });
-            setBlinkingCommentId(finalizedComment._id);
-            triggerHaptic(10);
-            setTimeout(() => {
-              if (mountedRef.current) {
-                setBlinkingCommentId((curr) =>
-                  curr === finalizedComment._id ? null : curr
+            if (mountedRef.current) {
+              updateTotalCount(totalCountRef.current + 1);
+              setComments((prev) => {
+                const withoutDup = prev.filter(
+                  (c) =>
+                    c._id !== realId &&
+                    (!c.clientRequestId || c.clientRequestId !== clientRequestId || c._id === tempId)
                 );
-              }
-            }, 450);
+                const replaced = withoutDup.some((c) => c._id === tempId);
+                const next = replaced
+                  ? withoutDup.map((c) => (c._id === tempId ? finalizedComment : c))
+                  : [finalizedComment, ...withoutDup];
+                persistCommentsCache(cacheKey, next, onCommentsUpdated);
+                return next;
+              });
+              setBlinkingCommentId(finalizedComment._id);
+              triggerHaptic(10);
+              setTimeout(() => {
+                if (mountedRef.current) {
+                  setBlinkingCommentId((curr) =>
+                    curr === finalizedComment._id ? null : curr
+                  );
+                }
+              }, 450);
+            } else {
+              const cachedList = stripTempComments(commentsMemoryCache.get(cacheKey) || []);
+              const updatedCache = [
+                finalizedComment,
+                ...cachedList.filter(
+                  (c) => String(c._id) !== realId && (!clientRequestId || c.clientRequestId !== clientRequestId)
+                ),
+              ];
+              persistCommentsCache(cacheKey, updatedCache, onCommentsUpdated);
+            }
+          } else {
+            throw new Error(res?.data?.message || "Failed to post comment");
           }
-        } else {
-          throw new Error(res?.data?.message || "Failed to post comment");
-        }
-      } catch (err: any) {
-        const msg =
-          err?.response?.data?.message ||
-          (err?.code === "ECONNABORTED"
-            ? "Request timed out. Please try again."
-            : !err?.response
-              ? "Connection unstable. Please try again."
-              : err?.message) ||
-          "Could not post comment";
-        console.error("Comment post error:", err);
-        if (mountedRef.current) {
-          setComments((prev) => prev.filter((c) => c._id !== tempId));
-          setRestoreDraftSignal({ id: Date.now(), text: trimmed });
-          showToast({ title: msg });
-        }
-      } finally {
-        if (activePostTokenRef.current === myPostToken) {
-          isPostingRef.current = false;
+        } catch (err: any) {
+          const msg =
+            err?.response?.data?.message ||
+            (err?.code === "ECONNABORTED"
+              ? "Request timed out. Please try again."
+              : !err?.response
+                ? "Connection unstable. Please try again."
+                : err?.message) ||
+            "Could not post comment";
+          console.error("Comment post error:", err);
           if (mountedRef.current) {
-            setIsPosting(false);
-            setPostingCommentId(null);
+            setComments((prev) => prev.filter((c) => c._id !== tempId));
+            setRestoreDraftSignal({ id: Date.now(), text: trimmed });
+            showToast({ title: msg });
+          }
+        } finally {
+          if (activePostTokenRef.current === myPostToken) {
+            isPostingRef.current = false;
+            if (mountedRef.current) {
+              setIsPosting(false);
+              setPostingCommentId(null);
+            }
           }
         }
-      }
+      });
     },
-    [isConnected, chapterId, isQuestion, user, cachedUserAvatar, accessToken, onCommentsUpdated, showToast, updateTotalCount]
+    [isConnected, chapterId, isQuestion, user, cachedUserAvatar, accessToken, onCommentsUpdated, showToast, updateTotalCount, enqueueMutation]
   );
 
   const handlePressInMine = useCallback((e: any) => {
