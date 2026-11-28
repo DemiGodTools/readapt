@@ -431,7 +431,9 @@ export const StreakCelebrationModal: React.FC<StreakCelebrationModalProps> = ({
   const handleGiftPress = () => {
     onClose();
     if (onViewRewards) {
-      onViewRewards();
+      setTimeout(() => {
+        onViewRewards();
+      }, 210);
     }
   };
 

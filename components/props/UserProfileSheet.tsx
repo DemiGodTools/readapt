@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -108,15 +108,24 @@ export default function UserProfileSheet({
   // Draggable animation values (Flutter/Native grade 60/120fps)
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const startY = useSharedValue(0);
+  const isClosingRef = useRef(false);
+
+  const safeFinishClose = useCallback(() => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    onClose();
+  }, [onClose]);
 
   const closeWithAnimation = useCallback(() => {
+    if (isClosingRef.current) return;
     translateY.value = withTiming(SCREEN_HEIGHT, { duration: 180 }, (finished) => {
-      if (finished) runOnJS(onClose)();
+      if (finished) runOnJS(safeFinishClose)();
     });
-  }, [onClose, translateY]);
+  }, [safeFinishClose, translateY]);
 
   useEffect(() => {
     if (visible) {
+      isClosingRef.current = false;
       translateY.value = SCREEN_HEIGHT;
       translateY.value = withSpring(0, { damping: 80, stiffness: 320, mass: 0.9 });
     } else {
@@ -124,23 +133,27 @@ export default function UserProfileSheet({
     }
   }, [visible, translateY]);
 
-  const panGesture = Gesture.Pan()
-    .onStart(() => {
-      startY.value = translateY.value;
-    })
-    .onUpdate((event) => {
-      const nextY = startY.value + event.translationY;
-      translateY.value = Math.max(0, nextY);
-    })
-    .onEnd((event) => {
-      if (event.translationY > 85 || event.velocityY > 580) {
-        translateY.value = withTiming(SCREEN_HEIGHT, { duration: 180 }, (finished) => {
-          if (finished) runOnJS(onClose)();
-        });
-      } else {
-        translateY.value = withSpring(0, { damping: 80, stiffness: 320, mass: 0.9 });
-      }
-    });
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onStart(() => {
+          startY.value = translateY.value;
+        })
+        .onUpdate((event) => {
+          const nextY = startY.value + event.translationY;
+          translateY.value = Math.max(0, nextY);
+        })
+        .onEnd((event) => {
+          if (event.translationY > 85 || event.velocityY > 580) {
+            translateY.value = withTiming(SCREEN_HEIGHT, { duration: 180 }, (finished) => {
+              if (finished) runOnJS(safeFinishClose)();
+            });
+          } else {
+            translateY.value = withSpring(0, { damping: 80, stiffness: 320, mass: 0.9 });
+          }
+        }),
+    [safeFinishClose, startY, translateY]
+  );
 
   const animatedBackdropStyle = useAnimatedStyle(() => {
     const opacity = interpolate(
@@ -253,7 +266,9 @@ export default function UserProfileSheet({
       } catch (err: any) {
         if (err?.name === "CanceledError" || err?.message === "canceled") return;
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     })();
 

@@ -104,7 +104,7 @@ const ListSeparator = memo(() => <View style={styles.separator} />);
 interface BookCardProps {
   item: any;
   rank: number;
-  onPress: (id: string) => void;
+  onPress: (id: string, type?: string) => void;
 }
 
 const BookCard = memo(({ item, rank, onPress }: BookCardProps) => {
@@ -112,8 +112,9 @@ const BookCard = memo(({ item, rank, onPress }: BookCardProps) => {
   const commentsCount = Array.isArray(item.comments) ? item.comments.length : (item.comments || 0);
 
   const handlePress = useCallback(() => {
-    onPress(item._id);
-  }, [item._id, onPress]);
+    if (!item?._id) return;
+    onPress(String(item._id), item?.type);
+  }, [item?._id, item?.type, onPress]);
 
   return (
     <Pressable 
@@ -434,8 +435,9 @@ export default function TrendingBooks() {
     fetchTrendingData(true);
   }, [fetchTrendingData]);
 
-  const handleBookPress = useCallback((bookId: string) => {
-    safeNavigate(navigation, "ReadBook", { bookId });
+  const handleBookPress = useCallback((bookId: string, type?: string) => {
+    if (!bookId) return;
+    safeNavigate(navigation, type === "audio" ? "AudioRdr" : "ReadBook", { bookId });
   }, [navigation]);
 
   const handleSeriesPress = useCallback((seriesId: string) => {

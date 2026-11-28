@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef, useMemo, useCallback } from "react";
 import {
   Text,
   View,
@@ -37,34 +37,45 @@ const Modal = () => {
     }
   }, [modal]);
 
-  const onDismiss = (callback?: () => void) => {
+  const isClosingRef = useRef(false);
+
+  const onDismiss = useCallback((callback?: () => void) => {
+    isClosingRef.current = false;
     if (callback) {
       callback();
     }
     hideModal();
-  };
+  }, [hideModal]);
 
-  const closeModal = (callback?: () => void) => {
-    translateY.value = withTiming(SHEET_HEIGHT, {}, () => {
-      runOnJS(onDismiss)(callback);
+  const closeModal = useCallback((callback?: () => void) => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    translateY.value = withTiming(SHEET_HEIGHT, {}, (finished) => {
+      if (finished) {
+        runOnJS(onDismiss)(callback);
+      }
     });
-  };
+  }, [onDismiss, translateY]);
 
   const cancelCallback = modal?.onCancel;
 
-  const dragGesture = Gesture.Pan()
-    .onChange((event) => {
-      if (event.translationY > 0) {
-        translateY.value = event.translationY;
-      }
-    })
-    .onEnd((event) => {
-      if (event.translationY > 80 || event.velocityY > 500) {
-        runOnJS(closeModal)(cancelCallback);
-      } else {
-        translateY.value = withSpring(0, { damping: 45 });
-      }
-    });
+  const dragGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onChange((event) => {
+          if (event.translationY > 0) {
+            translateY.value = event.translationY;
+          }
+        })
+        .onEnd((event) => {
+          if (event.translationY > 80 || event.velocityY > 500) {
+            runOnJS(closeModal)(cancelCallback);
+          } else {
+            translateY.value = withSpring(0, { damping: 45 });
+          }
+        }),
+    [closeModal, cancelCallback, translateY]
+  );
 
   const animatedStyles = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],

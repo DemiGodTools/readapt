@@ -99,24 +99,31 @@ export default memo(function AudioControls() {
 
   const handleOpenFullPlayer = useCallback(() => {
     if (!currentTrack || !navigationRef?.isReady?.()) return;
+    const trackId = (currentTrack as any)?._id || (currentTrack as any)?.id;
+    if (!trackId) return;
     triggerTactileHaptic("light");
-    (navigationRef as any).navigate("AudioRdr", { bookId: currentTrack._id });
+    (navigationRef as any).navigate("AudioRdr", { bookId: String(trackId) });
   }, [currentTrack]);
 
+  const finishDismiss = useCallback(() => {
+    isDismissingRef.current = false;
+    panY.value = 0;
+    removeAllTracks();
+  }, [panY, removeAllTracks]);
+
   const dismissPlayer = useCallback(() => {
+    if (isDismissingRef.current) return;
+    isDismissingRef.current = true;
     triggerTactileHaptic("medium");
 
     panY.value = withTiming(300, { duration: 150 }, (finished) => {
       if (finished) {
-        runOnJS(removeAllTracks)();
+        runOnJS(finishDismiss)();
+      } else {
+        runOnJS(finishDismiss)();
       }
     });
-
-    setTimeout(() => {
-      removeAllTracks();
-      panY.value = 0;
-    }, 180);
-  }, [panY, removeAllTracks]);
+  }, [panY, finishDismiss]);
 
   const panGesture = useMemo(() => {
     return Gesture.Pan()

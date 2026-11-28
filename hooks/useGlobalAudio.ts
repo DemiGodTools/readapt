@@ -737,14 +737,15 @@ const seekToInternal = (seconds: number) => {
   updateGlobalStatus({ currentTime: clamped, isBuffering: true }, false);
 
   // Debounce the native seek to bundle rapid clicks/scrubs
+  const seekToken = currentLoadToken;
   if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
   seekDebounceTimer = setTimeout(async () => {
     try {
-      if (globalPlayer) {
-        await (globalPlayer as any).seekTo(clamped);
-        if (globalPlayIntent) {
-          globalPlayer.play();
-        }
+      if (seekToken !== currentLoadToken || !globalPlayer) return;
+      const targetPlayer = globalPlayer;
+      await (targetPlayer as any).seekTo(clamped);
+      if (seekToken === currentLoadToken && globalPlayer === targetPlayer && globalPlayIntent) {
+        targetPlayer.play();
       }
     } catch (_) {}
   }, 50);
@@ -771,6 +772,11 @@ export const flushVolumeDirect = (): void => {
 
 const removeAllTracksInternal = () => {
   currentLoadToken++;
+  pendingInitialSeekSec = 0;
+  if (seekDebounceTimer) {
+    clearTimeout(seekDebounceTimer);
+    seekDebounceTimer = null;
+  }
   if (backgroundCacheTimer) {
     clearTimeout(backgroundCacheTimer);
     backgroundCacheTimer = null;

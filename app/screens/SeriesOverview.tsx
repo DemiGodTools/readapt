@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import {
   Text,
   View,
@@ -365,6 +365,8 @@ export default function SeriesOverview() {
     loadSeries();
   }, [loadSeries]);
 
+  const hasInitializedTabRef = useRef(false);
+
   // Sync joined status with user object
   useEffect(() => {
     const joinedId = getJoinedSeriesId(user?.joinedSeries);
@@ -375,10 +377,9 @@ export default function SeriesOverview() {
       joinedId && ((targetId1 && joinedId === targetId1) || (targetId2 && joinedId === targetId2))
     );
     setIsJoined(currentlyJoined);
-    if (currentlyJoined) {
-      setActiveTab("chapters");
-    } else {
-      setActiveTab("about");
+    if (!hasInitializedTabRef.current) {
+      hasInitializedTabRef.current = true;
+      setActiveTab(currentlyJoined ? "chapters" : "about");
     }
   }, [user?.joinedSeries, seriesData?._id, currentSeriesId]);
 
@@ -569,7 +570,7 @@ export default function SeriesOverview() {
   const firstChapter = useMemo<any>(() => {
     if (!chapterItems || chapterItems.length === 0) return null;
     const raw = chapterItems[0]?.content;
-    return typeof raw === "object" ? raw : chapterItems[0];
+    return raw && typeof raw === "object" ? raw : null;
   }, [chapterItems]);
 
   // Current active level/chapter for expanded progress state
@@ -580,7 +581,7 @@ export default function SeriesOverview() {
   const currentActiveChapter = useMemo<any>(() => {
     if (!chapterItems || chapterItems.length === 0) return null;
     const raw = chapterItems[currentActiveIdx]?.content;
-    return typeof raw === "object" ? raw : chapterItems[currentActiveIdx];
+    return raw && typeof raw === "object" ? raw : null;
   }, [chapterItems, currentActiveIdx]);
 
   const currentActiveChapterId = useMemo(() => {
@@ -959,7 +960,15 @@ export default function SeriesOverview() {
       return;
     }
 
-    const targetId = String(targetChapter._id || targetChapter.id);
+    const rawTargetId =
+      targetChapter?._id ||
+      targetChapter?.id ||
+      (typeof targetChapter?.content === "string" ? targetChapter.content : "");
+    if (!rawTargetId) {
+      showToast({ title: "Chapter reference missing" });
+      return;
+    }
+    const targetId = String(rawTargetId);
     const mediaType = targetChapter.type ?? "pdf";
 
     if (mediaType === "pdf") {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import {
   Dimensions,
   Modal,
@@ -67,10 +67,19 @@ const UpgradeSheet = ({
 
   const translateY = useSharedValue(SCREEN_HEIGHT);
   const startY = useSharedValue(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Single animation lifecycle (prevents blink on open/close)
   useEffect(() => {
     const hideSheet = () => {
+      if (!mountedRef.current) return;
       sheetOpenRef.current = false;
       setSheetOpen(false);
       onClosedRef.current?.();
@@ -87,21 +96,25 @@ const UpgradeSheet = ({
     }
   }, [visible, translateY]);
 
-  const panGesture = Gesture.Pan()
-    .onStart(() => {
-      startY.value = translateY.value;
-    })
-    .onUpdate((event) => {
-      const newY = startY.value + event.translationY;
-      translateY.value = Math.min(SCREEN_HEIGHT, Math.max(0, newY));
-    })
-    .onEnd((event) => {
-      if (event.translationY > 90 || event.velocityY > 650) {
-        runOnJS(onClose)();
-      } else {
-        translateY.value = withSpring(0, { damping: 85, stiffness: 300, mass: 0.9 });
-      }
-    });
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onStart(() => {
+          startY.value = translateY.value;
+        })
+        .onUpdate((event) => {
+          const newY = startY.value + event.translationY;
+          translateY.value = Math.min(SCREEN_HEIGHT, Math.max(0, newY));
+        })
+        .onEnd((event) => {
+          if (event.translationY > 90 || event.velocityY > 650) {
+            runOnJS(onClose)();
+          } else {
+            translateY.value = withSpring(0, { damping: 85, stiffness: 300, mass: 0.9 });
+          }
+        }),
+    [onClose, startY, translateY]
+  );
 
   const panelAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],

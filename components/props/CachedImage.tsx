@@ -30,8 +30,11 @@ export const IMAGE_CACHE_POLICY = "memory-disk" as const;
 
 export type ImagePriority = "low" | "normal" | "high";
 
-export const isRenderableUrl = (value?: string | null): value is string =>
-  typeof value === "string" && value.trim().length > 0;
+export const isRenderableUrl = (value?: string | null): value is string => {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed !== "null" && trimmed !== "undefined";
+};
 
 const FALLBACK_GRADIENTS: Array<[string, string]> = [
   ["#123a38", "#111026"],

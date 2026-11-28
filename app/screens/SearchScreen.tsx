@@ -329,6 +329,13 @@ export default function SearchScreen() {
   const { showToast } = useToast();
 
   const inputRef = useRef<TextInput>(null);
+  const searchDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (searchDelayTimerRef.current) clearTimeout(searchDelayTimerRef.current);
+    };
+  }, []);
 
   const [query, setQuery] = useState(route.params?.initialQuery || "");
   const [activeSearchTerm, setActiveSearchTerm] = useState(route.params?.initialQuery || "");
@@ -455,7 +462,8 @@ export default function SearchScreen() {
       setScreenMode("results");
       setIsSearching(true);
 
-      setTimeout(() => {
+      if (searchDelayTimerRef.current) clearTimeout(searchDelayTimerRef.current);
+      searchDelayTimerRef.current = setTimeout(() => {
         setIsSearching(false);
       }, 420);
     },

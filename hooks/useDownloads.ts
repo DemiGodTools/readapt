@@ -343,10 +343,8 @@ export const useDownloads = () => {
       const userKey = await getUserDownloadsKey(activeUid);
 
       const itemToDelete = downloads.find((item) => String(item._id) === String(id));
-      if (itemToDelete) {
-        if (itemToDelete.localUri) {
-          await FileSystem.deleteAsync(itemToDelete.localUri, { idempotent: true }).catch(() => {});
-        }
+      if (itemToDelete?.localUri) {
+        await FileSystem.deleteAsync(itemToDelete.localUri, { idempotent: true }).catch(() => {});
         const path = itemToDelete.localUri.replace(/^file:\/\//, '');
         const exists = await ReactNativeBlobUtil.fs.exists(path).catch(() => false);
         if (exists) {
@@ -354,7 +352,15 @@ export const useDownloads = () => {
         }
       }
 
-      const updated = downloads.filter((item) => String(item._id) !== String(id));
+      const rawExisting = await AsyncStorage.getItem(userKey).catch(() => null);
+      let baseList: typeof downloads = downloads;
+      if (rawExisting) {
+        try {
+          const parsed = JSON.parse(rawExisting);
+          if (Array.isArray(parsed)) baseList = parsed;
+        } catch {}
+      }
+      const updated = baseList.filter((item) => String(item._id) !== String(id));
       await AsyncStorage.setItem(userKey, JSON.stringify(updated));
       setDownloads(updated);
       DeviceEventEmitter.emit('DOWNLOADS_CHANGED');

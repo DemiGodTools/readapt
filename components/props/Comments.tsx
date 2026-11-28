@@ -747,12 +747,12 @@ const CommentsDrawer = ({
   const closeDrawer = useCallback(() => {
     setActiveMenu(null);
     setConfirmComment(null);
-    translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 }, () => {
-      runOnJS(onClose)();
+    translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 }, (finished) => {
+      if (finished) runOnJS(onClose)();
     });
   }, [onClose]);
 
-  const panGesture = Gesture.Pan()
+  const panGesture = useMemo(() => Gesture.Pan()
     .onStart(() => {
       if (activeMenu) {
         runOnJS(closeDeleteMenu)();
@@ -765,8 +765,8 @@ const CommentsDrawer = ({
     })
     .onEnd((event) => {
       if (event.translationY > CLOSE_THRESHOLD || event.velocityY > 750) {
-        translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 }, () => {
-          runOnJS(onClose)();
+        translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 }, (finished) => {
+          if (finished) runOnJS(onClose)();
         });
       } else {
         translateY.value = withSpring(0, {
@@ -774,7 +774,7 @@ const CommentsDrawer = ({
           stiffness: 220,
         });
       }
-    });
+    }), [activeMenu, closeDeleteMenu, context, onClose, translateY]);
 
   const confirmPanGesture = Gesture.Pan()
     .onStart(() => {

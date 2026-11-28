@@ -16,7 +16,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path, Circle } from "react-native-svg";
-import { useNavigation } from "@react-navigation/native";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -598,23 +598,25 @@ export default function Search() {
     [saveRecentSearch]
   );
 
-  // Android hardware back button handler
-  useEffect(() => {
-    const onBackPress = () => {
-      if (viewMode === "results") {
-        setViewMode("typing");
-        return true;
-      }
-      if (viewMode === "typing") {
-        setViewMode("home");
-        return true;
-      }
-      return false;
-    };
+  // Android hardware back button handler (scoped to tab focus so it never intercepts other screens)
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (viewMode === "results") {
+          setViewMode("typing");
+          return true;
+        }
+        if (viewMode === "typing") {
+          setViewMode("home");
+          return true;
+        }
+        return false;
+      };
 
-    const handler = BackHandler.addEventListener("hardwareBackPress", onBackPress);
-    return () => handler.remove();
-  }, [viewMode]);
+      const handler = BackHandler.addEventListener("hardwareBackPress", onBackPress);
+      return () => handler.remove();
+    }, [viewMode])
+  );
 
   // Header Back Arrow Press
   const handleHeaderBack = () => {

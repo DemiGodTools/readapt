@@ -66,7 +66,7 @@ export default function EarlyBadgeUnlockModal({
       ]).start();
 
       // Continuous subtle badge float + glow pulse
-      Animated.loop(
+      const bounceLoop = Animated.loop(
         Animated.sequence([
           Animated.timing(badgeBounceAnim, {
             toValue: -8,
@@ -81,9 +81,10 @@ export default function EarlyBadgeUnlockModal({
             useNativeDriver: true,
           }),
         ])
-      ).start();
+      );
+      bounceLoop.start();
 
-      Animated.loop(
+      const glowLoop = Animated.loop(
         Animated.sequence([
           Animated.timing(glowPulseAnim, {
             toValue: 1,
@@ -98,7 +99,13 @@ export default function EarlyBadgeUnlockModal({
             useNativeDriver: true,
           }),
         ])
-      ).start();
+      );
+      glowLoop.start();
+
+      return () => {
+        bounceLoop.stop();
+        glowLoop.stop();
+      };
     } else {
       scaleAnim.setValue(0.85);
       opacityAnim.setValue(0);
@@ -110,7 +117,7 @@ export default function EarlyBadgeUnlockModal({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} transparent animationType="none" statusBarTranslucent>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClaim} statusBarTranslucent>
       <View style={styles.overlay}>
         {/* Dark Backdrop */}
         <Animated.View style={[styles.backdrop, { opacity: opacityAnim }]} />

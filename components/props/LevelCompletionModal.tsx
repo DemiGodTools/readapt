@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   View,
   Text,
@@ -542,30 +542,36 @@ export default function LevelCompletionModal({
     });
   };
 
-  const closeReviewSheet = () => {
+  const closeReviewSheet = useCallback(() => {
     reviewSheetY.value = withTiming(
       SCREEN_HEIGHT,
       { duration: 220, easing: Easing.in(Easing.cubic) },
-      () => {
-        runOnJS(setIsReviewOpen)(false);
+      (finished) => {
+        if (finished) {
+          runOnJS(setIsReviewOpen)(false);
+        }
       }
     );
-  };
+  }, [reviewSheetY]);
 
-  const reviewGesture = Gesture.Pan()
-    .onChange((event) => {
-      if (event.translationY > 0) reviewSheetY.value = event.translationY;
-    })
-    .onEnd((event) => {
-      if (event.translationY > 80 || event.velocityY > 600) {
-        runOnJS(closeReviewSheet)();
-      } else {
-        reviewSheetY.value = withTiming(0, {
-          duration: 180,
-          easing: Easing.out(Easing.cubic),
-        });
-      }
-    });
+  const reviewGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onChange((event) => {
+          if (event.translationY > 0) reviewSheetY.value = event.translationY;
+        })
+        .onEnd((event) => {
+          if (event.translationY > 80 || event.velocityY > 600) {
+            runOnJS(closeReviewSheet)();
+          } else {
+            reviewSheetY.value = withTiming(0, {
+              duration: 180,
+              easing: Easing.out(Easing.cubic),
+            });
+          }
+        }),
+    [closeReviewSheet, reviewSheetY]
+  );
 
   const reviewSheetStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: reviewSheetY.value }],

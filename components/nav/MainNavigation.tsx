@@ -73,6 +73,22 @@ const navTheme = {
   },
 };
 
+const withErrorBoundary = <P extends object>(Component: React.ComponentType<P>) =>
+  function WrappedWithErrorBoundary(props: P) {
+    return (
+      <ErrorBoundary>
+        <Component {...props} />
+      </ErrorBoundary>
+    );
+  };
+
+const SafeSeriesOverview = withErrorBoundary(SeriesOverview);
+const SafeReadBook = withErrorBoundary(ReadBook);
+const SafeAudioRdr = withErrorBoundary(AudioRdr);
+const SafeRecentReads = withErrorBoundary(RecentReads);
+const SafeLikedContent = withErrorBoundary(LikedContent);
+const SafeTrendingBooks = withErrorBoundary(TrendingBooks);
+
 export default function MainNavigation() {
   const { isLoggedIn, isLoading } = useAuth();
   const { user } = useUser();
@@ -169,18 +185,18 @@ export default function MainNavigation() {
 
           <Stack.Screen 
             name="SeriesOverview" 
-            component={SeriesOverview} 
+            component={SafeSeriesOverview} 
             options={{ headerShown: false }} 
           />
 
           <Stack.Screen
             name="ReadBook"
-            component={ReadBook}
+            component={SafeReadBook}
           />
           
           <Stack.Screen
             name="AudioRdr"
-            component={AudioRdr}
+            component={SafeAudioRdr}
             options={{
               animation: "slide_from_bottom",
             }}
@@ -188,12 +204,12 @@ export default function MainNavigation() {
 
           <Stack.Screen
             name="RecentReads"
-            component={RecentReads}
+            component={SafeRecentReads}
           />
 
           <Stack.Screen
             name="LikedContent"
-            component={LikedContent}
+            component={SafeLikedContent}
           />
 
           <Stack.Screen
@@ -203,7 +219,7 @@ export default function MainNavigation() {
 
           <Stack.Screen 
             name="TrendingBooks" 
-            component={TrendingBooks} 
+            component={SafeTrendingBooks} 
             options={{ headerShown: false }} 
           />
 

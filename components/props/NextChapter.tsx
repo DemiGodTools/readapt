@@ -244,7 +244,7 @@ const NextChapter = ({
       ) : (
         <FlatList
           data={nextChapters}
-          keyExtractor={(item) => String(item._id || item.title)}
+          keyExtractor={(item, index) => String(item?._id || `${item?.title || "ch"}_${index}`)}
           renderItem={renderContentCard}
           numColumns={1}
           scrollEnabled={false}

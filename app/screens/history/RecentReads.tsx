@@ -131,11 +131,11 @@ const RecentReads = ({ route, navigation }: Props) => {
     <View style={styles.sectionItem} key={item.date}>
       <Text style={styles.date}>{item.date}</Text>
 
-      {item.data.map((read: any, idx: number) => {
-        const readId = String(read.content?._id || read.content?.id || idx);
+      {Array.isArray(item?.data) && item.data.map((read: any, idx: number) => {
+        const readId = String(read.content?._id || read.content?.id || "item");
         return (
           <Contentprogress
-            key={readId}
+            key={`${readId}_${idx}`}
             id={read.content?._id || read.content?.id}
             cover={read.content?.cover}
             title={read.content?.title}

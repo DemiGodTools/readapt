@@ -149,8 +149,10 @@ export const SmoothAudioSlider = memo(({
   const isSeekingRef = useRef(false);
   const durationRef = useRef(effDuration);
   durationRef.current = effDuration;
-  const disabledRef = useRef(disabled);
-  disabledRef.current = disabled;
+  const disabledShared = useSharedValue(disabled);
+  useEffect(() => {
+    disabledShared.value = disabled;
+  }, [disabled, disabledShared]);
 
   const lastFormattedTimeRef = useRef(formatTime(currentTime || 0));
   const lastFormattedDurRef = useRef(formatTime(duration || 180));
@@ -183,8 +185,10 @@ export const SmoothAudioSlider = memo(({
         durationTextInputRef.current?.setNativeProps({ text: formattedDur });
       }
       if (!isSeekingRef.current && !isSeekingShared.value) {
-        ratioAnim.value = Math.max(0, Math.min(1, liveTime / effDur));
-        syncLiveTimeLabel(liveTime);
+        const safeLive = Number.isFinite(liveTime) ? liveTime : 0;
+        const nextRatio = effDur > 0 ? Math.max(0, Math.min(1, safeLive / effDur)) : 0;
+        ratioAnim.value = Number.isFinite(nextRatio) ? nextRatio : 0;
+        syncLiveTimeLabel(safeLive);
       }
     });
     return unsubscribe;
@@ -222,23 +226,26 @@ export const SmoothAudioSlider = memo(({
     .hitSlop({ top: 20, bottom: 20, left: 16, right: 16 })
     .onBegin((e) => {
       "worklet";
-      if (disabledRef.current) return;
+      if (disabledShared.value) return;
       isSeekingShared.value = true;
       thumbScaleAnim.value = withTiming(1.25, { duration: 60 });
       rippleScaleAnim.value = withTiming(1, { duration: 100 });
       rippleOpacityAnim.value = withTiming(0.8, { duration: 100 });
       const w = trackWidth.value > 0 ? trackWidth.value : DEFAULT_TRACK_WIDTH;
-      const initialR = clamp(e.x / w, 0, 1);
-      ratioAnim.value = initialR;
-      runOnJS(onScrubStart)(initialR);
+      const safeX = Number.isFinite(e.x) ? e.x : 0;
+      const initialR = clamp(safeX / w, 0, 1);
+      ratioAnim.value = Number.isFinite(initialR) ? initialR : 0;
+      runOnJS(onScrubStart)(ratioAnim.value);
     })
     .onUpdate((e) => {
       "worklet";
-      if (!disabledRef.current) {
+      if (!disabledShared.value) {
         const w = trackWidth.value > 0 ? trackWidth.value : DEFAULT_TRACK_WIDTH;
-        const r = clamp(e.x / w, 0, 1);
-        ratioAnim.value = r;
-        runOnJS(onLiveScrub)(r);
+        const safeX = Number.isFinite(e.x) ? e.x : 0;
+        const r = clamp(safeX / w, 0, 1);
+        const safeR = Number.isFinite(r) ? r : 0;
+        ratioAnim.value = safeR;
+        runOnJS(onLiveScrub)(safeR);
       }
     })
     .onFinalize((e) => {
@@ -247,12 +254,15 @@ export const SmoothAudioSlider = memo(({
       thumbScaleAnim.value = withTiming(1.0, { duration: 80 });
       rippleScaleAnim.value = withTiming(0.3, { duration: 120 });
       rippleOpacityAnim.value = withTiming(0, { duration: 120 });
+      if (disabledShared.value) return;
       const w = trackWidth.value > 0 ? trackWidth.value : DEFAULT_TRACK_WIDTH;
-      const finalRatio = clamp(e.x / w, 0, 1);
-      ratioAnim.value = finalRatio;
-      runOnJS(onScrubCommit)(finalRatio);
+      const safeX = Number.isFinite(e.x) ? e.x : 0;
+      const finalRatio = clamp(safeX / w, 0, 1);
+      const safeFinal = Number.isFinite(finalRatio) ? finalRatio : 0;
+      ratioAnim.value = safeFinal;
+      runOnJS(onScrubCommit)(safeFinal);
     }),
-    [onScrubStart, onLiveScrub, onScrubCommit, isSeekingShared, thumbScaleAnim, rippleScaleAnim, rippleOpacityAnim, trackWidth, ratioAnim]
+    [disabledShared, onScrubStart, onLiveScrub, onScrubCommit, isSeekingShared, thumbScaleAnim, rippleScaleAnim, rippleOpacityAnim, trackWidth, ratioAnim]
   );
 
   const sliderGesture = panGesture;

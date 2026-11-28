@@ -1056,7 +1056,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
-      navigation.navigate("Home" as any);
+      navigation.reset({ index: 0, routes: [{ name: "Tabs" }] });
     }
   }, [navigation, clearAllSecurityTimers]);
 
@@ -2942,9 +2942,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   const handleOpenNextLevel = useCallback(() => {
     if (!nextChapterItem) return;
     const nextRaw = nextChapterItem?.content;
-    const nextData: any = typeof nextRaw === "object" ? nextRaw : null;
-    const nextId = String(nextData?._id || nextData?.id || nextRaw);
-    if (!nextId) return;
+    const nextData: any = nextRaw && typeof nextRaw === "object" ? nextRaw : null;
+    const rawId = nextData?._id || nextData?.id || (typeof nextRaw === "string" ? nextRaw : "");
+    if (!rawId) return;
+    const nextId = String(rawId);
 
     const mediaType = nextData?.type || "pdf";
     if (mediaType === "audio") {
@@ -4274,7 +4275,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             onNextLevel={() => {
               setShowCompletionModal(false);
               setShowQnaPanel(false);
-              handleOpenNextLevel();
+              setTimeout(() => {
+                handleOpenNextLevel();
+              }, 160);
             }}
             contentType={
               isFrameworkSeries

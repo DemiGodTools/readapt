@@ -144,15 +144,18 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
+  const authEpochRef = useRef(0);
+
   const getUser = useCallback(
     async (tokenOverride?: string) => {
+      const requestEpoch = authEpochRef.current;
       // Paint the last known profile immediately on cold start instead of
       // leaving the avatar/name blank until /get-self answers.
       if (!hasHydratedCacheRef.current) {
         hasHydratedCacheRef.current = true;
         try {
           const cachedProfile = await AsyncStorage.getItem(USER_CACHE_KEY);
-          if (cachedProfile) {
+          if (cachedProfile && requestEpoch === authEpochRef.current) {
             const parsed = JSON.parse(cachedProfile);
             if (parsed) {
               setUser((prev) => prev ?? parsed);
@@ -165,6 +168,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
       try {
         const activeToken = tokenOverride || (await resolveToken());
+        if (requestEpoch !== authEpochRef.current) return;
 
         if (!activeToken) {
           setUser(null);
@@ -186,6 +190,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
         const { data } = await api.get(`/get-self`, {
           headers: { Authorization: `Bearer ${activeToken}` },
         });
+        if (requestEpoch !== authEpochRef.current) return;
 
         if (data?.data) {
           setUser(data.data);
@@ -207,16 +212,19 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
           ).catch(() => {});
         }
       } catch {
+        if (requestEpoch !== authEpochRef.current) return;
         try {
           const cached = await AsyncStorage.getItem(USER_CACHE_KEY);
-          if (cached) {
+          if (cached && requestEpoch === authEpochRef.current) {
             const parsed = JSON.parse(cached);
             setUser(parsed);
             if (parsed?.email) setApiUserEmail(parsed.email);
           }
         } catch {}
       } finally {
-        setLoadingUser(false);
+        if (requestEpoch === authEpochRef.current) {
+          setLoadingUser(false);
+        }
       }
     },
     [resolveToken]
@@ -224,6 +232,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
 
   const setAuthSession = useCallback(
     async (newToken: string, newUser?: IUser) => {
+      authEpochRef.current += 1;
       setToken(newToken);
       setApiAccessToken(newToken);
       if (newUser) {
@@ -251,6 +260,7 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const logout = useCallback(async () => {
+    authEpochRef.current += 1;
     resetUserStorageCache();
     try {
       const currentToken = token || (await resolveToken());

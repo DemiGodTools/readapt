@@ -2358,9 +2358,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
   const handleOpenNextLevel = useCallback(() => {
     if (!nextChapterItem) return;
     const nextRaw = nextChapterItem?.content;
-    const nextData: any = typeof nextRaw === "object" ? nextRaw : null;
-    const nextId = String(nextData?._id || nextData?.id || nextRaw);
-    if (!nextId) return;
+    const nextData: any = nextRaw && typeof nextRaw === "object" ? nextRaw : null;
+    const rawId = nextData?._id || nextData?.id || (typeof nextRaw === "string" ? nextRaw : "");
+    if (!rawId) return;
+    const nextId = String(rawId);
 
     const mediaType = nextData?.type || "audio";
     if (mediaType === "pdf") {
@@ -2858,8 +2859,9 @@ const AudioPlayerScreen = ({ route }: Props) => {
                 book={book as any}
                 onOpen={(nextBook: any) => {
                   updateRecentReads();
-                  const nextId = String(nextBook?._id || nextBook?.id);
-                  if (!nextId) return;
+                  const rawNextId = nextBook?._id || nextBook?.id;
+                  if (!rawNextId) return;
+                  const nextId = String(rawNextId);
                   if (nextBook?.type === "pdf") {
                     safeNavigate(navigation, "ReadBook", {
                       bookId: nextId,
@@ -2909,10 +2911,12 @@ const AudioPlayerScreen = ({ route }: Props) => {
                       });
                       return;
                     }
+                    const relRawId = relBook?._id || relBook?.id;
+                    if (!relRawId) return;
+                    const nextId = String(relRawId);
                     void updateRecentReads();
                     const isAudio = relBook?.type === "audio";
                     if (isAudio) {
-                      const nextId = String(relBook._id || relBook.id);
                       navigation.setParams({ bookId: nextId, initialBookData: relBook } as any);
                       resetInfo();
                       setBook(relBook);
@@ -2924,7 +2928,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
                       if (targetTrack.media) void playTrack(targetTrack, 0);
                     } else {
                       safeNavigate(navigation, "ReadBook", {
-                        bookId: String(relBook._id),
+                        bookId: nextId,
                         initialBookData: relBook,
                       }, { replaceIfInReader: true });
                     }
@@ -3502,7 +3506,9 @@ const AudioPlayerScreen = ({ route }: Props) => {
         onNextLevel={() => {
           setShowCompletionModal(false);
           setShowQnaModal(false);
-          handleOpenNextLevel();
+          setTimeout(() => {
+            handleOpenNextLevel();
+          }, 160);
         }}
         contentType={
           isFrameworkSeries

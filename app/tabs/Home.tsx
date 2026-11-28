@@ -317,7 +317,7 @@ const HomeScreen = () => {
         setContinueReading(null);
         return;
       }
-      const sorted = (recentReads as any[]).sort((a: any, b: any) => {
+      const sorted = [...(recentReads as any[])].sort((a: any, b: any) => {
         const timeA = a?.readAt ? new Date(a.readAt).getTime() : 0;
         const timeB = b?.readAt ? new Date(b.readAt).getTime() : 0;
         return timeB - timeA;
@@ -445,7 +445,7 @@ const HomeScreen = () => {
       return () => {
         isMounted = false;
       };
-    }, [loadRecentReads, refreshStreak, streak])
+    }, [loadRecentReads, refreshStreak, streak, feedData, fetchFeed])
   );
 
   useEffect(() => {
@@ -507,12 +507,22 @@ const HomeScreen = () => {
           ? prev.standalones.map(updateItem)
           : prev.standalones;
 
+        const nextAvailable = Array.isArray(prev.available)
+          ? prev.available.map(updateItem)
+          : prev.available;
+
+        const nextPersonalized = Array.isArray(prev.personalized)
+          ? prev.personalized.map(updateItem)
+          : prev.personalized;
+
         return {
           ...prev,
           ...(nextCategories ? { categories: nextCategories } : {}),
           ...(nextContinue ? { continueReading: nextContinue } : {}),
           ...(nextTrending ? { trending: nextTrending } : {}),
           ...(nextStandalones ? { standalones: nextStandalones } : {}),
+          ...(nextAvailable ? { available: nextAvailable } : {}),
+          ...(nextPersonalized ? { personalized: nextPersonalized } : {}),
         };
       });
     });

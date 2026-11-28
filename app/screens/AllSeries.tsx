@@ -226,39 +226,45 @@ export default function AllSeries() {
     });
   };
 
-  const closeSheet = () => {
+  const finishCloseSheet = useCallback(() => {
+    sheetOpenRef.current = false;
+    setSheetOpen(false);
+  }, []);
+
+  const closeSheet = useCallback(() => {
     translateY.value = withTiming(
       SCREEN_HEIGHT,
       { duration: 200, easing: Easing.in(Easing.cubic) },
       (finished) => {
         if (finished) {
-          runOnJS(() => {
-            sheetOpenRef.current = false;
-            setSheetOpen(false);
-          })();
+          runOnJS(finishCloseSheet)();
         }
       }
     );
-  };
+  }, [finishCloseSheet, translateY]);
 
-  const panGesture = Gesture.Pan()
-    .onStart(() => {
-      startY.value = translateY.value;
-    })
-    .onUpdate((event) => {
-      const newY = startY.value + event.translationY;
-      translateY.value = Math.max(0, newY);
-    })
-    .onEnd((event) => {
-      if (event.translationY > 80 || event.velocityY > 550) {
-        runOnJS(closeSheet)();
-      } else {
-        translateY.value = withTiming(0, {
-          duration: 180,
-          easing: Easing.out(Easing.cubic),
-        });
-      }
-    });
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onStart(() => {
+          startY.value = translateY.value;
+        })
+        .onUpdate((event) => {
+          const newY = startY.value + event.translationY;
+          translateY.value = Math.max(0, newY);
+        })
+        .onEnd((event) => {
+          if (event.translationY > 80 || event.velocityY > 550) {
+            runOnJS(closeSheet)();
+          } else {
+            translateY.value = withTiming(0, {
+              duration: 180,
+              easing: Easing.out(Easing.cubic),
+            });
+          }
+        }),
+    [closeSheet, startY, translateY]
+  );
 
   const panelAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
@@ -413,7 +419,7 @@ export default function AllSeries() {
       ) : (
         <FlashList
           data={filteredAndSortedSeries}
-          keyExtractor={(item: any) => item._id}
+          keyExtractor={(item: any, index: number) => String(item?._id ?? index)}
           renderItem={renderCard}
           numColumns={3}
           contentContainerStyle={styles.listContent}
