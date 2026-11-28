@@ -96,6 +96,12 @@ import { useToast } from "../../hooks/useToast";
 import { useUser } from "../../hooks/useUser";
 import { LikeManager } from "../../lib/likeManager";
 import { safeNavigate } from "../../lib/safeNav";
+import {
+  getChapterStats,
+  resolveCommentsCount,
+  resolveQnaCommentsCount,
+  updateChapterStats,
+} from "../../lib/chapterStats";
 import CommentsDrawer from "../../components/props/Comments";
 import { SubscriptionPlan } from "../../enums";
 import { useDownloads } from "../../hooks/useDownloads";
@@ -2037,20 +2043,38 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 freshData.questions
               );
             const verifiedCount = ramRealPagesMap.get(targetId) || 0;
+            const serverCommentsCount = resolveCommentsCount(freshData, 0);
+            const serverQnaCount = resolveQnaCommentsCount(freshData, 0);
             const mergedBook = {
               ...freshData,
               questions: freshQuestions,
               total: verifiedCount > 0 ? verifiedCount : freshData.total,
+              commentsCount: serverCommentsCount,
+              qnaCommentsCount: serverQnaCount,
             };
+            const hasPendingLike = LikeManager.hasPendingMutation(targetId);
             const cachedLikeEntry = LikeManager.get(targetId);
+            const serverLikesCount = Math.max(0, Number(freshData.likes) || 0);
+            const serverIsLiked = Boolean((freshData as any).isLiked);
+
             const resolvedLikes =
-              cachedLikeEntry !== undefined
+              hasPendingLike && cachedLikeEntry !== undefined
                 ? cachedLikeEntry.count
-                : (freshData.likes ?? 0);
+                : serverLikesCount;
             const resolvedIsLiked =
-              cachedLikeEntry !== undefined
+              hasPendingLike && cachedLikeEntry !== undefined
                 ? cachedLikeEntry.liked
-                : Boolean((freshData as any).isLiked);
+                : serverIsLiked;
+
+            if (!hasPendingLike) {
+              LikeManager.seedFromServer(targetId, resolvedIsLiked, resolvedLikes, false);
+            }
+            updateChapterStats(targetId, {
+              likes: resolvedLikes,
+              liked: resolvedIsLiked,
+              commentsCount: serverCommentsCount,
+              qnaCommentsCount: serverQnaCount,
+            });
 
             ramBookMetaMap.set(targetId, {
               ...mergedBook,
@@ -2065,6 +2089,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 ...mergedBook,
                 likes: resolvedLikes,
                 isLiked: resolvedIsLiked,
+                comments: serverCommentsCount as any,
               }));
               setIsLiked(resolvedIsLiked);
               setQuestions(freshQuestions);
@@ -2321,7 +2346,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       if (!activeChapterId) return;
 
       const cachedEntry = LikeManager.get(activeChapterId);
-      if (cachedEntry !== undefined) {
+      if (cachedEntry !== undefined && LikeManager.hasPendingMutation(activeChapterId)) {
         if (active) setIsLiked(cachedEntry.liked);
         return;
       }
@@ -2333,12 +2358,22 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
         });
         if (active) {
           setIsLiked(Boolean(isFound));
-          LikeManager.set(activeChapterId, Boolean(isFound), Number(book?.likes) || 0, false);
+          const knownLikes =
+            getChapterStats(activeChapterId)?.likes ??
+            (typeof book?.likes === "number" && book.likes > 0 ? book.likes : undefined);
+          if (typeof knownLikes === "number") {
+            LikeManager.seedFromServer(activeChapterId, Boolean(isFound), knownLikes, false);
+          }
           await AsyncStorage.setItem(
             `liked_${activeChapterId}`,
             String(Boolean(isFound))
           ).catch(() => {});
         }
+        return;
+      }
+
+      if (cachedEntry !== undefined) {
+        if (active) setIsLiked(cachedEntry.liked);
         return;
       }
 
@@ -3248,14 +3283,18 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                 <View style={styles.row}>
                   <Text style={styles.bookAuthor}>{displayAuthor}</Text>
                   <View style={styles.divider} />
-                  <Text style={styles.statItem}>{book?.likes || 0} likes</Text>
+                  <Text style={styles.statItem}>
+                    {typeof book?.likes === "number"
+                      ? Math.max(0, book.likes)
+                      : (getChapterStats(activeChapterId)?.likes ?? 0)}{" "}
+                    likes
+                  </Text>
                   <View style={styles.divider} />
                   <Text style={styles.statItem}>
-                    {Array.isArray(book?.comments)
-                      ? book?.comments.length
-                      : typeof book?.comments === "number"
-                        ? book.comments
-                        : 0}{" "}
+                    {resolveCommentsCount(
+                      book,
+                      getChapterStats(activeChapterId)?.commentsCount ?? 0
+                    )}{" "}
                     comments
                   </Text>
                 </View>
@@ -4212,9 +4251,14 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
                   ? (book?.qnaComments as any)
                   : []
               }
-              onCommentsUpdated={(updatedComments) => {
+              initialTotalCount={resolveQnaCommentsCount(book)}
+              onCommentCountChange={(nextTotal) => {
+                const targetId = String(book?._id || activeChapterId || "").trim();
+                updateChapterStats(targetId, { qnaCommentsCount: nextTotal });
                 setBook((prev) =>
-                  prev ? { ...prev, qnaComments: updatedComments as any } : prev
+                  prev
+                    ? ({ ...prev, qnaCommentsCount: nextTotal, qnaComments: nextTotal } as any)
+                    : prev
                 );
               }}
               isQuestion={true}
@@ -4259,9 +4303,12 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
             initialComments={
               Array.isArray(book?.comments) ? (book?.comments as any) : []
             }
-            onCommentsUpdated={(updatedComments) => {
+            initialTotalCount={resolveCommentsCount(book, getChapterStats(activeChapterId)?.commentsCount ?? 0)}
+            onCommentCountChange={(nextTotal) => {
+              const targetId = String(book?._id || activeChapterId || "").trim();
+              updateChapterStats(targetId, { commentsCount: nextTotal });
               setBook((prev) =>
-                prev ? { ...prev, comments: updatedComments as any } : prev
+                prev ? ({ ...prev, commentsCount: nextTotal, comments: nextTotal } as any) : prev
               );
             }}
             isQuestion={false}

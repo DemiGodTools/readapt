@@ -76,6 +76,12 @@ import { useToast } from "../../hooks/useToast";
 import { useUser } from "../../hooks/useUser";
 import { LikeManager } from "../../lib/likeManager";
 import { safeNavigate } from "../../lib/safeNav";
+import {
+  getChapterStats,
+  resolveCommentsCount,
+  resolveQnaCommentsCount,
+  updateChapterStats,
+} from "../../lib/chapterStats";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useDownloads } from "../../hooks/useDownloads";
 import CommentsDrawer from "../../components/props/Comments";
@@ -1327,14 +1333,26 @@ const AudioPlayerScreen = ({ route }: Props) => {
       getSingleDownloaded(chapterId)
         .then((downloaded) => {
           if (downloaded) {
+            const cachedStats = getChapterStats(chapterId);
             setBook((prev) => {
               const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
+              const bestLikes =
+                cachedStats?.likes ??
+                (typeof cleanPrev?.likes === "number" ? cleanPrev.likes : undefined) ??
+                downloaded.likes ??
+                0;
+              const bestComments =
+                cachedStats?.commentsCount ??
+                (cleanPrev ? resolveCommentsCount(cleanPrev) : undefined) ??
+                downloaded.comments ??
+                0;
               return {
                 ...(cleanPrev || {}),
                 ...(downloaded as any),
                 media: downloaded.localUri || downloaded.media,
-                likes: downloaded.likes ?? cleanPrev?.likes ?? 0,
-                comments: downloaded.comments ?? cleanPrev?.comments ?? 0,
+                likes: bestLikes,
+                comments: bestComments,
+                commentsCount: bestComments,
               };
             });
             if (Array.isArray(downloaded.questions) && downloaded.questions.length > 0) {
@@ -1742,7 +1760,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
   useEffect(() => {
     if (!chapterId) return;
     const cachedEntry = LikeManager.get(chapterId);
-    if (cachedEntry !== undefined) {
+    if (cachedEntry !== undefined && LikeManager.hasPendingMutation(chapterId)) {
       setIsLiked(cachedEntry.liked);
       return;
     }
@@ -1752,7 +1770,15 @@ const AudioPlayerScreen = ({ route }: Props) => {
         return String(id) === String(chapterId);
       });
       setIsLiked(Boolean(isAlreadyLiked));
-      LikeManager.set(chapterId, Boolean(isAlreadyLiked), Number(book?.likes) || 0, false);
+      // Only seed LikeManager if we actually have a real server/cached count (never poison with fake 0)
+      const knownLikes =
+        getChapterStats(chapterId)?.likes ??
+        (typeof book?.likes === "number" && book.likes > 0 ? book.likes : undefined);
+      if (typeof knownLikes === "number") {
+        LikeManager.seedFromServer(chapterId, Boolean(isAlreadyLiked), knownLikes, false);
+      }
+    } else if (cachedEntry !== undefined) {
+      setIsLiked(cachedEntry.liked);
     }
   }, [user, chapterId]);
 
@@ -1880,14 +1906,26 @@ const AudioPlayerScreen = ({ route }: Props) => {
       const downloaded = await getSingleDownloaded(chapterId);
       if (signal?.aborted) return;
       if (downloaded) {
+        const cachedStats = getChapterStats(chapterId);
         setBook((prev) => {
           const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
+          const bestLikes =
+            cachedStats?.likes ??
+            (typeof cleanPrev?.likes === "number" ? cleanPrev.likes : undefined) ??
+            downloaded.likes ??
+            0;
+          const bestComments =
+            cachedStats?.commentsCount ??
+            (cleanPrev ? resolveCommentsCount(cleanPrev) : undefined) ??
+            downloaded.comments ??
+            0;
           return {
             ...(cleanPrev || {}),
             ...(downloaded as any),
             media: downloaded.localUri || downloaded.media,
-            likes: downloaded.likes ?? cleanPrev?.likes ?? 0,
-            comments: downloaded.comments ?? cleanPrev?.comments ?? 0,
+            likes: bestLikes,
+            comments: bestComments,
+            commentsCount: bestComments,
           };
         });
         if (Array.isArray(downloaded.questions) && downloaded.questions.length > 0) {
@@ -1928,17 +1966,37 @@ const AudioPlayerScreen = ({ route }: Props) => {
           }
         }
 
+        const hasPendingLike = chapterId ? LikeManager.hasPendingMutation(chapterId) : false;
         const cachedLikeEntry = chapterId ? LikeManager.get(chapterId) : undefined;
+        const serverLikesCount =
+          typeof resolvedBook!.likes === "number"
+            ? Math.max(0, resolvedBook!.likes)
+            : (downloaded?.likes ?? 0);
+        const serverIsLiked = Boolean((resolvedBook as any)!.isLiked);
+        const serverCommentsCount = resolveCommentsCount(
+          resolvedBook,
+          downloaded?.comments ?? 0
+        );
+        const serverQnaCount = resolveQnaCommentsCount(resolvedBook, 0);
+
         const finalLikes =
-          cachedLikeEntry !== undefined
+          hasPendingLike && cachedLikeEntry !== undefined
             ? cachedLikeEntry.count
-            : (resolvedBook!.likes !== undefined
-            ? resolvedBook!.likes
-            : (downloaded?.likes ?? 0));
+            : serverLikesCount;
         const finalIsLiked =
-          cachedLikeEntry !== undefined
+          hasPendingLike && cachedLikeEntry !== undefined
             ? cachedLikeEntry.liked
-            : Boolean((resolvedBook as any)!.isLiked);
+            : serverIsLiked;
+
+        if (chapterId && !hasPendingLike) {
+          LikeManager.seedFromServer(chapterId, finalIsLiked, finalLikes, false);
+        }
+        updateChapterStats(chapterId, {
+          likes: finalLikes,
+          liked: finalIsLiked,
+          commentsCount: serverCommentsCount,
+          qnaCommentsCount: serverQnaCount,
+        });
 
         setBook((prev) => {
           const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
@@ -1948,8 +2006,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
             media: downloaded?.localUri || resolvedBook!.media,
             likes: finalLikes,
             isLiked: finalIsLiked,
-            comments: resolvedBook!.comments !== undefined ? resolvedBook!.comments : (downloaded?.comments ?? cleanPrev?.comments ?? 0),
-          };
+            comments: serverCommentsCount,
+            commentsCount: serverCommentsCount,
+            qnaCommentsCount: serverQnaCount,
+          } as any;
         });
         setIsLiked(finalIsLiked);
 
@@ -2466,18 +2526,16 @@ const AudioPlayerScreen = ({ route }: Props) => {
   };
 
   const likesCount = useMemo(() => {
-    if (!book) return 0;
-    if (typeof book.likes === "number") return book.likes;
-    if (Array.isArray(book.likes)) return (book.likes as any).length;
-    return 0;
-  }, [book?.likes]);
+    const confirmed = getChapterStats(chapterId)?.likes;
+    if (book && typeof book.likes === "number") return Math.max(0, book.likes);
+    if (book && Array.isArray(book.likes)) return (book.likes as any).length;
+    return confirmed ?? 0;
+  }, [book?.likes, chapterId]);
 
   const commentsCount = useMemo(() => {
-    if (!book) return 0;
-    if (typeof book.comments === "number") return book.comments;
-    if (Array.isArray(book.comments)) return (book.comments as any).length;
-    return 0;
-  }, [book?.comments]);
+    const resolved = resolveCommentsCount(book, getChapterStats(chapterId)?.commentsCount ?? 0);
+    return resolved;
+  }, [book, chapterId]);
 
   if (!book && !isConnected) {
     return (
@@ -3423,9 +3481,12 @@ const AudioPlayerScreen = ({ route }: Props) => {
               ? ((book as any).qnaComments as any)
               : []
           }
-          onCommentsUpdated={(updatedComments) => {
+          initialTotalCount={resolveQnaCommentsCount(book)}
+          onCommentCountChange={(nextTotal) => {
+            const targetId = String((book as any)?._id || chapterId || "").trim();
+            updateChapterStats(targetId, { qnaCommentsCount: nextTotal });
             setBook((prev: any) =>
-              prev ? { ...prev, qnaComments: updatedComments } : prev
+              prev ? { ...prev, qnaCommentsCount: nextTotal, qnaComments: nextTotal } : prev
             );
           }}
           isQuestion={true}
@@ -3478,9 +3539,12 @@ const AudioPlayerScreen = ({ route }: Props) => {
         initialComments={
           Array.isArray(book?.comments) ? (book?.comments as any) : []
         }
-        onCommentsUpdated={(updatedComments) => {
+        initialTotalCount={commentsCount}
+        onCommentCountChange={(nextTotal) => {
+          const targetId = String((book as any)?._id || chapterId || "").trim();
+          updateChapterStats(targetId, { commentsCount: nextTotal });
           setBook((prev: any) =>
-            prev ? { ...prev, comments: updatedComments } : prev
+            prev ? { ...prev, commentsCount: nextTotal, comments: nextTotal } : prev
           );
         }}
         isQuestion={false}

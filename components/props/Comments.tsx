@@ -1,5 +1,5 @@
 // File: components/props/Comments.tsx
-import React, { useRef, useState, useEffect, useCallback } from "react";
+import React, { memo, useRef, useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -61,6 +61,8 @@ const commentsMemoryCache = new Map<string, Comment[]>();
 const commentsCacheKey = (chapterId: string, isQuestion: boolean) =>
   `${isQuestion ? "qna" : "chapter"}:${chapterId}`;
 
+const MAX_CACHED_COMMENTS = 30;
+
 const stripTempComments = (list: Comment[]): Comment[] =>
   list.filter(
     (c) =>
@@ -77,12 +79,13 @@ const persistCommentsCache = (
   onCommentsUpdated?: (comments: Comment[]) => void
 ) => {
   const clean = stripTempComments(list);
-  commentsMemoryCache.set(cacheKey, clean);
+  const capped = clean.slice(0, MAX_CACHED_COMMENTS);
+  commentsMemoryCache.set(cacheKey, capped);
   AsyncStorage.setItem(
     `${COMMENTS_STORAGE_PREFIX}${cacheKey}`,
-    JSON.stringify(clean)
+    JSON.stringify(capped)
   ).catch(() => {});
-  onCommentsUpdated?.(clean);
+  onCommentsUpdated?.(capped);
 };
 
 const CommentSkeleton = () => (
@@ -127,6 +130,7 @@ const CommentSkeleton = () => (
 
 export type Comment = {
   _id: string;
+  clientRequestId?: string;
   isPosting?: boolean;
   by: {
     _id?: string;
@@ -150,11 +154,172 @@ type Props = {
   visible: boolean;
   reload: () => void;
   onClose: () => void;
-  chapterId: string; 
-  initialComments?: Comment[]; 
-  isQuestion?: boolean; 
+  chapterId: string;
+  initialComments?: Comment[];
+  initialTotalCount?: number;
+  isQuestion?: boolean;
   onCommentsUpdated?: (comments: Comment[]) => void;
+  onCommentCountChange?: (totalCount: number) => void;
 };
+
+interface CommentRowProps {
+  item: Comment;
+  isMine: boolean;
+  isThisPosting: boolean;
+  isThisBlinking: boolean;
+  isSelected: boolean;
+  author: any;
+  onPressInMine: (e: any) => void;
+  onLongPressMine: (item: Comment, e: any) => void;
+  onPressProfile: (author: any) => void;
+}
+
+const CommentRow = memo(
+  ({
+    item,
+    isMine,
+    isThisPosting,
+    isThisBlinking,
+    isSelected,
+    author,
+    onPressInMine,
+    onLongPressMine,
+    onPressProfile,
+  }: CommentRowProps) => (
+    <Pressable
+      onPressIn={isMine && !isThisPosting ? onPressInMine : undefined}
+      delayLongPress={HOLD_DURATION_MS}
+      onLongPress={
+        isMine && !isThisPosting ? (e) => onLongPressMine(item, e) : undefined
+      }
+      style={({ pressed }) => [
+        styles.commentItemWrapper,
+        isThisPosting && styles.commentItemPosting,
+        isThisBlinking && styles.commentItemBlinking,
+        isSelected && styles.commentItemSelected,
+        pressed && isMine && !isThisPosting && styles.commentItemPressed,
+      ]}
+    >
+      <View style={styles.commentItem}>
+        <TouchableOpacity
+          activeOpacity={0.75}
+          onPress={() => onPressProfile(author)}
+        >
+          <CachedImage
+            uri={author.image}
+            label={author.name}
+            style={styles.userAvatar}
+            letterSize={14}
+            transition={0}
+          />
+        </TouchableOpacity>
+        <View style={styles.commentContent}>
+          <View style={styles.commentMeta}>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => onPressProfile(author)}
+              style={{ flexDirection: "row", alignItems: "center", gap: 5 }}
+            >
+              <Text style={[styles.userName, isThisPosting && styles.textSubtleGray]}>
+                {author.name}
+              </Text>
+              <Text style={styles.userHandle}>@{author.handle}</Text>
+            </TouchableOpacity>
+            <Text style={styles.commentDate}>
+              {isThisPosting ? "Posting..." : formatDate(item.createdAt)}
+            </Text>
+          </View>
+          <Text style={[styles.commentText, isThisPosting && styles.textSubtleGray]}>
+            {item.text}
+          </Text>
+        </View>
+      </View>
+    </Pressable>
+  )
+);
+
+interface CommentInputBarProps {
+  visible: boolean;
+  isPosting: boolean;
+  inputAnimatedStyle: any;
+  restoreDraftSignal: { id: number; text: string } | null;
+  onSend: (trimmedText: string) => void;
+}
+
+const CommentInputBar = memo(
+  ({
+    visible,
+    isPosting,
+    inputAnimatedStyle,
+    restoreDraftSignal,
+    onSend,
+  }: CommentInputBarProps) => {
+    const [text, setText] = useState("");
+
+    useEffect(() => {
+      if (!visible) setText("");
+    }, [visible]);
+
+    useEffect(() => {
+      if (restoreDraftSignal?.text) {
+        setText((curr) => curr || restoreDraftSignal.text);
+      }
+    }, [restoreDraftSignal]);
+
+    const trimmed = text.trim();
+    const canSend = Boolean(trimmed) && !isPosting;
+
+    const handleSubmit = () => {
+      if (!canSend) return;
+      const toSend = trimmed;
+      setText("");
+      onSend(toSend);
+    };
+
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <Animated.View style={[styles.inputWrapper, inputAnimatedStyle]}>
+          <View style={styles.inputBox}>
+            <TextInput
+              style={styles.inputField}
+              placeholder="Say something..."
+              placeholderTextColor="rgba(156, 163, 175, 0.5)"
+              value={text}
+              onChangeText={setText}
+              multiline={false}
+              maxLength={500}
+              editable={true}
+            />
+
+            <PopButton onPress={canSend ? handleSubmit : undefined}>
+              <View
+                style={[styles.sendBtn, !canSend && styles.sendBtnDisabled]}
+              >
+                {isPosting ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Svg
+                    width={20}
+                    height={20}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#fff"
+                    strokeWidth="2.2"
+                  >
+                    <Line x1="12" y1="19" x2="12" y2="5" />
+                    <Polyline points="5 12 12 5 19 12" />
+                  </Svg>
+                )}
+              </View>
+            </PopButton>
+          </View>
+        </Animated.View>
+      </KeyboardAvoidingView>
+    );
+  }
+);
 
 const triggerHaptic = (duration = 14) => {
   try {
@@ -173,8 +338,10 @@ const CommentsDrawer = ({
   onClose,
   chapterId,
   initialComments = [],
+  initialTotalCount,
   isQuestion = false,
   onCommentsUpdated,
+  onCommentCountChange,
 }: Props) => {
   const { accessToken } = useAuth();
   const { user, reload: reloadUser } = useUser() as any;
@@ -182,24 +349,48 @@ const CommentsDrawer = ({
   const { isConnected } = useNetworkStatus();
 
   const [comments, setComments] = useState<Comment[]>([]);
-  const [text, setText] = useState("");
+  const [totalCount, setTotalCount] = useState<number>(() =>
+    typeof initialTotalCount === "number"
+      ? initialTotalCount
+      : Array.isArray(initialComments)
+        ? initialComments.length
+        : 0
+  );
+  const [restoreDraftSignal, setRestoreDraftSignal] = useState<{
+    id: number;
+    text: string;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [cachedUserAvatar, setCachedUserAvatar] = useState<string>("");
 
-  // Posting, pagination & blinking animation states
+  // Posting, cursor pagination & blinking animation states
   const [isPosting, setIsPosting] = useState(false);
   const [postingCommentId, setPostingCommentId] = useState<string | null>(null);
   const [blinkingCommentId, setBlinkingCommentId] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
   const mountedRef = useRef(true);
   const isPostingRef = useRef(false);
+  const activePostTokenRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
+  const totalCountRef = useRef(totalCount);
+  totalCountRef.current = totalCount;
   const deletingIdsRef = useRef<Set<string>>(new Set());
   const fetchAbortRef = useRef<AbortController | null>(null);
   const initialCommentsRef = useRef(initialComments);
   initialCommentsRef.current = initialComments;
+  const initialTotalRef = useRef(initialTotalCount);
+  initialTotalRef.current = initialTotalCount;
+  const onCommentCountChangeRef = useRef(onCommentCountChange);
+  onCommentCountChangeRef.current = onCommentCountChange;
+
+  const updateTotalCount = useCallback((next: number) => {
+    const safe = Math.max(0, next);
+    totalCountRef.current = safe;
+    setTotalCount(safe);
+    onCommentCountChangeRef.current?.(safe);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -348,14 +539,21 @@ const CommentsDrawer = ({
         damping: 48,
         stiffness: 220,
       });
-      setPage(1);
+      nextCursorRef.current = null;
       setHasMore(false);
-      // ⚡ Always fetch fresh paginated comments from the server on open
-      void fetchComments(1, false);
+      if (typeof initialTotalRef.current === "number") {
+        setTotalCount(Math.max(0, initialTotalRef.current));
+      }
+      // ⚡ Always fetch fresh cursor-paginated comments from server on open
+      void fetchComments(null, false);
     } else {
+      // Detach active send-spinner ownership when closing so reopening never shows a stuck spinner
+      activePostTokenRef.current += 1;
+      isPostingRef.current = false;
+      setIsPosting(false);
+      setPostingCommentId(null);
       fetchAbortRef.current?.abort();
       translateY.value = withTiming(DRAWER_HEIGHT, { duration: 200 });
-      setText("");
       setActiveMenu(null);
       setConfirmComment(null);
     }
@@ -406,7 +604,7 @@ const CommentsDrawer = ({
     return { opacity };
   });
 
-  const fetchComments = async (pageNum = 1, append = false) => {
+  const fetchComments = async (cursorId: string | null = null, append = false) => {
     if (!chapterId) return;
     if (!append) {
       fetchAbortRef.current?.abort();
@@ -416,7 +614,8 @@ const CommentsDrawer = ({
 
     const cacheKey = commentsCacheKey(chapterId, isQuestion);
     const hasKnownData =
-      commentsMemoryCache.has(cacheKey) || Array.isArray(initialCommentsRef.current);
+      commentsMemoryCache.has(cacheKey) ||
+      (Array.isArray(initialCommentsRef.current) && initialCommentsRef.current.length > 0);
 
     if (append) {
       setLoadingMore(true);
@@ -440,7 +639,12 @@ const CommentsDrawer = ({
 
       const res = await api
         .get("/chapter/comment", {
-          params: { chapterId, qna: isQuestion ? 1 : 0, page: pageNum, limit: 25 },
+          params: {
+            chapterId,
+            qna: isQuestion ? 1 : 0,
+            limit: 25,
+            ...(cursorId ? { cursor: cursorId } : {}),
+          },
           headers,
           timeout: 15000,
           signal: controller.signal,
@@ -451,8 +655,12 @@ const CommentsDrawer = ({
 
       let freshComments = res?.data?.data ?? res?.data?.comments;
       const serverHasMore = Boolean(res?.data?.hasMore);
+      const serverNextCursor =
+        typeof res?.data?.nextCursor === "string" ? res.data.nextCursor : null;
+      const serverTotal =
+        typeof res?.data?.total === "number" ? res.data.total : null;
 
-      // Fallback ONLY for legacy backends where /chapter/comment returns non-array and not aborted
+      // Fallback ONLY for legacy backends where /chapter/comment returns non-array
       if (!Array.isArray(freshComments) && !append && !controller.signal.aborted) {
         const legacy = await api
           .get(`/chapter/${chapterId}`, {
@@ -471,28 +679,43 @@ const CommentsDrawer = ({
         const valid = stripTempComments(freshComments);
         if (append) {
           setComments((prev) => {
-            const seen = new Set(prev.map((c) => String(c._id)));
-            const merged = [...prev, ...valid.filter((c) => !seen.has(String(c._id)))];
-            persistCommentsCache(cacheKey, merged, onCommentsUpdated);
+            const seenIds = new Set(prev.map((c) => String(c._id)));
+            const merged = [...prev, ...valid.filter((c) => !seenIds.has(String(c._id)))];
             return merged;
           });
         } else {
           setComments((prev) => {
-            // Preserve any currently in-flight optimistic card while refreshing server list
+            const serverReqIds = new Set(
+              valid.map((c) => c.clientRequestId).filter(Boolean)
+            );
+            const serverIds = new Set(valid.map((c) => String(c._id)));
+            // Keep active pending card ONLY if server hasn't already returned it
             const pendingOptimistic = prev.filter(
-              (c) => c.isPosting || String(c._id).startsWith("posting_")
+              (c) =>
+                (c.isPosting || String(c._id).startsWith("posting_")) &&
+                !serverIds.has(String(c._id)) &&
+                (!c.clientRequestId || !serverReqIds.has(c.clientRequestId))
             );
             const next = [...pendingOptimistic, ...valid];
             persistCommentsCache(cacheKey, valid, onCommentsUpdated);
             return next;
           });
         }
-        setPage(pageNum);
-        setHasMore(serverHasMore);
+
+        nextCursorRef.current =
+          serverNextCursor ||
+          (serverHasMore && valid.length > 0 ? String(valid[valid.length - 1]._id) : null);
+        setHasMore(serverHasMore && Boolean(nextCursorRef.current || valid.length > 0));
+        if (serverTotal !== null) {
+          updateTotalCount(Math.max(serverTotal, valid.length));
+        } else if (!append) {
+          updateTotalCount(Math.max(valid.length, totalCountRef.current));
+        }
       } else if (!append && !hasKnownData) {
         commentsMemoryCache.set(cacheKey, []);
         setComments([]);
         setHasMore(false);
+        nextCursorRef.current = null;
       }
     } catch (err) {
       if (!controller.signal.aborted) {
@@ -736,6 +959,7 @@ const CommentsDrawer = ({
       persistCommentsCache(cacheKey, updated, onCommentsUpdated);
       return updated;
     });
+    updateTotalCount(totalCountRef.current - 1);
 
     try {
       const headers: Record<string, string> = {};
@@ -785,6 +1009,7 @@ const CommentsDrawer = ({
         persistCommentsCache(cacheKey, next, onCommentsUpdated);
         return next;
       });
+      updateTotalCount(totalCountRef.current + 1);
       if (mountedRef.current) {
         showToast({ title: err?.message || "Could not delete comment. Try again." });
       }
@@ -793,237 +1018,250 @@ const CommentsDrawer = ({
     }
   };
 
-  // Instant posting with synchronous double-submit lock, clean UI-only temp card, and non-cascading errors
-  const handleSend = async () => {
-    if (!isConnected) {
-      showToast({ title: "Please connect to the Internet." });
-      return;
-    }
-
-    const trimmed = text.trim();
-    if (!trimmed || isPostingRef.current) return;
-
-    const validChapterId = String(chapterId || "").trim();
-    if (!validChapterId || validChapterId === "undefined" || validChapterId === "null") {
-      showToast({ title: "Content reference missing. Please reopen." });
-      return;
-    }
-
-    isPostingRef.current = true;
-    const tempId = `posting_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const myAvatar = avatarUri(user, "sm") || cachedUserAvatar || user?.image || "";
-    const optimisticComment: Comment = {
-      _id: tempId,
-      isPosting: true,
-      by: {
-        _id: user?._id || "temp_user",
-        name: user?.name || "You",
-        userId: user?.userId ? "@" + user.userId : "@you",
-        image: myAvatar,
-        imageMd: (user as any)?.imageMd,
-        imageSm: (user as any)?.imageSm,
-      } as any,
-      userEmail: user?.email || undefined,
-      userName: user?.name || "You",
-      userHandle: user?.userId || "you",
-      userImage: myAvatar,
-      text: trimmed,
-      createdAt: new Date().toISOString(),
-    };
-
-    // ⚡ Instant UI update (kept in React state only — NEVER persisted to cache with isPosting: true)
-    setText("");
-    const cacheKey = commentsCacheKey(validChapterId, isQuestion);
-    setComments((prev) => [optimisticComment, ...prev]);
-    setIsPosting(true);
-    setPostingCommentId(tempId);
-
-    const headers: Record<string, string> = {};
-    let token = accessToken;
-    if (!token) {
-      try {
-        const stored = await AsyncStorage.getItem("accessToken");
-        if (stored) token = JSON.parse(stored)?.token || stored;
-      } catch {}
-    }
-    if (token && typeof token === "string" && token.trim()) {
-      headers["Authorization"] = `Bearer ${token.trim()}`;
-    }
-    if (user?.email) headers["x-user-email"] = user.email;
-
-    const payload = {
-      chapterId: validChapterId,
-      text: trimmed,
-      isQna: Boolean(isQuestion),
-      qna: isQuestion ? 1 : 0,
-    };
-
-    const requestConfig = {
-      headers,
-      timeout: 16000,
-    };
-
-    try {
-      let res: any = null;
-      try {
-        res = await api.post("/chapter/comment", payload, requestConfig);
-      } catch (postErr: any) {
-        const status = postErr?.response?.status;
-        // Only fall back to legacy routes when canonical endpoint is unavailable (404/405),
-        // never on timeouts, rate limits, auth errors, or server validation failures.
-        if (status === 404 || status === 405) {
-          res = await api.post(
-            isQuestion ? "/question/comment" : "/chapter/comment/add",
-            payload,
-            requestConfig
-          );
-        } else {
-          const serverMsg =
-            postErr?.response?.data?.message ||
-            (postErr?.code === "ECONNABORTED"
-              ? "Request timed out. Please try again."
-              : postErr?.message) ||
-            "Could not post comment";
-          throw new Error(serverMsg);
-        }
+  // Instant posting with synchronous double-submit lock, idempotent OkHttp retry, and clean drawer-reopen handling
+  const handleSend = useCallback(
+    async (submittedText: string) => {
+      if (!isConnected) {
+        setRestoreDraftSignal({ id: Date.now(), text: submittedText });
+        showToast({ title: "Please connect to the Internet." });
+        return;
       }
 
-      const isSuccess =
-        res?.data?.success === true || res?.status === 200 || res?.status === 201;
+      const trimmed = submittedText.trim();
+      if (!trimmed || isPostingRef.current) return;
 
-      if (isSuccess) {
-        const realComment = res.data?.comment || res.data?.data;
-        const realId = realComment?._id ? String(realComment._id) : `comment_${Date.now()}`;
-        const finalizedComment: Comment = {
-          ...optimisticComment,
-          ...(typeof realComment === "object" ? realComment : {}),
-          _id: realId,
-          isPosting: false,
-          by: {
-            _id: user?._id || realComment?.by?._id,
-            name: user?.name || realComment?.by?.name || "You",
-            userId: user?.userId || realComment?.by?.userId || "you",
-            image: myAvatar || realComment?.by?.image || user?.image,
-            imageMd: (user as any)?.imageMd || realComment?.by?.imageMd,
-            imageSm: (user as any)?.imageSm || realComment?.by?.imageSm,
-            profileLevel: user?.profileLevel || realComment?.by?.profileLevel || 1,
-          },
-          userEmail: user?.email,
-          text: trimmed,
-        };
-
-        // Persist finalized comment to cache even if drawer was closed mid-flight
-        const cachedList = stripTempComments(commentsMemoryCache.get(cacheKey) || []);
-        const updatedCache = [
-          finalizedComment,
-          ...cachedList.filter((c) => String(c._id) !== realId),
-        ];
-        persistCommentsCache(cacheKey, updatedCache, onCommentsUpdated);
-
-        if (mountedRef.current) {
-          setComments((prev) =>
-            prev.map((c) => (c._id === tempId ? finalizedComment : c))
-          );
-          setBlinkingCommentId(finalizedComment._id);
-          triggerHaptic(10);
-          setTimeout(() => {
-            if (mountedRef.current) {
-              setBlinkingCommentId((curr) =>
-                curr === finalizedComment._id ? null : curr
-              );
-            }
-          }, 450);
-        }
-      } else {
-        throw new Error(res?.data?.message || "Failed to post comment");
+      const validChapterId = String(chapterId || "").trim();
+      if (!validChapterId || validChapterId === "undefined" || validChapterId === "null") {
+        setRestoreDraftSignal({ id: Date.now(), text: trimmed });
+        showToast({ title: "Content reference missing. Please reopen." });
+        return;
       }
-    } catch (err: any) {
-      console.error("Comment post error:", err);
-      if (mountedRef.current) {
-        setComments((prev) => prev.filter((c) => c._id !== tempId));
-        setText((curr) => curr || trimmed);
-        showToast({ title: err?.message || "Could not post comment. Please try again." });
+
+      isPostingRef.current = true;
+      const myPostToken = ++activePostTokenRef.current;
+      const clientRequestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const tempId = `posting_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const myAvatar = avatarUri(user, "sm") || cachedUserAvatar || user?.image || "";
+      const optimisticComment: Comment = {
+        _id: tempId,
+        clientRequestId,
+        isPosting: true,
+        by: {
+          _id: user?._id || "temp_user",
+          name: user?.name || "You",
+          userId: user?.userId ? "@" + user.userId : "@you",
+          image: myAvatar,
+          imageMd: (user as any)?.imageMd,
+          imageSm: (user as any)?.imageSm,
+        } as any,
+        userEmail: user?.email || undefined,
+        userName: user?.name || "You",
+        userHandle: user?.userId || "you",
+        userImage: myAvatar,
+        text: trimmed,
+        createdAt: new Date().toISOString(),
+      };
+
+      const cacheKey = commentsCacheKey(validChapterId, isQuestion);
+      setComments((prev) => [optimisticComment, ...prev]);
+      setIsPosting(true);
+      setPostingCommentId(tempId);
+
+      const headers: Record<string, string> = {};
+      let token = accessToken;
+      if (!token) {
+        try {
+          const stored = await AsyncStorage.getItem("accessToken");
+          if (stored) token = JSON.parse(stored)?.token || stored;
+        } catch {}
       }
-    } finally {
-      isPostingRef.current = false;
-      if (mountedRef.current) {
-        setIsPosting(false);
-        setPostingCommentId(null);
+      if (token && typeof token === "string" && token.trim()) {
+        headers["Authorization"] = `Bearer ${token.trim()}`;
       }
-    }
-  };
+      if (user?.email) headers["x-user-email"] = user.email;
 
-  const renderComment = ({ item }: { item: Comment }) => {
-    if (!item || !item._id || typeof item.text !== "string") {
-      return null;
-    }
+      const payload = {
+        chapterId: validChapterId,
+        text: trimmed,
+        isQna: Boolean(isQuestion),
+        qna: isQuestion ? 1 : 0,
+        clientRequestId,
+      };
 
-    const isMine = isMyComment(item);
-    const isThisPosting = item._id === postingCommentId || (item as any).isPosting;
-    const isThisBlinking = item._id === blinkingCommentId;
-    const isSelected = activeMenu?.comment?._id === item._id || confirmComment?._id === item._id;
-    const author = getCommentDisplay(item);
+      const requestConfig = {
+        headers,
+        timeout: 22000,
+      };
 
-    return (
-      <Pressable
-        onPressIn={(e) => {
-          if (isMine && !isThisPosting) {
-            touchCoordsRef.current = {
-              pageX: e.nativeEvent.pageX,
-              pageY: e.nativeEvent.pageY,
-            };
+      const postOnce = async () => {
+        try {
+          return await api.post("/chapter/comment", payload, requestConfig);
+        } catch (postErr: any) {
+          const status = postErr?.response?.status;
+          if (status === 404 || status === 405) {
+            return await api.post(
+              isQuestion ? "/question/comment" : "/chapter/comment/add",
+              payload,
+              requestConfig
+            );
           }
-        }}
-        delayLongPress={HOLD_DURATION_MS}
-        onLongPress={(e) => {
-          // CANNOT delete comment while it is posting!
-          if (!isMine || isThisPosting) return;
-          handleLongPress(item, e);
-        }}
-        style={({ pressed }) => [
-          styles.commentItemWrapper,
-          isThisPosting && styles.commentItemPosting,
-          isThisBlinking && styles.commentItemBlinking,
-          isSelected && styles.commentItemSelected,
-          pressed && isMine && !isThisPosting && styles.commentItemPressed,
-        ]}>
-        <View style={styles.commentItem}>
-          <TouchableOpacity
-            activeOpacity={0.75}
-            onPress={() => handleOpenUserProfile(author)}
-          >
-            <CachedImage
-              uri={author.image}
-              label={author.name}
-              style={styles.userAvatar}
-              letterSize={14}
-              transition={0}
-            />
-          </TouchableOpacity>
-          <View style={styles.commentContent}>
-            <View style={styles.commentMeta}>
-              <TouchableOpacity
-                activeOpacity={0.75}
-                onPress={() => handleOpenUserProfile(author)}
-                style={{ flexDirection: "row", alignItems: "center", gap: 5 }}
-              >
-                <Text style={[styles.userName, isThisPosting && styles.textSubtleGray]}>
-                  {author.name}
-                </Text>
-                <Text style={styles.userHandle}>@{author.handle}</Text>
-              </TouchableOpacity>
-              <Text style={styles.commentDate}>
-                {isThisPosting ? "Posting..." : formatDate(item.createdAt)}
-              </Text>
-            </View>
-            <Text style={[styles.commentText, isThisPosting && styles.textSubtleGray]}>
-              {item.text}
-            </Text>
-          </View>
-        </View>
-      </Pressable>
-    );
-  };
+          throw postErr;
+        }
+      };
+
+      try {
+        let res: any = null;
+        try {
+          res = await postOnce();
+        } catch (firstErr: any) {
+          // Retry ONCE automatically on transient transport/socket drop (no HTTP response),
+          // safe because clientRequestId guarantees server idempotency with zero duplicates.
+          if (!firstErr?.response) {
+            await new Promise((r) => setTimeout(r, 350));
+            res = await postOnce();
+          } else {
+            throw firstErr;
+          }
+        }
+
+        const isSuccess =
+          res?.data?.success === true || res?.status === 200 || res?.status === 201;
+
+        if (isSuccess) {
+          const realComment = res.data?.comment || res.data?.data;
+          const realId = realComment?._id ? String(realComment._id) : `comment_${Date.now()}`;
+          const finalizedComment: Comment = {
+            ...optimisticComment,
+            ...(typeof realComment === "object" ? realComment : {}),
+            _id: realId,
+            clientRequestId,
+            isPosting: false,
+            by: {
+              _id: user?._id || realComment?.by?._id,
+              name: user?.name || realComment?.by?.name || "You",
+              userId: user?.userId || realComment?.by?.userId || "you",
+              image: myAvatar || realComment?.by?.image || user?.image,
+              imageMd: (user as any)?.imageMd || realComment?.by?.imageMd,
+              imageSm: (user as any)?.imageSm || realComment?.by?.imageSm,
+              profileLevel: user?.profileLevel || realComment?.by?.profileLevel || 1,
+            },
+            userEmail: user?.email,
+            text: trimmed,
+          };
+
+          const cachedList = stripTempComments(commentsMemoryCache.get(cacheKey) || []);
+          const updatedCache = [
+            finalizedComment,
+            ...cachedList.filter(
+              (c) => String(c._id) !== realId && (!clientRequestId || c.clientRequestId !== clientRequestId)
+            ),
+          ];
+          persistCommentsCache(cacheKey, updatedCache, onCommentsUpdated);
+
+          if (mountedRef.current) {
+            updateTotalCount(totalCountRef.current + 1);
+            setComments((prev) => {
+              const withoutDup = prev.filter(
+                (c) =>
+                  c._id !== realId &&
+                  (!c.clientRequestId || c.clientRequestId !== clientRequestId || c._id === tempId)
+              );
+              const replaced = withoutDup.some((c) => c._id === tempId);
+              return replaced
+                ? withoutDup.map((c) => (c._id === tempId ? finalizedComment : c))
+                : [finalizedComment, ...withoutDup];
+            });
+            setBlinkingCommentId(finalizedComment._id);
+            triggerHaptic(10);
+            setTimeout(() => {
+              if (mountedRef.current) {
+                setBlinkingCommentId((curr) =>
+                  curr === finalizedComment._id ? null : curr
+                );
+              }
+            }, 450);
+          }
+        } else {
+          throw new Error(res?.data?.message || "Failed to post comment");
+        }
+      } catch (err: any) {
+        const msg =
+          err?.response?.data?.message ||
+          (err?.code === "ECONNABORTED"
+            ? "Request timed out. Please try again."
+            : !err?.response
+              ? "Connection unstable. Please try again."
+              : err?.message) ||
+          "Could not post comment";
+        console.error("Comment post error:", err);
+        if (mountedRef.current) {
+          setComments((prev) => prev.filter((c) => c._id !== tempId));
+          setRestoreDraftSignal({ id: Date.now(), text: trimmed });
+          showToast({ title: msg });
+        }
+      } finally {
+        if (activePostTokenRef.current === myPostToken) {
+          isPostingRef.current = false;
+          if (mountedRef.current) {
+            setIsPosting(false);
+            setPostingCommentId(null);
+          }
+        }
+      }
+    },
+    [isConnected, chapterId, isQuestion, user, cachedUserAvatar, accessToken, onCommentsUpdated, showToast, updateTotalCount]
+  );
+
+  const handlePressInMine = useCallback((e: any) => {
+    touchCoordsRef.current = {
+      pageX: e.nativeEvent.pageX,
+      pageY: e.nativeEvent.pageY,
+    };
+  }, []);
+
+  const renderComment = useCallback(
+    ({ item }: { item: Comment }) => {
+      if (!item || !item._id || typeof item.text !== "string") {
+        return null;
+      }
+
+      const isMine = isMyComment(item);
+      const isThisPosting = item._id === postingCommentId || Boolean((item as any).isPosting);
+      const isThisBlinking = item._id === blinkingCommentId;
+      const isSelected =
+        activeMenu?.comment?._id === item._id || confirmComment?._id === item._id;
+      const author = getCommentDisplay(item);
+
+      return (
+        <CommentRow
+          item={item}
+          isMine={isMine}
+          isThisPosting={isThisPosting}
+          isThisBlinking={isThisBlinking}
+          isSelected={isSelected}
+          author={author}
+          onPressInMine={handlePressInMine}
+          onLongPressMine={handleLongPress}
+          onPressProfile={handleOpenUserProfile}
+        />
+      );
+    },
+    [
+      isMyComment,
+      postingCommentId,
+      blinkingCommentId,
+      activeMenu?.comment?._id,
+      confirmComment?._id,
+      getCommentDisplay,
+      handlePressInMine,
+      handleOpenUserProfile,
+    ]
+  );
+
+  const commentKeyExtractor = useCallback(
+    (item: any, index: number) => String(item?._id ?? index),
+    []
+  );
 
   if (!visible) return null;
 
@@ -1047,7 +1285,7 @@ const CommentsDrawer = ({
               </Text>
               <View style={styles.headerCount}>
                 <Text style={styles.headerCountText}>
-                  {formatCount(comments.length)}
+                  {formatCount(Math.max(totalCount, comments.length))}
                 </Text>
               </View>
             </View>
@@ -1056,15 +1294,15 @@ const CommentsDrawer = ({
 
         <FlashList
           data={comments}
-          keyExtractor={(item: any, index: number) => String(item?._id ?? index)}
+          keyExtractor={commentKeyExtractor}
           renderItem={renderComment}
           scrollEnabled={true}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           onEndReachedThreshold={0.4}
           onEndReached={() => {
-            if (hasMore && !loading && !loadingMore) {
-              void fetchComments(page + 1, true);
+            if (hasMore && !loading && !loadingMore && nextCursorRef.current) {
+              void fetchComments(nextCursorRef.current, true);
             }
           }}
           ListFooterComponent={
@@ -1091,46 +1329,13 @@ const CommentsDrawer = ({
           }
         />
 
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}>
-          <Animated.View style={[styles.inputWrapper, inputAnimatedStyle]}>
-            <View style={styles.inputBox}>
-              <TextInput
-                style={styles.inputField}
-                placeholder="Say something..."
-                placeholderTextColor="rgba(156, 163, 175, 0.5)"
-                value={text}
-                onChangeText={setText}
-                multiline={false}
-                maxLength={500}
-                editable={true}
-              />
-
-              <PopButton onPress={!isPosting && text.trim() ? handleSend : undefined}>
-                <View
-                  style={[
-                    styles.sendBtn,
-                    (!text.trim() || isPosting) && styles.sendBtnDisabled,
-                  ]}>
-                  {isPosting ? (
-                    <ActivityIndicator size="small" color="#fff" />
-                  ) : (
-                    <Svg
-                      width={20}
-                      height={20}
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="#fff"
-                      strokeWidth="2.2">
-                      <Line x1="12" y1="19" x2="12" y2="5" />
-                      <Polyline points="5 12 12 5 19 12" />
-                    </Svg>
-                  )}
-                </View>
-              </PopButton>
-            </View>
-          </Animated.View>
-        </KeyboardAvoidingView>
+        <CommentInputBar
+          visible={visible}
+          isPosting={isPosting}
+          inputAnimatedStyle={inputAnimatedStyle}
+          restoreDraftSignal={restoreDraftSignal}
+          onSend={handleSend}
+        />
       </Animated.View>
 
       {/* Adaptive floating delete button overlay */}

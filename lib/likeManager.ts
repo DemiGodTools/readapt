@@ -94,6 +94,26 @@ class LikeManagerClass {
     this.persistDebounced();
   }
 
+  public hasPendingMutation(chapterId: string | undefined | null): boolean {
+    if (!chapterId) return false;
+    const id = String(chapterId).trim();
+    return (
+      this.baselineServer.has(id) ||
+      this.syncTimers.has(id) ||
+      this.inFlightSyncs.has(id)
+    );
+  }
+
+  public seedFromServer(
+    chapterId: string | undefined | null,
+    liked: boolean,
+    count: number,
+    broadcast = false
+  ): void {
+    if (!chapterId || this.hasPendingMutation(chapterId)) return;
+    this.set(chapterId, Boolean(liked), Math.max(0, Number(count) || 0), broadcast);
+  }
+
   private baselineServer = new Map<string, { liked: boolean; count: number }>();
   private desiredServerLiked = new Map<string, boolean>();
   private syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
