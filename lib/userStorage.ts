@@ -162,8 +162,55 @@ export const getRecentReads = async (userId?: string, forceSync = false): Promis
   }
 };
 
+const OFFLINE_PROGRESS_QUEUE_KEY = "@readapt_offline_progress_queue_v1";
+
+const queueFailedCloudSync = async (chapterId: string, readtill: string, total: string) => {
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_PROGRESS_QUEUE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    const queue = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    queue[chapterId] = { chapterId, readtill, total, updatedAt: Date.now() };
+    await AsyncStorage.setItem(OFFLINE_PROGRESS_QUEUE_KEY, JSON.stringify(queue));
+  } catch {}
+};
+
+/**
+ * Flushes any progress writes that failed while offline once connectivity returns.
+ */
+export const flushOfflineProgressQueue = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(OFFLINE_PROGRESS_QUEUE_KEY);
+    if (!raw) return;
+    const queue = JSON.parse(raw);
+    if (!queue || typeof queue !== "object") return;
+    const entries = Object.values(queue) as Array<{ chapterId: string; readtill: string; total: string }>;
+    if (entries.length === 0) return;
+
+    const remaining: Record<string, any> = {};
+    for (const item of entries) {
+      if (!item?.chapterId) continue;
+      try {
+        await api.post("/recent-reads", {
+          chapterId: String(item.chapterId),
+          readtill: String(item.readtill || "1"),
+          total: String(item.total || "1"),
+        });
+      } catch {
+        remaining[item.chapterId] = item;
+      }
+    }
+
+    if (Object.keys(remaining).length > 0) {
+      await AsyncStorage.setItem(OFFLINE_PROGRESS_QUEUE_KEY, JSON.stringify(remaining));
+    } else {
+      await AsyncStorage.removeItem(OFFLINE_PROGRESS_QUEUE_KEY);
+    }
+  } catch {}
+};
+
 /**
  * Dispatches the throttled background network write to MongoDB.
+ * Persists failed writes to the offline retry queue so progress is never lost.
  */
 const executeCloudProgressSync = (chapterId: string, readtill: string, total: string) => {
   if (!chapterId) return;
@@ -173,7 +220,9 @@ const executeCloudProgressSync = (chapterId: string, readtill: string, total: st
       readtill: String(readtill || "1"),
       total: String(total || "1"),
     })
-    .catch(() => {});
+    .catch(() => {
+      void queueFailedCloudSync(String(chapterId), String(readtill || "1"), String(total || "1"));
+    });
 };
 
 /**

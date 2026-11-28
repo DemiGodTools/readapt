@@ -14,6 +14,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useEffect } from "react";
 import * as NavigationBar from "expo-navigation-bar";
 import AudioControls from "./components/props/AudioControls";
+import { ErrorBoundary } from "./components/props/ErrorBoundary";
 
 export default function App() {
   useEffect(() => {
@@ -25,17 +26,19 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <View style={styles.container}>
-          <DataProvider>
-            <MainNavigation />
-            <AudioControls />
-            <Toast />
-            <Modal />
-            <StatusBar style="light" backgroundColor="#090314" animated={true} />
-          </DataProvider>
-        </View>
-      </SafeAreaProvider>
+      <ErrorBoundary>
+        <SafeAreaProvider>
+          <View style={styles.container}>
+            <DataProvider>
+              <MainNavigation />
+              <AudioControls />
+              <Toast />
+              <Modal />
+              <StatusBar style="light" backgroundColor="#090314" animated={true} />
+            </DataProvider>
+          </View>
+        </SafeAreaProvider>
+      </ErrorBoundary>
     </GestureHandlerRootView>
   );
 }

@@ -14,7 +14,11 @@ import { GoogleSignin } from "@react-native-google-signin/google-signin";
 import { IUser } from "../../types/User";
 import { notifyAuthChange } from "../../hooks/useAuth";
 import { api, setApiUserEmail, setApiAccessToken } from "../../lib/api";
-import { hydrateRecentReadsFromUser, resetUserStorageCache } from "../../lib/userStorage";
+import {
+  hydrateRecentReadsFromUser,
+  resetUserStorageCache,
+  flushOfflineProgressQueue,
+} from "../../lib/userStorage";
 import { useNetworkStatus } from "../../hooks/useNetwork";
 import { useGlobalAudioActions } from "../../hooks/useGlobalAudio";
 
@@ -304,7 +308,10 @@ export const DataProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const wasConnected = wasConnectedRef.current;
     wasConnectedRef.current = isConnected;
-    if (isConnected && !wasConnected) getUser();
+    if (isConnected && !wasConnected) {
+      void flushOfflineProgressQueue();
+      getUser();
+    }
   }, [isConnected, getUser]);
 
   // Presence Heartbeat & AppState Listener (Instant logged in detection)

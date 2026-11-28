@@ -13,6 +13,7 @@ import { useNavigation } from "@react-navigation/native";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { RootStackParamList } from "../nav/MainNavigation";
 import CachedImage from "./CachedImage";
+import { safeNavigate } from "../../lib/safeNav";
 
 type Props = {
   id: string;
@@ -59,7 +60,7 @@ const SeriesCard = ({
   };
 
   const handlePress = () => {
-    navigation.navigate("SeriesOverview", { seriesId: id });
+    safeNavigate(navigation, "SeriesOverview", { seriesId: id });
   };
 
   const renderTitle = () => {

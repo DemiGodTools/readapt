@@ -1725,9 +1725,10 @@ const AudioPlayerScreen = ({ route }: Props) => {
       if (idx !== -1) {
         activeLineRef.current = idx;
         setActiveTranscriptionIndex(idx);
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           scrollToLineCenter(idx, true);
         }, 180);
+        return () => clearTimeout(timer);
       }
     }
   }, [showLyrics, transcriptions, scrollToLineCenter]);
@@ -1869,13 +1870,14 @@ const AudioPlayerScreen = ({ route }: Props) => {
     }
   }, [currentBookDownloadStatus]);
 
-  const fetchChapter = useCallback(async () => {
+  const fetchChapter = useCallback(async (signal?: AbortSignal) => {
     if (!chapterId) return;
     if (!isAlreadyActiveTrack) {
       setIsLoading(true);
     }
     try {
       const downloaded = await getSingleDownloaded(chapterId);
+      if (signal?.aborted) return;
       if (downloaded) {
         setBook((prev) => {
           const cleanPrev = prev && String(prev._id) === String(chapterId) ? prev : null;
@@ -1896,7 +1898,8 @@ const AudioPlayerScreen = ({ route }: Props) => {
       if (isConnected) {
         const headers: Record<string, string> = {};
         if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-        const chapter = await api.get(`/chapter/${chapterId}`, { headers, timeout: 8000 }).catch(() => null);
+        const chapter = await api.get(`/chapter/${chapterId}`, { headers, timeout: 8000, signal }).catch(() => null);
+        if (signal?.aborted) return;
         if (chapter?.data?.data) {
           resolvedBook = chapter.data.data;
         } else if (chapter?.data) {
@@ -1975,8 +1978,9 @@ const AudioPlayerScreen = ({ route }: Props) => {
             cleanSId.length >= 10
           ) {
             api
-              .get(`/series/${cleanSId}`, { timeout: 8000 })
+              .get(`/series/${cleanSId}`, { timeout: 8000, signal })
               .then((sRes) => {
+                if (signal?.aborted) return;
                 if (sRes?.data?.data) {
                   setSeriesData(sRes.data.data);
                   (updateTrackMetadata as any)?.({ series: sRes.data.data });
@@ -1987,17 +1991,22 @@ const AudioPlayerScreen = ({ route }: Props) => {
         }
       }
     } catch (error) {
+      if (signal?.aborted) return;
       try {
         const downloaded = await getSingleDownloaded(chapterId);
-        if (downloaded) setBook(downloaded as any);
+        if (downloaded && !signal?.aborted) setBook(downloaded as any);
       } catch (_) {}
     } finally {
-      setIsLoading(false);
+      if (!signal?.aborted) setIsLoading(false);
     }
   }, [chapterId, accessToken, isConnected, showToast, isAlreadyActiveTrack]);
 
   useEffect(() => {
-    fetchChapter();
+    const controller = new AbortController();
+    void fetchChapter(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [fetchChapter]);
 
   const updateRecentReads = useCallback(
@@ -2359,26 +2368,37 @@ const AudioPlayerScreen = ({ route }: Props) => {
       }),
     ]).start();
 
-    try {
-      const res = await api.post(
-        "/chapter/like",
-        { chapterId },
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      if (res?.data?.success) {
-        const serverLiked = Boolean(res.data.liked);
-        const serverLikes =
-          typeof res.data.likes === "number" ? res.data.likes : resolvedLikes;
-        setIsLiked(serverLiked);
-        setBook((prev) => (prev ? { ...prev, likes: serverLikes, isLiked: serverLiked } : prev));
-        LikeManager.set(chapterId, serverLiked, serverLikes);
+    LikeManager.scheduleCoalescedSync(
+      chapterId,
+      prevLiked,
+      nextState,
+      async () => {
+        const res = await api.post(
+          "/chapter/like",
+          { chapterId },
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (res?.data?.success) {
+          return {
+            liked: Boolean(res.data.liked),
+            likes: typeof res.data.likes === "number" ? res.data.likes : resolvedLikes,
+          };
+        }
+        return null;
+      },
+      (result) => {
+        if (result.success) {
+          const confirmedLikes = result.likes ?? resolvedLikes;
+          setIsLiked(result.liked);
+          setBook((prev) => (prev ? { ...prev, likes: confirmedLikes, isLiked: result.liked } : prev));
+        } else {
+          setIsLiked(result.liked);
+          setBook((prev) => (prev ? { ...prev, likes: currentLikes, isLiked: result.liked } : prev));
+          LikeManager.set(chapterId, result.liked, currentLikes);
+          showToast({ title: "Could not update like. Please try again." });
+        }
       }
-    } catch (_) {
-      setIsLiked(prevLiked);
-      setBook((prev) => (prev ? { ...prev, likes: currentLikes, isLiked: prevLiked } : prev));
-      LikeManager.set(chapterId, prevLiked, currentLikes);
-      showToast({ title: "Could not update like. Please try again." });
-    }
+    );
   };
 
   const share = async () => {

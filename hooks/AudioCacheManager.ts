@@ -15,7 +15,10 @@ interface CachedItem {
   isComplete: boolean;
 }
 
-const activeDownloads = new Map<string, FileSystem.DownloadResumable>();
+const activeDownloads = new Map<
+  string,
+  { trackId: string; resumable: FileSystem.DownloadResumable; localPath: string }
+>();
 const cacheIndex: Map<string, CachedItem> = new Map();
 let isInitialized = false;
 
@@ -47,7 +50,16 @@ const loadIndex = async () => {
   await ensureCacheDir();
   try {
     const raw = await AsyncStorage.getItem(CACHE_METADATA_KEY);
-    if (raw) JSON.parse(raw).forEach((item: CachedItem) => cacheIndex.set(item.trackId, item));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: CachedItem) => {
+          if (item && typeof item === "object" && item.trackId) {
+            cacheIndex.set(item.trackId, item);
+          }
+        });
+      }
+    }
   } catch (_) {}
 };
 
@@ -113,7 +125,7 @@ export const AudioCacheManager = {
     const localPath = `${CACHE_DIR}${sanitizeFileName(trackId, remoteUrl)}`;
     try {
       const downloadResumable = FileSystem.createDownloadResumable(remoteUrl, localPath, {}, () => {});
-      activeDownloads.set(downloadKey, downloadResumable);
+      activeDownloads.set(downloadKey, { trackId, resumable: downloadResumable, localPath });
       const result = await downloadResumable.downloadAsync();
       activeDownloads.delete(downloadKey);
 
@@ -123,7 +135,23 @@ export const AudioCacheManager = {
         await saveIndex();
         void this.pruneCacheIfNeeded();
       }
-    } catch (_) { activeDownloads.delete(downloadKey); }
+    } catch (_) {
+      activeDownloads.delete(downloadKey);
+    }
+  },
+
+  async cancelAllBackgroundDownloads(keepTrackId?: string): Promise<void> {
+    const entries = Array.from(activeDownloads.entries());
+    for (const [key, entry] of entries) {
+      if (keepTrackId && entry.trackId === keepTrackId) continue;
+      activeDownloads.delete(key);
+      try {
+        await entry.resumable.cancelAsync();
+      } catch (_) {}
+      try {
+        await FileSystem.deleteAsync(entry.localPath, { idempotent: true });
+      } catch (_) {}
+    }
   },
 
   warmTrackMetadata(trackId: string, remoteUrl: string): void {

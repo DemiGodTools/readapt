@@ -14,6 +14,7 @@ import { IUser } from "../../types/User";
 import { canUserAccessChapter } from "../../lib/entitlements";
 import CachedImage from "./CachedImage";
 import { LikeManager } from "../../lib/likeManager";
+import { safeNavigate } from "../../lib/safeNav";
 
 const { width } = Dimensions.get("window");
 
@@ -122,7 +123,7 @@ const ContentCard = memo(
       };
 
       if (mediaType === "pdf") {
-        navigation.navigate("ReadBook", {
+        safeNavigate(navigation, "ReadBook", {
           bookId: String(targetId),
           initialBookData: enrichedBook,
           isFramework: isFrameworkMode,
@@ -130,7 +131,7 @@ const ContentCard = memo(
           seriesId: sId,
         } as any);
       } else {
-        navigation.navigate("AudioRdr", {
+        safeNavigate(navigation, "AudioRdr", {
           bookId: String(targetId),
           initialBookData: enrichedBook,
           isFramework: isFrameworkMode,

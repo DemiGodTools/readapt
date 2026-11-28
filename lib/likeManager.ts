@@ -94,6 +94,84 @@ class LikeManagerClass {
     this.persistDebounced();
   }
 
+  private baselineServerLiked = new Map<string, boolean>();
+  private desiredServerLiked = new Map<string, boolean>();
+  private syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private inFlightSyncs = new Set<string>();
+
+  /**
+   * Coalesces rapid Like/Unlike taps per chapter so at most one serialized
+   * server toggle fires once user taps settle, preventing optimistic desync.
+   */
+  public scheduleCoalescedSync(
+    chapterId: string,
+    prevServerLiked: boolean,
+    desiredLiked: boolean,
+    toggleRequest: () => Promise<{ liked: boolean; likes: number } | null>,
+    onSynced?: (result: { success: boolean; liked: boolean; likes?: number }) => void
+  ) {
+    const id = String(chapterId || "").trim();
+    if (!id) return;
+
+    if (!this.baselineServerLiked.has(id)) {
+      this.baselineServerLiked.set(id, prevServerLiked);
+    }
+    this.desiredServerLiked.set(id, desiredLiked);
+
+    const existingTimer = this.syncTimers.get(id);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timer = setTimeout(() => {
+      this.syncTimers.delete(id);
+      void this.flushCoalescedSync(id, toggleRequest, onSynced);
+    }, 350);
+    this.syncTimers.set(id, timer);
+  }
+
+  private async flushCoalescedSync(
+    id: string,
+    toggleRequest: () => Promise<{ liked: boolean; likes: number } | null>,
+    onSynced?: (result: { success: boolean; liked: boolean; likes?: number }) => void
+  ) {
+    if (this.inFlightSyncs.has(id)) return;
+
+    const baseline = this.baselineServerLiked.get(id);
+    const desired = this.desiredServerLiked.get(id);
+    if (baseline === undefined || desired === undefined || desired === baseline) {
+      this.baselineServerLiked.delete(id);
+      this.desiredServerLiked.delete(id);
+      return;
+    }
+
+    this.inFlightSyncs.add(id);
+    try {
+      const res = await toggleRequest();
+      if (res) {
+        this.baselineServerLiked.set(id, res.liked);
+        const latestDesired = this.desiredServerLiked.get(id);
+        if (latestDesired !== undefined && latestDesired !== res.liked) {
+          this.inFlightSyncs.delete(id);
+          await this.flushCoalescedSync(id, toggleRequest, onSynced);
+          return;
+        }
+        this.baselineServerLiked.delete(id);
+        this.desiredServerLiked.delete(id);
+        this.set(id, res.liked, res.likes);
+        onSynced?.({ success: true, liked: res.liked, likes: res.likes });
+      } else {
+        this.baselineServerLiked.delete(id);
+        this.desiredServerLiked.delete(id);
+        onSynced?.({ success: false, liked: baseline });
+      }
+    } catch {
+      this.baselineServerLiked.delete(id);
+      this.desiredServerLiked.delete(id);
+      onSynced?.({ success: false, liked: baseline });
+    } finally {
+      this.inFlightSyncs.delete(id);
+    }
+  }
+
   private persistDebounced() {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(async () => {

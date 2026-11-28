@@ -75,6 +75,7 @@ let lockScreenOwnerPlayer: AudioPlayer | null = null;
 // Window during which a play() we just issued is trusted over the native state.
 // Outside it, play/pause coming from the lock screen or notification must win.
 let playIntentLockUntil = 0;
+let backgroundCacheTimer: ReturnType<typeof setTimeout> | null = null;
 
 let globalStatus: AudioStatus = {
   isLoaded: false,
@@ -314,9 +315,21 @@ const stateListeners: Set<() => void> = new Set();
 const timeListeners: Set<(currentTime: number, duration: number) => void> = new Set();
 const volumeListeners: Set<(volume: number) => void> = new Set();
 
-const notifyStateListeners = () => stateListeners.forEach((l) => l());
-const notifyTimeListeners = (c: number, d: number) => timeListeners.forEach((l) => l(c, d));
-const notifyVolumeListeners = (v: number) => volumeListeners.forEach((l) => l(v));
+const notifyStateListeners = () => {
+  stateListeners.forEach((l) => {
+    try { l(); } catch (_) {}
+  });
+};
+const notifyTimeListeners = (c: number, d: number) => {
+  timeListeners.forEach((l) => {
+    try { l(c, d); } catch (_) {}
+  });
+};
+const notifyVolumeListeners = (v: number) => {
+  volumeListeners.forEach((l) => {
+    try { l(v); } catch (_) {}
+  });
+};
 
 export const subscribeToPlaybackTime = (listener: (c: number, d: number) => void): (() => void) => {
   timeListeners.add(listener);
@@ -529,6 +542,12 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     return;
   }
 
+  if (backgroundCacheTimer) {
+    clearTimeout(backgroundCacheTimer);
+    backgroundCacheTimer = null;
+  }
+  void AudioCacheManager.cancelAllBackgroundDownloads(trackId);
+
   // ⚡ Complete isolation: pause the old player and clear previous lock-screen controls immediately
   if (globalPlayer) {
     try {
@@ -665,7 +684,9 @@ const playTrackInternal = async (track: IChapter, initialPositionSec = 0) => {
     // Delay background full-file caching by 6s so ExoPlayer's initial buffering & seeking
     // get 100% of the network bandwidth without competing against a parallel download.
     if (!isCached && protocol === "range-chunk") {
-      setTimeout(() => {
+      if (backgroundCacheTimer) clearTimeout(backgroundCacheTimer);
+      backgroundCacheTimer = setTimeout(() => {
+        backgroundCacheTimer = null;
         if (
           loadToken === currentLoadToken &&
           globalCurrentTrack &&
@@ -750,6 +771,11 @@ export const flushVolumeDirect = (): void => {
 
 const removeAllTracksInternal = () => {
   currentLoadToken++;
+  if (backgroundCacheTimer) {
+    clearTimeout(backgroundCacheTimer);
+    backgroundCacheTimer = null;
+  }
+  void AudioCacheManager.cancelAllBackgroundDownloads();
   globalPlayIntent = false;
   const active = globalPlayer;
   globalPlayer = null;

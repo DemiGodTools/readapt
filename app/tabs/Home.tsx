@@ -33,6 +33,7 @@ import { api } from "../../lib/api";
 import { prefetchImages } from "../../components/props/CachedImage";
 import ChapterCardSkelly from "../../components/props/ChapterCardSkelly";
 import SeriesCardSkelly from "../../components/props/SeriesCardSkelly";
+import { safeNavigate } from "../../lib/safeNav";
 import { ISeries } from "../../types/Series";
 import { IS_EARLY_ACCESS_FREE } from "../../lib/entitlements";
 import { getRecentReads } from "../../lib/userStorage";
@@ -795,7 +796,7 @@ const HomeScreen = () => {
   };
 
   const handleViewAllTrending = () => {
-    navigation.navigate("TrendingBooks" as never);
+    safeNavigate(navigation, "TrendingBooks");
   };
 
   if (!seriesData && !feedData && !isConnected) {
@@ -811,7 +812,7 @@ const HomeScreen = () => {
       <ScrollView
         showsVerticalScrollIndicator={false}
         onScroll={handleScroll}
-        scrollEventThrottle={16}
+        scrollEventThrottle={64}
         contentContainerStyle={{
           paddingTop: topNavHeight + 16,
           paddingBottom: 60,
@@ -834,7 +835,7 @@ const HomeScreen = () => {
           <View style={styles.section}>
             <PopButton
               onPress={() => {
-                navigation.navigate("SeriesOverview", {
+                safeNavigate(navigation, "SeriesOverview", {
                   seriesId: joinedSeriesId,
                 });
               }}>

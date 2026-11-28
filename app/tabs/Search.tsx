@@ -354,6 +354,15 @@ export default function Search() {
   const { showToast } = useToast();
 
   const inputRef = useRef<TextInput>(null);
+  const searchDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (searchDelayTimerRef.current) {
+        clearTimeout(searchDelayTimerRef.current);
+      }
+    };
+  }, []);
 
   // View mode: 'home' (Screen 1) | 'typing' (Screen 4) | 'results' (Screen 2)
   const [viewMode, setViewMode] = useState<"home" | "typing" | "results">("home");
@@ -577,7 +586,11 @@ export default function Search() {
       setIsSearching(true);
 
       // Subtle fast delay to showcase the smooth custom loading animation
-      setTimeout(() => {
+      if (searchDelayTimerRef.current) {
+        clearTimeout(searchDelayTimerRef.current);
+      }
+      searchDelayTimerRef.current = setTimeout(() => {
+        searchDelayTimerRef.current = null;
         setIsSearching(false);
       }, 420);
     },

@@ -1891,7 +1891,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   // Prioritizes immediate PDF mount with HTTP Range Streaming
   // ==========================================
   const loadChapterAndPdfFast = useCallback(
-    async (targetId: string, isCancelledRef?: { current: boolean }) => {
+    async (
+      targetId: string,
+      isCancelledRef?: { current: boolean },
+      signal?: AbortSignal
+    ) => {
       if (!targetId || targetId === "undefined") return;
       const storageUriKey = `fast_pdf_uri_${targetId}`;
       const storageUrlKey = `fast_pdf_url_${targetId}`;
@@ -2005,10 +2009,11 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
       // Phase 3: Defer non-critical network calls until after initial document render
       InteractionManager.runAfterInteractions(async () => {
-        if (isCancelledRef?.current) return;
+        if (isCancelledRef?.current || signal?.aborted) return;
         try {
           setIsQnaLoading(true);
-          const chapter = await api.get(`/chapter/${targetId}`).catch(() => null);
+          const chapter = await api.get(`/chapter/${targetId}`, { signal }).catch(() => null);
+          if (isCancelledRef?.current || signal?.aborted) return;
           if (chapter?.data?.data) {
             const freshData: BookPopulated = chapter.data.data;
             const freshMediaUrl = normalizeMediaUrl(freshData.media);
@@ -2104,9 +2109,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
               ) {
                 try {
                   const sRes = await api
-                    .get(`/series/${cleanSId}`)
+                    .get(`/series/${cleanSId}`, { signal })
                     .catch(() => null);
-                  if (sRes?.data?.data && !isCancelledRef?.current)
+                  if (sRes?.data?.data && !isCancelledRef?.current && !signal?.aborted)
                     setSeriesData(sRes.data.data);
                 } catch {}
               }
@@ -2157,6 +2162,7 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
   useEffect(() => {
     if (!activeChapterId) return;
     const isCancelledRef = { current: false };
+    const controller = new AbortController();
     hasEjectedRef.current = false;
 
     const targetBook =
@@ -2231,9 +2237,10 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
     currentScrollYRef.current = MORPH_DISTANCE;
     scrollY.setValue(MORPH_DISTANCE);
     borderDriver.setValue(MORPH_DISTANCE);
-    loadChapterAndPdfFast(activeChapterId, isCancelledRef);
+    loadChapterAndPdfFast(activeChapterId, isCancelledRef, controller.signal);
     return () => {
       isCancelledRef.current = true;
+      controller.abort();
     };
   }, [activeChapterId]);
 
@@ -2682,46 +2689,58 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
       particleAnim.setValue(0);
     });
 
-    try {
-      const res = await api.post("/chapter/like", { chapterId: activeChapterId });
-      if (res?.data?.success) {
-        const confirmedLiked = Boolean(res.data.liked);
-        const confirmedLikes =
-          typeof res.data.likes === "number" ? res.data.likes : optimisticLikes;
+    LikeManager.scheduleCoalescedSync(
+      activeChapterId,
+      prevLiked,
+      nextLiked,
+      async () => {
+        const res = await api.post("/chapter/like", { chapterId: activeChapterId });
+        if (res?.data?.success) {
+          return {
+            liked: Boolean(res.data.liked),
+            likes: typeof res.data.likes === "number" ? res.data.likes : optimisticLikes,
+          };
+        }
+        return null;
+      },
+      async (result) => {
+        if (result.success) {
+          const confirmedLiked = result.liked;
+          const confirmedLikes = result.likes ?? optimisticLikes;
 
-        setIsLiked(confirmedLiked);
-        setBook((prev) => (prev ? { ...prev, likes: confirmedLikes, isLiked: confirmedLiked } : prev));
-        LikeManager.set(activeChapterId, confirmedLiked, confirmedLikes);
+          setIsLiked(confirmedLiked);
+          setBook((prev) => (prev ? { ...prev, likes: confirmedLikes, isLiked: confirmedLiked } : prev));
+          LikeManager.set(activeChapterId, confirmedLiked, confirmedLikes);
 
-        await AsyncStorage.setItem(
-          `liked_${activeChapterId}`,
-          String(confirmedLiked)
-        ).catch(() => {});
+          await AsyncStorage.setItem(
+            `liked_${activeChapterId}`,
+            String(confirmedLiked)
+          ).catch(() => {});
 
-        try {
-          const cached = await AsyncStorage.getItem(`cached_ch_${activeChapterId}`);
-          if (cached) {
-            const parsed = JSON.parse(cached);
-            parsed.likes = confirmedLikes;
-            parsed.isLiked = confirmedLiked;
-            await AsyncStorage.setItem(
-              `cached_ch_${activeChapterId}`,
-              JSON.stringify(parsed)
-            );
-          }
-        } catch {}
+          try {
+            const cached = await AsyncStorage.getItem(`cached_ch_${activeChapterId}`);
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              parsed.likes = confirmedLikes;
+              parsed.isLiked = confirmedLiked;
+              await AsyncStorage.setItem(
+                `cached_ch_${activeChapterId}`,
+                JSON.stringify(parsed)
+              );
+            }
+          } catch {}
+        } else {
+          setIsLiked(result.liked);
+          setBook((prev) => (prev ? { ...prev, likes: prevLikes, isLiked: result.liked } : prev));
+          LikeManager.set(activeChapterId, result.liked, prevLikes);
+          await AsyncStorage.setItem(
+            `liked_${activeChapterId}`,
+            String(result.liked)
+          ).catch(() => {});
+          showToast({ title: "Could not update like. Please try again." });
+        }
       }
-    } catch (err: any) {
-      console.error("Like request failed:", err?.message || err);
-      setIsLiked(prevLiked);
-      setBook((prev) => (prev ? { ...prev, likes: prevLikes, isLiked: prevLiked } : prev));
-      LikeManager.set(activeChapterId, prevLiked, prevLikes);
-      await AsyncStorage.setItem(
-        `liked_${activeChapterId}`,
-        String(prevLiked)
-      ).catch(() => {});
-      showToast({ title: "Could not update like. Please try again." });
-    }
+    );
   };
 
   const share = async () => {
