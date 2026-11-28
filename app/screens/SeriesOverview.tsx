@@ -835,9 +835,13 @@ export default function SeriesOverview() {
     executeJoinSeries();
   };
 
+  const isJoiningRef = useRef(false);
+
   const executeJoinSeries = async () => {
     const targetId = String(seriesData?._id || currentSeriesId || "");
-    if (!targetId) return;
+    if (!targetId || isJoiningRef.current) return;
+    isJoiningRef.current = true;
+    const prevJoinedSeries = user?.joinedSeries;
 
     // Optimistic UI updates
     setIsJoined(true);
@@ -853,7 +857,7 @@ export default function SeriesOverview() {
       const res = await api.post(
         "/series/join",
         { seriesId: targetId },
-        { headers }
+        { headers, timeout: 12000 }
       );
 
       if (res.status === 200 || res.status === 201 || res.data?.success !== false) {
@@ -886,16 +890,18 @@ export default function SeriesOverview() {
         reload().catch(() => {});
       } else {
         setIsJoined(false);
-        updateUser({ joinedSeries: user?.joinedSeries });
+        updateUser({ joinedSeries: prevJoinedSeries });
         showToast({ title: res.data?.message || "Failed to join series" });
       }
     } catch (err: any) {
       console.warn("Join series error:", err?.response?.data || err?.message);
       setIsJoined(false);
-      updateUser({ joinedSeries: user?.joinedSeries });
+      updateUser({ joinedSeries: prevJoinedSeries });
       showToast({
         title: err?.response?.data?.message || "Failed to join series",
       });
+    } finally {
+      isJoiningRef.current = false;
     }
   };
 
@@ -970,17 +976,28 @@ export default function SeriesOverview() {
     }
     const targetId = String(rawTargetId);
     const mediaType = targetChapter.type ?? "pdf";
+    const resolvedSeriesId = String(seriesData?._id || currentSeriesId || "");
+    const resolvedSeriesType = seriesData?.type;
+    const enrichedBookData = {
+      ...targetChapter,
+      ...(resolvedSeriesId && !targetChapter.series ? { series: resolvedSeriesId } : {}),
+      ...(resolvedSeriesType && !targetChapter.seriesType ? { seriesType: resolvedSeriesType } : {}),
+    };
 
     if (mediaType === "pdf") {
       safeNavigate(navigation, "ReadBook", {
         bookId: targetId,
-        initialBookData: targetChapter,
+        initialBookData: enrichedBookData,
+        ...(resolvedSeriesId ? { seriesId: resolvedSeriesId } : {}),
+        ...(resolvedSeriesType ? { seriesType: resolvedSeriesType, isFramework: resolvedSeriesType === "framework" } : {}),
         showQnaRequirementToast: true,
       } as any);
     } else {
       safeNavigate(navigation, "AudioRdr", {
         bookId: targetId,
-        initialBookData: targetChapter,
+        initialBookData: enrichedBookData,
+        ...(resolvedSeriesId ? { seriesId: resolvedSeriesId } : {}),
+        ...(resolvedSeriesType ? { seriesType: resolvedSeriesType, isFramework: resolvedSeriesType === "framework" } : {}),
         showQnaRequirementToast: true,
       } as any);
     }

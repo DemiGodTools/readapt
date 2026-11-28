@@ -377,6 +377,7 @@ const CommentsDrawer = ({
   const totalCountRef = useRef(totalCount);
   totalCountRef.current = totalCount;
   const deletingIdsRef = useRef<Set<string>>(new Set());
+  const inFlightTempIdsRef = useRef<Set<string>>(new Set());
   const mutationQueueRef = useRef<Map<string, Promise<void>>>(new Map());
   const fetchAbortRef = useRef<AbortController | null>(null);
 
@@ -704,10 +705,10 @@ const CommentsDrawer = ({
               valid.map((c) => c.clientRequestId).filter(Boolean)
             );
             const serverIds = new Set(valid.map((c) => String(c._id)));
-            // Keep active pending card ONLY if server hasn't already returned it
+            // Keep active pending card ONLY if still in-flight and server hasn't already returned it
             const pendingOptimistic = prev.filter(
               (c) =>
-                (c.isPosting || String(c._id).startsWith("posting_")) &&
+                inFlightTempIdsRef.current.has(String(c._id)) &&
                 !serverIds.has(String(c._id)) &&
                 (!c.clientRequestId || !serverReqIds.has(c.clientRequestId))
             );
@@ -1091,6 +1092,7 @@ const CommentsDrawer = ({
       };
 
       const cacheKey = commentsCacheKey(validChapterId, isQuestion);
+      inFlightTempIdsRef.current.add(tempId);
       setComments((prev) => [optimisticComment, ...prev]);
       setIsPosting(true);
       setPostingCommentId(tempId);
@@ -1118,7 +1120,7 @@ const CommentsDrawer = ({
 
       const requestConfig = {
         headers,
-        timeout: 22000,
+        timeout: 12000,
       };
 
       const postOnce = async () => {
@@ -1234,6 +1236,7 @@ const CommentsDrawer = ({
             showToast({ title: msg });
           }
         } finally {
+          inFlightTempIdsRef.current.delete(tempId);
           if (activePostTokenRef.current === myPostToken) {
             isPostingRef.current = false;
             if (mountedRef.current) {

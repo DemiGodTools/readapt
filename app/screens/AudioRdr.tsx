@@ -1824,7 +1824,7 @@ const AudioPlayerScreen = ({ route }: Props) => {
 
       // 2. Network fetch if online
       if (isConnected) {
-        const res = await api.get(`/question/by-chapter/${chapterId}`, { timeout: 6000 }).catch(() => null);
+        const res = await api.get(`/question/by-chapter/${chapterId}`, { timeout: 12000 }).catch(() => null);
         let freshQs: any[] | null = null;
         if (res?.data?.data && Array.isArray(res.data.data)) {
           freshQs = res.data.data;
@@ -2285,7 +2285,9 @@ const AudioPlayerScreen = ({ route }: Props) => {
   ]);
 
 
-  const isSeriesContent = Boolean((book as any)?.series || seriesData);
+  const isSeriesContent = Boolean(
+    (book as any)?.series || seriesData || (route?.params as any)?.seriesId
+  );
   const showStandaloneRelated =
     !isSeriesContent && (relatedStandaloneBooks.length > 0 || isRelatedLoading);
 

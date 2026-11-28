@@ -2864,7 +2864,9 @@ const BookReaderScreen = ({ route, navigation }: Props) => {
 
   const displayAuthor =
     book?.author && book.author.trim() !== "" ? book.author : "Readapt Creator";
-  const isSeriesContent = Boolean(book?.series || seriesData);
+  const isSeriesContent = Boolean(
+    book?.series || seriesData || (route?.params as any)?.seriesId
+  );
   const showStandaloneRelated =
     !isSeriesContent && (relatedStandaloneBooks.length > 0 || isRelatedLoading);
 
